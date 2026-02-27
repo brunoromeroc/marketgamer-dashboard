@@ -293,13 +293,12 @@ if st.session_state.df_tn is not None:
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
-            k1, k2, k3, k4, k5, k6 = st.columns(6)
-            k1.metric("Órdenes", len(df_tn))
-            k2.metric("Facturación bruta", fmt(df_tn["Total ($)"].sum()))
-            k3.metric("Descuentos", fmt(df_tn["Descuento ($)"].sum()))
-            k4.metric("Comision PN", fmt(df_tn["Comision PN ($)"].sum()))
-            k5.metric("Costo Financiero", fmt(df_tn["Costo Financiero ($)"].sum()))
-            k6.metric("💰 Neto real", fmt(df_tn["Neto ($)"].sum()))
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("Ordenes", len(df_tn))
+            k2.metric("Facturacion bruta", fmt(df_tn["Total ($)"].sum()))
+            k3.metric("Comision PN", fmt(df_tn["Comision PN ($)"].sum()))
+            k4.metric("Neto cobrado", fmt(df_tn["Neto cobrado ($)"].sum()))
+            k5.metric("Margen total", fmt(df_tn["Margen ($)"].sum()))
 
             col_a, col_b = st.columns(2)
             with col_a:
@@ -355,16 +354,16 @@ if st.session_state.df_tn is not None:
             st.info("No hay órdenes en este período.")
         else:
             cols_tn = ["Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Total ($)",
-                       "Descuento ($)", "Costo Envio ($)", "Comision PN ($)", "Costo Financiero ($)",
-                       "Otros Costos ($)", "Total Costos PN ($)", "Costo PN (%)", "Neto ($)",
-                       "Estado Envio", "Productos", "Cantidad", "Canal"]
+                       "Descuento ($)", "Envio costo ($)", "Comision PN ($)",
+                       "Costo PN (%)", "Neto cobrado ($)", "Costo Productos ($)",
+                       "Margen ($)", "Margen (%)", "Estado Envio", "Productos", "Cantidad", "Canal"]
             cols_tn = [c for c in cols_tn if c in df_tn.columns]
             st.dataframe(
                 df_tn[cols_tn].style.format({
                     "Total ($)": "${:,.0f}", "Descuento ($)": "${:,.0f}",
-                    "Costo Envio ($)": "${:,.0f}", "Comision PN ($)": "${:,.0f}",
-                    "Costo Financiero ($)": "${:,.0f}", "Otros Costos ($)": "${:,.0f}",
-                    "Total Costos PN ($)": "${:,.0f}", "Costo PN (%)": "{:.2f}%", "Neto ($)": "${:,.0f}",
+                    "Envio costo ($)": "${:,.0f}", "Comision PN ($)": "${:,.0f}",
+                    "Costo PN (%)": "{:.2f}%", "Neto cobrado ($)": "${:,.0f}",
+                    "Costo Productos ($)": "${:,.0f}", "Margen ($)": "${:,.0f}", "Margen (%)": "{:.2f}%",
                 }),
                 use_container_width=True, hide_index=True
             )
@@ -378,14 +377,15 @@ if st.session_state.df_tn is not None:
                 Cantidad=("Orden", "count"),
                 Bruto=("Total ($)", "sum"),
                 Comision=("Comision PN ($)", "sum"),
-                CostoFin=("Costo Financiero ($)", "sum"),
-                TotalCostos=("Total Costos PN ($)", "sum"),
-                Neto=("Neto ($)", "sum"),
+                Neto=("Neto cobrado ($)", "sum"),
+                CostoProds=("Costo Productos ($)", "sum"),
+                Margen=("Margen ($)", "sum"),
             ).reset_index()
-            res["Costo %"] = (res["TotalCostos"] / res["Bruto"] * 100).round(2).apply(fmt_pct)
-            for col in ["Bruto", "Comision", "CostoFin", "TotalCostos", "Neto"]:
+            res["Costo %"] = (res["Comision"] / res["Bruto"] * 100).round(2).apply(fmt_pct)
+            res["Margen %"] = (res["Margen"] / res["Bruto"] * 100).round(2).apply(fmt_pct)
+            for col in ["Bruto", "Comision", "Neto", "CostoProds", "Margen"]:
                 res[col] = res[col].apply(fmt)
-            res.columns = ["Medio de Pago", "Cantidad", "Bruto ($)", "Comision PN ($)", "Costo Fin. ($)", "Total Costos ($)", "Neto ($)", "Costo %"]
+            res.columns = ["Medio de Pago", "Cantidad", "Bruto ($)", "Comision PN ($)", "Neto ($)", "Costo Prods ($)", "Margen ($)", "Costo PN %", "Margen %"]
             st.dataframe(res, use_container_width=True, hide_index=True)
 
         if not df_pagos.empty:
