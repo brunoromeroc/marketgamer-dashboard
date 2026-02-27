@@ -157,32 +157,64 @@ def procesar_orders(orders):
         productos = " / ".join(prods)
         cantidad = sum(p.get("quantity", 1) for p in o.get("products", []))
 
-        # Medio de pago
+        # Medio de pago y cuotas
         pd_raw = o.get("payment_details", {})
         medio = o.get("payment_provider_id") or o.get("gateway") or ""
+        cuotas = 1
         if isinstance(pd_raw, list) and pd_raw:
             medio = pd_raw[0].get("payment_method", medio)
+            cuotas = int(pd_raw[0].get("installments", 1) or 1)
         elif isinstance(pd_raw, dict):
             medio = pd_raw.get("payment_method", medio)
+            cuotas = int(pd_raw.get("installments", 1) or 1)
 
         try: fecha = pd.to_datetime(o.get("created_at", "")).strftime("%Y-%m-%d")
         except: fecha = ""
 
-        # Comisión Pago Nube
+        total       = float(o.get("total", 0))
+        descuento   = float(o.get("discount", 0) or 0)
+        costo_envio = float(o.get("shipping_cost_customer", 0) or 0)
+
+        # Costos de Pago Nube
         gateway_cost = float(o.get("gateway_cost", 0) or 0)
-        total = float(o.get("total", 0))
+        comision_pn  = 0.0
+        costo_fin_pn = 0.0
+        otros_costos = 0.0
+        if isinstance(pd_raw, list):
+            for gw in pd_raw:
+                if isinstance(gw, dict):
+                    comision_pn  += float(gw.get("commission", 0) or 0)
+                    costo_fin_pn += float(gw.get("financing_cost", 0) or 0)
+                    otros_costos += float(gw.get("other_costs", 0) or 0)
+        elif isinstance(pd_raw, dict):
+            comision_pn  = float(pd_raw.get("commission", 0) or 0)
+            costo_fin_pn = float(pd_raw.get("financing_cost", 0) or 0)
+            otros_costos = float(pd_raw.get("other_costs", 0) or 0)
+
+        # Si no hay desglose usar gateway_cost
+        if comision_pn == 0 and costo_fin_pn == 0:
+            comision_pn = gateway_cost
+
+        total_costos_pn = comision_pn + costo_fin_pn + otros_costos
+        neto = round(total - total_costos_pn, 2)
+        pct_costo = round((total_costos_pn / total * 100) if total > 0 else 0, 2)
 
         filas.append({
             "Orden": o.get("number"),
             "Fecha": fecha,
             "Cliente": str(o.get("contact_name", "")),
             "Medio de Pago": str(medio).strip(),
+            "Cuotas": cuotas,
             "Total ($)": total,
-            "Descuento ($)": float(o.get("discount", 0)),
-            "Costo Envío ($)": float(o.get("shipping_cost_customer", 0)),
-            "Comisión PN ($)": gateway_cost,
-            "Neto ($)": round(total - gateway_cost, 2),
-            "Estado Envío": o.get("shipping_status", ""),
+            "Descuento ($)": descuento,
+            "Costo Envio ($)": costo_envio,
+            "Comision PN ($)": round(comision_pn, 2),
+            "Costo Financiero ($)": round(costo_fin_pn, 2),
+            "Otros Costos ($)": round(otros_costos, 2),
+            "Total Costos PN ($)": round(total_costos_pn, 2),
+            "Costo PN (%)": pct_costo,
+            "Neto ($)": neto,
+            "Estado Envio": o.get("shipping_status", ""),
             "Productos": productos,
             "Cantidad": cantidad,
             "Canal": str(o.get("app_id", "tiendanube")),
@@ -244,12 +276,13 @@ if st.session_state.df_tn is not None:
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
-            k1, k2, k3, k4, k5 = st.columns(5)
+            k1, k2, k3, k4, k5, k6 = st.columns(6)
             k1.metric("Órdenes", len(df_tn))
             k2.metric("Facturación bruta", fmt(df_tn["Total ($)"].sum()))
             k3.metric("Descuentos", fmt(df_tn["Descuento ($)"].sum()))
-            k4.metric("Comisiones PN", fmt(df_tn["Comisión PN ($)"].sum()))
-            k5.metric("Facturación neta", fmt(df_tn["Neto ($)"].sum()))
+            k4.metric("Comision PN", fmt(df_tn["Comision PN ($)"].sum()))
+            k5.metric("Costo Financiero", fmt(df_tn["Costo Financiero ($)"].sum()))
+            k6.metric("💰 Neto real", fmt(df_tn["Neto ($)"].sum()))
 
             col_a, col_b = st.columns(2)
             with col_a:
@@ -304,14 +337,17 @@ if st.session_state.df_tn is not None:
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
-            cols_tn = ["Orden", "Fecha", "Cliente", "Medio de Pago", "Total ($)",
-                       "Descuento ($)", "Costo Envío ($)", "Comisión PN ($)", "Neto ($)",
-                       "Estado Envío", "Productos", "Cantidad", "Canal"]
+            cols_tn = ["Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Total ($)",
+                       "Descuento ($)", "Costo Envio ($)", "Comision PN ($)", "Costo Financiero ($)",
+                       "Otros Costos ($)", "Total Costos PN ($)", "Costo PN (%)", "Neto ($)",
+                       "Estado Envio", "Productos", "Cantidad", "Canal"]
             cols_tn = [c for c in cols_tn if c in df_tn.columns]
             st.dataframe(
                 df_tn[cols_tn].style.format({
                     "Total ($)": "${:,.0f}", "Descuento ($)": "${:,.0f}",
-                    "Costo Envío ($)": "${:,.0f}", "Comisión PN ($)": "${:,.0f}", "Neto ($)": "${:,.0f}",
+                    "Costo Envio ($)": "${:,.0f}", "Comision PN ($)": "${:,.0f}",
+                    "Costo Financiero ($)": "${:,.0f}", "Otros Costos ($)": "${:,.0f}",
+                    "Total Costos PN ($)": "${:,.0f}", "Costo PN (%)": "{:.2f}%", "Neto ($)": "${:,.0f}",
                 }),
                 use_container_width=True, hide_index=True
             )
@@ -324,13 +360,15 @@ if st.session_state.df_tn is not None:
             res = df_tn.groupby("Medio de Pago").agg(
                 Cantidad=("Orden", "count"),
                 Bruto=("Total ($)", "sum"),
-                Comision=("Comisión PN ($)", "sum"),
+                Comision=("Comision PN ($)", "sum"),
+                CostoFin=("Costo Financiero ($)", "sum"),
+                TotalCostos=("Total Costos PN ($)", "sum"),
                 Neto=("Neto ($)", "sum"),
             ).reset_index()
-            res["Costo %"] = (res["Comision"] / res["Bruto"] * 100).round(2).apply(fmt_pct)
-            for col in ["Bruto", "Comision", "Neto"]:
+            res["Costo %"] = (res["TotalCostos"] / res["Bruto"] * 100).round(2).apply(fmt_pct)
+            for col in ["Bruto", "Comision", "CostoFin", "TotalCostos", "Neto"]:
                 res[col] = res[col].apply(fmt)
-            res.columns = ["Medio de Pago", "Cantidad", "Bruto ($)", "Comisión ($)", "Neto ($)", "Costo %"]
+            res.columns = ["Medio de Pago", "Cantidad", "Bruto ($)", "Comision PN ($)", "Costo Fin. ($)", "Total Costos ($)", "Neto ($)", "Costo %"]
             st.dataframe(res, use_container_width=True, hide_index=True)
 
         if not df_pagos.empty:
@@ -504,7 +542,7 @@ if st.session_state.df_tn is not None:
             facturacion_bruta = df_tn["Total ($)"].sum()
             facturacion_neta = df_tn["Neto ($)"].sum()
             costo_iva = facturacion_bruta * (pct_iva / 100)
-            comisiones_pn = df_tn["Comisión PN ($)"].sum()
+            comisiones_pn = df_tn["Comision PN ($)"].sum()
 
             # Costo de productos
             costo_productos_total = 0
