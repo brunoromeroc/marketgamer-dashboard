@@ -200,11 +200,18 @@ def procesar_orders(orders):
             cuotas = int(pd_raw.get("installments", 1) or 1)
             tarjeta = pd_raw.get("credit_card_company", "") or ""
         if metodo == "credit_card":
-            label_medio = f"Credito {tarjeta.title()} {cuotas}c" if tarjeta else f"Credito {cuotas}c"
+            if cuotas == 1:
+                label_medio = "Credito contado"
+            else:
+                label_medio = f"Credito {cuotas} cuotas"
         elif metodo == "debit_card":
-            label_medio = f"Debito {tarjeta.title()}" if tarjeta else "Debito"
+            label_medio = "Debito"
+        elif any(x in str(metodo).lower() for x in ["transfer", "wire"]):
+            label_medio = "Transferencia"
+        elif "account_money" in str(metodo).lower():
+            label_medio = "Dinero en cuenta"
         else:
-            label_medio = metodo.replace("_", " ").title() if metodo else gateway
+            label_medio = str(metodo).replace("_", " ").title() if metodo else str(gateway)
         try: fecha = pd.to_datetime(o.get("created_at", "")).strftime("%Y-%m-%d")
         except: fecha = ""
         total = float(o.get("total", 0))
