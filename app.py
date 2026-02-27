@@ -5,8 +5,8 @@ import plotly.express as px
 from datetime import date, timedelta
 import time
 
-TN_TOKEN = "d393f7ed47519869ca814897a73ef0c591a2894b"
-TN_STORE_ID = "6623036"
+TN_TOKEN = st.secrets["TN_TOKEN"]
+TN_STORE_ID = st.secrets["TN_STORE_ID"]
 
 st.set_page_config(page_title="Dashboard Market Gamer", layout="wide")
 st.title("🎮 Dashboard de Ventas - Market Gamer")
