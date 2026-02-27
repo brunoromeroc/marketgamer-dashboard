@@ -146,78 +146,95 @@ def get_tn_products():
         page += 1
     return all_products
 
+# TASAS REALES DE PAGO NUBE calibradas con transacciones reales
+# Procesamiento: 3.29% + IVA, factor IVA real = 1.26x
+# Verificado: orden #339 $500k 6c -> $118,500 calculado vs $118,503 real
+PROC_BASE     = 0.0329
+IVA_FACTOR    = 1.2600
+PROC_EFECTIVO = PROC_BASE * IVA_FACTOR  # 4.1454%
+
+CUOTAS_BASE = {
+    1:  0.0,
+    2:  0.0606,
+    3:  0.0798,
+    6:  0.1552,
+    12: 0.3104,
+    18: 0.4346,
+    24: 0.5432,
+}
+
+def tasa_pago_nube(metodo, cuotas):
+    metodo = str(metodo).lower()
+    if any(x in metodo for x in ["transfer", "wire", "account_money"]):
+        return 0.0099 * IVA_FACTOR
+    if any(x in metodo for x in ["debit", "debito", "modo"]):
+        return PROC_EFECTIVO
+    cuotas = int(cuotas or 1)
+    opciones = sorted(CUOTAS_BASE.keys())
+    cuotas_key = min(opciones, key=lambda x: abs(x - cuotas))
+    costo_cuotas = CUOTAS_BASE.get(cuotas_key, 0.0) * IVA_FACTOR
+    return PROC_EFECTIVO + costo_cuotas
+
+
 def procesar_orders(orders):
     filas = []
     for o in orders:
         prods = []
+        costo_productos = 0.0
         for p in o.get("products", []):
             n = p.get("name", "")
             nombre = n if isinstance(n, str) else (n.get("es", "") or next(iter(n.values()), "")) if isinstance(n, dict) else ""
             prods.append(nombre)
+            qty = int(p.get("quantity", 1) or 1)
+            cost = float(p.get("cost", 0) or 0)
+            costo_productos += cost * qty
         productos = " / ".join(prods)
         cantidad = sum(p.get("quantity", 1) for p in o.get("products", []))
-
-        # Medio de pago y cuotas
         pd_raw = o.get("payment_details", {})
-        medio = o.get("payment_provider_id") or o.get("gateway") or ""
+        gateway = str(o.get("gateway", "")).lower()
+        metodo = gateway
         cuotas = 1
-        if isinstance(pd_raw, list) and pd_raw:
-            medio = pd_raw[0].get("payment_method", medio)
-            cuotas = int(pd_raw[0].get("installments", 1) or 1)
-        elif isinstance(pd_raw, dict):
-            medio = pd_raw.get("payment_method", medio)
+        tarjeta = ""
+        if isinstance(pd_raw, dict):
+            metodo = pd_raw.get("method", gateway)
             cuotas = int(pd_raw.get("installments", 1) or 1)
-
+            tarjeta = pd_raw.get("credit_card_company", "") or ""
+        if metodo == "credit_card":
+            label_medio = f"Credito {tarjeta.title()} {cuotas}c" if tarjeta else f"Credito {cuotas}c"
+        elif metodo == "debit_card":
+            label_medio = f"Debito {tarjeta.title()}" if tarjeta else "Debito"
+        else:
+            label_medio = metodo.replace("_", " ").title() if metodo else gateway
         try: fecha = pd.to_datetime(o.get("created_at", "")).strftime("%Y-%m-%d")
         except: fecha = ""
-
-        total       = float(o.get("total", 0))
-        descuento   = float(o.get("discount", 0) or 0)
-        costo_envio = float(o.get("shipping_cost_customer", 0) or 0)
-
-        # Costos de Pago Nube
-        gateway_cost = float(o.get("gateway_cost", 0) or 0)
-        comision_pn  = 0.0
-        costo_fin_pn = 0.0
-        otros_costos = 0.0
-        if isinstance(pd_raw, list):
-            for gw in pd_raw:
-                if isinstance(gw, dict):
-                    comision_pn  += float(gw.get("commission", 0) or 0)
-                    costo_fin_pn += float(gw.get("financing_cost", 0) or 0)
-                    otros_costos += float(gw.get("other_costs", 0) or 0)
-        elif isinstance(pd_raw, dict):
-            comision_pn  = float(pd_raw.get("commission", 0) or 0)
-            costo_fin_pn = float(pd_raw.get("financing_cost", 0) or 0)
-            otros_costos = float(pd_raw.get("other_costs", 0) or 0)
-
-        # Si no hay desglose usar gateway_cost
-        if comision_pn == 0 and costo_fin_pn == 0:
-            comision_pn = gateway_cost
-
-        total_costos_pn = comision_pn + costo_fin_pn + otros_costos
-        neto = round(total - total_costos_pn, 2)
-        pct_costo = round((total_costos_pn / total * 100) if total > 0 else 0, 2)
-
+        total = float(o.get("total", 0))
+        descuento = float(o.get("discount", 0) or 0)
+        costo_envio_dueno = float(o.get("shipping_cost_owner", 0) or 0)
+        tasa = tasa_pago_nube(metodo, cuotas)
+        comision_pn = round(total * tasa, 2)
+        neto = round(total - comision_pn, 2)
+        pct_costo = round(tasa * 100, 2)
+        margen = round(neto - costo_productos - costo_envio_dueno, 2)
+        margen_pct = round((margen / total * 100) if total > 0 else 0, 2)
         filas.append({
             "Orden": o.get("number"),
             "Fecha": fecha,
             "Cliente": str(o.get("contact_name", "")),
-            "Medio de Pago": str(medio).strip(),
+            "Medio de Pago": label_medio,
             "Cuotas": cuotas,
             "Total ($)": total,
             "Descuento ($)": descuento,
-            "Costo Envio ($)": costo_envio,
-            "Comision PN ($)": round(comision_pn, 2),
-            "Costo Financiero ($)": round(costo_fin_pn, 2),
-            "Otros Costos ($)": round(otros_costos, 2),
-            "Total Costos PN ($)": round(total_costos_pn, 2),
+            "Envio costo ($)": costo_envio_dueno,
+            "Comision PN ($)": comision_pn,
             "Costo PN (%)": pct_costo,
-            "Neto ($)": neto,
+            "Neto cobrado ($)": neto,
+            "Costo Productos ($)": round(costo_productos, 2),
+            "Margen ($)": margen,
+            "Margen (%)": margen_pct,
             "Estado Envio": o.get("shipping_status", ""),
             "Productos": productos,
             "Cantidad": cantidad,
-            "Canal": str(o.get("app_id", "tiendanube")),
+            "Canal": str(o.get("app_id", "") or "tiendanube"),
             "Estado": o.get("status", ""),
         })
     return pd.DataFrame(filas)
@@ -499,85 +516,68 @@ if st.session_state.df_tn is not None:
             with col3:
                 pauta_manual = st.number_input("📣 Pauta publicitaria del período (ARS)", value=0, step=50_000)
 
+        with st.expander("💳 Tasas de Pago Nube por cuotas (ajustables)", expanded=False):
+            st.caption("Calibradas con tu contrato real. Verificado: 6 cuotas = 23.70% (orden #339 $500k → neto $381.497)")
+            st.info("Procesamiento: 3.29% + IVA (retiro 14 dias) | Transferencia: 0.99% + IVA | Factor IVA: 1.26x")
+            tc1, tc2, tc3, tc4, tc5, tc6 = st.columns(6)
+            tasa_1c  = tc1.number_input("1 cuota (%)",  value=4.15, step=0.01, key="t1") / 100
+            tasa_2c  = tc2.number_input("2 cuotas (%)", value=11.78, step=0.01, key="t2") / 100
+            tasa_3c  = tc3.number_input("3 cuotas (%)", value=14.20, step=0.01, key="t3") / 100
+            tasa_6c  = tc4.number_input("6 cuotas (%)", value=23.70, step=0.01, key="t6") / 100
+            tasa_12c = tc5.number_input("12 cuotas (%)",value=43.24, step=0.01, key="t12") / 100
+            tasa_deb = tc6.number_input("Deb/Trans (%)", value=4.15, step=0.01, key="tdeb") / 100
+            tasas_custom = {1: tasa_1c, 2: tasa_2c, 3: tasa_3c, 6: tasa_6c,
+                           9: (tasa_6c+tasa_12c)/2, 12: tasa_12c,
+                           18: tasa_12c*1.15, 24: tasa_12c*1.30, "debit": tasa_deb}
+
         st.divider()
-        st.subheader("💰 Costos por producto")
-        st.caption("Cargá el costo en USD de cada producto para calcular márgenes.")
+        st.subheader("💰 Resumen financiero del período")
 
         if df_tn.empty:
-            st.info("Buscá primero para ver los productos.")
+            st.info("Buscá primero para ver los datos financieros.")
         else:
-            # Obtener lista de productos únicos vendidos
-            productos_vendidos = {}
-            for _, row in df_tn.iterrows():
-                for p in str(row.get("Productos", "")).split(" / "):
-                    p = p.strip()
-                    if p:
-                        productos_vendidos[p] = productos_vendidos.get(p, 0) + row.get("Cantidad", 1)
+            # Recalcular comisiones con tasas custom del usuario
+            def comision_custom(row):
+                metodo = str(row.get("Medio de Pago","")).lower()
+                cuotas = int(row.get("Cuotas", 1) or 1)
+                total  = float(row.get("Total ($)", 0))
+                if "debit" in metodo or "debito" in metodo:
+                    tasa = tasas_custom.get("debit", 0.0199)
+                else:
+                    opciones = [k for k in tasas_custom.keys() if isinstance(k, int)]
+                    tasa_key = min(opciones, key=lambda x: abs(x - cuotas))
+                    tasa = tasas_custom.get(tasa_key, 0.0414)
+                return round(total * tasa, 2)
 
-            costos = st.session_state.costos_productos.copy()
+            df_calc = df_tn.copy()
+            df_calc["Comision PN ($)"] = df_calc.apply(comision_custom, axis=1)
+            df_calc["Neto cobrado ($)"] = df_calc["Total ($)"] - df_calc["Comision PN ($)"]
+            df_calc["Margen ($)"] = df_calc["Neto cobrado ($)"] - df_calc["Costo Productos ($)"] - df_calc["Envio costo ($)"]
 
-            with st.form("form_costos"):
-                st.markdown("**Cargá el costo en USD de cada producto:**")
-                cols_h = st.columns([3, 1, 1])
-                cols_h[0].markdown("**Producto**")
-                cols_h[1].markdown("**Unidades vendidas**")
-                cols_h[2].markdown("**Costo (USD)**")
+            # Totales
+            facturacion_bruta   = df_calc["Total ($)"].sum()
+            comisiones_pn       = df_calc["Comision PN ($)"].sum()
+            neto_cobrado        = df_calc["Neto cobrado ($)"].sum()
+            costo_productos     = df_calc["Costo Productos ($)"].sum()
+            costo_envios        = df_calc["Envio costo ($)"].sum()
+            costo_iva           = facturacion_bruta * (pct_iva / 100)
+            margen_bruto        = df_calc["Margen ($)"].sum()
+            resultado_final     = margen_bruto - costo_iva - pauta_manual
 
-                nuevos_costos = {}
-                for prod, qty in sorted(productos_vendidos.items(), key=lambda x: -x[1]):
-                    cols = st.columns([3, 1, 1])
-                    cols[0].write(prod)
-                    cols[1].write(str(qty))
-                    costo_actual = costos.get(prod, 0.0)
-                    nuevo_costo = cols[2].number_input("", value=float(costo_actual), min_value=0.0,
-                        step=0.01, key=f"costo_{prod}", label_visibility="collapsed")
-                    nuevos_costos[prod] = nuevo_costo
-
-                if st.form_submit_button("💾 Guardar costos", use_container_width=True):
-                    st.session_state.costos_productos = nuevos_costos
-                    costos = nuevos_costos
-                    st.success("✅ Costos guardados.")
-
-            # Calcular resultados
-            facturacion_bruta = df_tn["Total ($)"].sum()
-            facturacion_neta = df_tn["Neto ($)"].sum()
-            costo_iva = facturacion_bruta * (pct_iva / 100)
-            comisiones_pn = df_tn["Comision PN ($)"].sum()
-
-            # Costo de productos
-            costo_productos_total = 0
-            detalle_prods = []
-            for prod, qty in productos_vendidos.items():
-                costo_usd = costos.get(prod, 0)
-                costo_ars = costo_usd * tipo_cambio * qty
-                costo_productos_total += costo_ars
-                detalle_prods.append({
-                    "Producto": prod,
-                    "Unidades": qty,
-                    "Costo Unit. USD": costo_usd,
-                    "Costo Unit. ARS": round(costo_usd * tipo_cambio),
-                    "Costo Total ARS": round(costo_ars),
-                    "Margen por unidad": round(
-                        (df_tn[df_tn["Productos"].str.contains(prod, na=False)]["Total ($)"].sum() / qty
-                        - costo_usd * tipo_cambio), 2
-                    ) if qty > 0 else 0,
-                })
-
-            dias = (fecha_hasta - fecha_desde).days + 1
-            ganancia_bruta = facturacion_neta - costo_iva - costo_productos_total
-            resultado_final = ganancia_bruta - pauta_manual
+            # Métricas principales
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("Facturacion bruta",   fmt(facturacion_bruta))
+            k2.metric("Comisiones PN",       fmt(comisiones_pn),   delta=f"-{fmt(comisiones_pn)}",   delta_color="inverse")
+            k3.metric("Neto cobrado",         fmt(neto_cobrado))
+            k4.metric("Costo productos",     fmt(costo_productos), delta=f"-{fmt(costo_productos)}", delta_color="inverse")
+            k5.metric("Costo envios",         fmt(costo_envios),    delta=f"-{fmt(costo_envios)}",    delta_color="inverse")
 
             st.divider()
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("💰 Facturación bruta", fmt(facturacion_bruta))
-            k2.metric("💳 Comisiones PN", fmt(comisiones_pn), delta=f"-{fmt(comisiones_pn)}", delta_color="inverse")
-            k3.metric(f"🧾 IVA ({pct_iva:.1f}%)", fmt(costo_iva), delta=f"-{fmt(costo_iva)}", delta_color="inverse")
-            k4.metric("📦 Costo productos", fmt(costo_productos_total), delta=f"-{fmt(costo_productos_total)}", delta_color="inverse")
+            g1, g2, g3 = st.columns(3)
+            g1.metric("Margen bruto",        fmt(margen_bruto))
+            g2.metric(f"IVA ({pct_iva:.1f}%)", fmt(costo_iva),    delta=f"-{fmt(costo_iva)}",        delta_color="inverse")
+            g3.metric("Pauta publicitaria",  fmt(pauta_manual),    delta=f"-{fmt(pauta_manual)}",     delta_color="inverse")
 
-            st.divider()
-            g1, g2 = st.columns(2)
-            g1.metric("📊 Ganancia antes de pauta", fmt(ganancia_bruta))
-            g2.metric("📣 Pauta publicitaria", fmt(pauta_manual), delta=f"-{fmt(pauta_manual)}", delta_color="inverse")
             st.divider()
             st.metric(f"{'🟢' if resultado_final >= 0 else '🔴'} RESULTADO FINAL DEL PERÍODO", fmt(resultado_final))
             if resultado_final >= 0:
@@ -585,27 +585,31 @@ if st.session_state.df_tn is not None:
             else:
                 st.error(f"⚠️ Resultado negativo: -{fmt(abs(resultado_final))}")
 
-            # Tabla de detalle
-            if detalle_prods:
-                st.divider()
-                st.subheader("📋 Detalle por producto")
-                df_det = pd.DataFrame(detalle_prods)
-                st.dataframe(df_det.style.format({
-                    "Costo Unit. ARS": "${:,.0f}",
-                    "Costo Total ARS": "${:,.0f}",
-                    "Margen por unidad": "${:,.0f}",
-                }), use_container_width=True, hide_index=True)
+            # Detalle por orden con margen
+            st.divider()
+            st.subheader("📋 Detalle por orden con margen real")
+            cols_fin = ["Orden","Fecha","Cliente","Medio de Pago","Cuotas","Total ($)",
+                        "Comision PN ($)","Neto cobrado ($)","Costo Productos ($)","Envio costo ($)","Margen ($)","Margen (%)"]
+            cols_fin = [c for c in cols_fin if c in df_calc.columns]
+            st.dataframe(
+                df_calc[cols_fin].style.format({
+                    "Total ($)": "${:,.0f}", "Comision PN ($)": "${:,.0f}",
+                    "Neto cobrado ($)": "${:,.0f}", "Costo Productos ($)": "${:,.0f}",
+                    "Envio costo ($)": "${:,.0f}", "Margen ($)": "${:,.0f}", "Margen (%)": "{:.1f}%",
+                }),
+                use_container_width=True, hide_index=True
+            )
 
             # Cascada
             st.divider()
             st.subheader("📊 Cascada de resultados")
             wf = pd.DataFrame({
-                "Concepto": ["Facturación bruta", "Comisiones PN", f"IVA ({pct_iva:.1f}%)", "Costo productos", "Pauta", "Resultado final"],
-                "Monto": [facturacion_bruta, -comisiones_pn, -costo_iva, -costo_productos_total, -pauta_manual, resultado_final],
-                "Color": ["#00C49F", "#FF9900", "#FF5733", "#FF5733", "#FF9900", "#009EE3" if resultado_final >= 0 else "#FF0000"],
+                "Concepto": ["Facturacion bruta","Comisiones PN","Costo productos","Costo envios",f"IVA ({pct_iva:.1f}%)","Pauta","Resultado final"],
+                "Monto":    [facturacion_bruta, -comisiones_pn, -costo_productos, -costo_envios, -costo_iva, -pauta_manual, resultado_final],
+                "Color":    ["#00C49F","#FF9900","#FF5733","#FF5733","#FF5733","#FF9900","#009EE3" if resultado_final >= 0 else "#FF0000"],
             })
             fig_wf = px.bar(wf, x="Concepto", y="Monto", color="Concepto",
-                color_discrete_sequence=wf["Color"].tolist(), title="Cascada financiera del período")
+                color_discrete_sequence=wf["Color"].tolist(), title="Cascada financiera del periodo")
             fig_wf.update_layout(showlegend=False, yaxis_tickformat="$,.0f")
             fig_wf.update_traces(texttemplate="%{y:$,.0f}", textposition="outside")
             st.plotly_chart(fig_wf, use_container_width=True)
