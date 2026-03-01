@@ -288,13 +288,14 @@ if buscar:
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 if st.session_state.df_tn is not None:
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📊 Dashboard",
         "🔍 Detalle y ajustes",
         "🔗 Conciliación TN vs Pago Nube",
         "💚 Salud Financiera",
         "📦 Stock",
-        "📬 Enviar tracking por WhatsApp"
+        "📬 Enviar tracking por WhatsApp",
+        "🔥 Velocidad de ventas"
     ])
     df_tn = st.session_state.df_tn.copy()
     df_pagos = st.session_state.df_pagos.copy() if st.session_state.df_pagos is not None else pd.DataFrame()
@@ -848,6 +849,226 @@ Cualquier consulta estamos a disposición 😊""",
                                     st.button("⏳ Sin tracking", disabled=True, key=f"dis_{row['Orden']}", use_container_width=True)
 
                             st.divider()
+
+
+    # ── TAB 7: VELOCIDAD DE VENTAS / RESTOCK ─────────────────────────────────
+    with tab7:
+        st.subheader("🔥 Velocidad de ventas y planificación de restock")
+
+        if df_tn.empty:
+            st.info("Buscá primero para ver los datos de ventas.")
+        else:
+            dias_periodo = max((fecha_hasta - fecha_desde).days + 1, 1)
+
+            # ── Construir tabla de ventas por producto ──────────────────────
+            ventas_por_prod = {}
+            for _, row in df_tn.iterrows():
+                for p in str(row.get("Productos", "")).split(" / "):
+                    p = p.strip()
+                    if not p:
+                        continue
+                    if p not in ventas_por_prod:
+                        ventas_por_prod[p] = {"unidades": 0, "revenue": 0.0, "ordenes": 0}
+                    qty = int(row.get("Cantidad", 1) or 1)
+                    # Si hay múltiples productos en la orden, distribuir revenue
+                    n_prods = len([x for x in str(row.get("Productos","")).split(" / ") if x.strip()])
+                    ventas_por_prod[p]["unidades"] += qty
+                    ventas_por_prod[p]["revenue"]  += row.get("Total ($)", 0) / max(n_prods, 1)
+                    ventas_por_prod[p]["ordenes"]  += 1
+
+            if not ventas_por_prod:
+                st.info("No hay datos de productos para el período.")
+            else:
+                # Cruzar con stock de TN si está cargado
+                stock_map = {}
+                if "stock_tn" in st.session_state and st.session_state.stock_tn is not None:
+                    for _, srow in st.session_state.stock_tn.iterrows():
+                        prod_nombre = srow["Producto"]
+                        stock_val = srow["Stock"]
+                        if isinstance(stock_val, (int, float)):
+                            stock_map[prod_nombre] = stock_map.get(prod_nombre, 0) + int(stock_val)
+
+                # ── Configuración ──────────────────────────────────────────
+                with st.expander("⚙️ Configuración de alertas", expanded=False):
+                    ca, cb = st.columns(2)
+                    dias_alerta = ca.slider("⚠️ Alertar si queda stock para menos de X días", 1, 60, 14)
+                    dias_restock = cb.slider("📦 Días de lead time para restock", 1, 45, 7,
+                        help="Cuántos días tarda en llegar tu mercadería después de pedirla")
+
+                st.divider()
+
+                # ── Construir DataFrame ────────────────────────────────────
+                rows = []
+                for prod, data in ventas_por_prod.items():
+                    unidades    = data["unidades"]
+                    revenue     = data["revenue"]
+                    vel_dia     = round(unidades / dias_periodo, 3)   # unidades/día
+                    vel_semana  = round(vel_dia * 7, 2)
+                    vel_mes     = round(vel_dia * 30, 1)
+                    stock_actual = stock_map.get(prod, None)
+
+                    if stock_actual is not None and vel_dia > 0:
+                        dias_restantes = round(stock_actual / vel_dia, 0)
+                        fecha_agotamiento = pd.Timestamp.now() + pd.Timedelta(days=dias_restantes)
+                        fecha_agot_str = fecha_agotamiento.strftime("%d/%m/%Y")
+                        necesita_restock = dias_restantes <= (dias_alerta + dias_restock)
+                        restock_units = max(0, round(vel_dia * 30 - stock_actual + vel_dia * dias_restock))
+                    elif stock_actual is not None and vel_dia == 0:
+                        dias_restantes = None
+                        fecha_agot_str = "—"
+                        necesita_restock = False
+                        restock_units = 0
+                    else:
+                        dias_restantes = None
+                        fecha_agot_str = "Sin stock cargado"
+                        necesita_restock = False
+                        restock_units = 0
+
+                    # Score de urgencia (0-100): combina velocidad + proximidad agotamiento
+                    if dias_restantes is not None and vel_dia > 0:
+                        urgencia = min(100, round((vel_dia * 10) + max(0, (30 - dias_restantes) * 2)))
+                    else:
+                        urgencia = round(vel_dia * 10)
+
+                    rows.append({
+                        "Producto":           prod,
+                        "Unidades vendidas":  unidades,
+                        "Vel. diaria":        vel_dia,
+                        "Vel. semanal":       vel_semana,
+                        "Vel. mensual":       vel_mes,
+                        "Revenue ($)":        round(revenue),
+                        "Stock actual":       stock_actual if stock_actual is not None else "—",
+                        "Días restantes":     int(dias_restantes) if dias_restantes is not None else "—",
+                        "Se agota":           fecha_agot_str,
+                        "Restock sugerido":   restock_units if restock_units > 0 else "—",
+                        "Urgencia":           urgencia,
+                        "_necesita_restock":  necesita_restock,
+                    })
+
+                df_vel = pd.DataFrame(rows).sort_values("Urgencia", ascending=False)
+
+                # ── KPIs rápidos ───────────────────────────────────────────
+                criticos = df_vel[df_vel["_necesita_restock"] == True]
+                v1, v2, v3, v4 = st.columns(4)
+                v1.metric("Productos analizados", len(df_vel))
+                v2.metric("🔴 Críticos (restock urgente)", len(criticos))
+                v3.metric("Período analizado", f"{dias_periodo} días")
+                v4.metric("Vel. media del catálogo", f"{df_vel['Vel. diaria'].mean():.2f} u/día")
+
+                # ── Alertas críticas ───────────────────────────────────────
+                if not criticos.empty:
+                    st.divider()
+                    st.error(f"⚠️ {len(criticos)} producto(s) necesitan restock pronto")
+                    for _, crow in criticos.iterrows():
+                        dias_r = crow["Días restantes"]
+                        dias_txt = f"{dias_r} días" if dias_r != "—" else "stock no cargado"
+                        st.warning(
+                            f"🔴 **{crow['Producto']}** — "
+                            f"stock para **{dias_txt}** | "
+                            f"vel. {crow['Vel. diaria']} u/día | "
+                            f"restock sugerido: **{crow['Restock sugerido']} unidades**"
+                        )
+
+                # ── Ranking completo ───────────────────────────────────────
+                st.divider()
+                st.subheader("📊 Ranking por velocidad de venta")
+                st.caption(f"Período: {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')} ({dias_periodo} días) | Ordenado por urgencia")
+
+                # Gráfico de barras — velocidad diaria
+                df_chart = df_vel[["Producto", "Vel. diaria", "Vel. semanal", "Vel. mensual"]].copy()
+                df_chart = df_chart.sort_values("Vel. diaria", ascending=True).tail(15)
+                fig_vel = px.bar(
+                    df_chart, x="Vel. diaria", y="Producto", orientation="h",
+                    title="Velocidad de venta diaria (unidades/día)",
+                    color="Vel. diaria",
+                    color_continuous_scale=["#00C49F", "#FFD700", "#FF5733"],
+                    text="Vel. diaria",
+                )
+                fig_vel.update_layout(showlegend=False, coloraxis_showscale=False, yaxis={"categoryorder":"total ascending"})
+                fig_vel.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+                st.plotly_chart(fig_vel, use_container_width=True)
+
+                # Tabla completa con colores
+                st.subheader("📋 Tabla detallada")
+                cols_show = ["Producto", "Unidades vendidas", "Vel. diaria", "Vel. semanal",
+                             "Vel. mensual", "Revenue ($)", "Stock actual",
+                             "Días restantes", "Se agota", "Restock sugerido", "Urgencia"]
+
+                def color_urgencia(val):
+                    try:
+                        v = int(val)
+                        if v >= 70: return "background-color: #5a1a1a; color: #ff6b6b"
+                        if v >= 40: return "background-color: #5a4a1a; color: #ffd700"
+                        return "background-color: #1a3a1a; color: #00C49F"
+                    except:
+                        return ""
+
+                def color_dias(val):
+                    try:
+                        v = int(val)
+                        if v <= 7:  return "background-color: #5a1a1a; color: #ff6b6b"
+                        if v <= 14: return "background-color: #5a4a1a; color: #ffd700"
+                        return ""
+                    except:
+                        return ""
+
+                st.dataframe(
+                    df_vel[cols_show].style
+                        .format({"Revenue ($)": "${:,.0f}", "Vel. diaria": "{:.3f}", "Vel. semanal": "{:.1f}"})
+                        .applymap(color_urgencia, subset=["Urgencia"])
+                        .applymap(color_dias, subset=["Días restantes"]),
+                    use_container_width=True, hide_index=True
+                )
+
+                # ── Historial de ventas por producto (gráfico temporal) ────
+                st.divider()
+                st.subheader("📈 Evolución de ventas en el período")
+
+                prod_sel = st.selectbox(
+                    "Seleccioná un producto para ver su evolución",
+                    options=df_vel["Producto"].tolist()
+                )
+
+                if prod_sel:
+                    df_evo = df_tn[df_tn["Productos"].str.contains(prod_sel, na=False, regex=False)].copy()
+                    if not df_evo.empty:
+                        df_evo_group = df_evo.groupby("Fecha").agg(
+                            Unidades=("Cantidad", "sum"),
+                            Revenue=("Total ($)", "sum")
+                        ).reset_index()
+                        df_evo_group["Acumulado"] = df_evo_group["Unidades"].cumsum()
+
+                        fig_evo = px.bar(
+                            df_evo_group, x="Fecha", y="Unidades",
+                            title=f"Ventas diarias — {prod_sel}",
+                            color_discrete_sequence=["#009EE3"]
+                        )
+                        fig_evo.add_scatter(
+                            x=df_evo_group["Fecha"], y=df_evo_group["Acumulado"],
+                            mode="lines+markers", name="Acumulado",
+                            line=dict(color="#FFD700", width=2), yaxis="y2"
+                        )
+                        fig_evo.update_layout(
+                            yaxis2=dict(overlaying="y", side="right", showgrid=False),
+                            legend=dict(orientation="h")
+                        )
+                        st.plotly_chart(fig_evo, use_container_width=True)
+
+                        total_prod = df_evo_group["Unidades"].sum()
+                        vel_prod = round(total_prod / dias_periodo, 2)
+                        rev_prod = df_evo_group["Revenue"].sum()
+                        ep1, ep2, ep3 = st.columns(3)
+                        ep1.metric("Total vendido", f"{int(total_prod)} u")
+                        ep2.metric("Velocidad", f"{vel_prod} u/día")
+                        ep3.metric("Revenue", fmt(rev_prod))
+                    else:
+                        st.info("No hay ventas de este producto en el período.")
+
+                st.download_button(
+                    "⬇️ Descargar análisis de restock",
+                    df_vel[cols_show].to_csv(index=False).encode("utf-8"),
+                    "restock_analysis.csv", "text/csv"
+                )
 
 
 else:
