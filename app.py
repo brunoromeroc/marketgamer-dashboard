@@ -23,12 +23,14 @@ def fmt_pct(n):
     return f"{n:.2f}%"
 
 # ── Session state ──────────────────────────────────────────────────────────────
-for key in ["df_tn", "df_pagos", "costos_productos", "ordenes_efectivo", "ids_venta_local"]:
+for key in ["df_tn", "df_pagos", "costos_productos", "ordenes_efectivo", "ids_venta_local", "orders_raw"]:
     if key not in st.session_state:
         if key == "costos_productos":
             st.session_state[key] = {}
         elif key in ["ordenes_efectivo", "ids_venta_local"]:
             st.session_state[key] = set()
+        elif key == "orders_raw":
+            st.session_state[key] = []
         else:
             st.session_state[key] = None
 
@@ -268,9 +270,11 @@ if buscar:
     orders = get_tn_orders(fecha_desde, fecha_hasta)
     if orders:
         st.session_state.df_tn = procesar_orders(orders)
+        st.session_state.orders_raw = orders  # guardamos raw para tracking WPP
         st.success(f"✅ {len(orders)} órdenes cargadas desde Tienda Nube")
     else:
         st.session_state.df_tn = pd.DataFrame()
+        st.session_state.orders_raw = []
         st.info("No se encontraron órdenes en el período.")
 
     pagos = get_tn_pagos(fecha_desde, fecha_hasta)
@@ -284,12 +288,13 @@ if buscar:
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 if st.session_state.df_tn is not None:
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Dashboard",
         "🔍 Detalle y ajustes",
         "🔗 Conciliación TN vs Pago Nube",
         "💚 Salud Financiera",
-        "📦 Stock"
+        "📦 Stock",
+        "📬 Enviar tracking por WhatsApp"
     ])
     df_tn = st.session_state.df_tn.copy()
     df_pagos = st.session_state.df_pagos.copy() if st.session_state.df_pagos is not None else pd.DataFrame()
@@ -704,6 +709,146 @@ if st.session_state.df_tn is not None:
                 df_stock.to_csv(index=False).encode("utf-8"), "stock_marketgamer.csv", "text/csv")
         else:
             st.info("👆 Hacé clic en 'Cargar stock desde Tienda Nube' para ver el inventario.")
+
+    # ── TAB 6: WHATSAPP TRACKING ──────────────────────────────────────────────
+    with tab6:
+        st.subheader("📬 Enviar código de seguimiento por WhatsApp")
+        st.caption("Se abre WhatsApp con el mensaje listo. Solo hacé clic en Enviar.")
+
+        # Plantilla de mensaje configurable
+        with st.expander("✏️ Personalizar mensaje", expanded=False):
+            plantilla = st.text_area(
+                "Plantilla del mensaje",
+                value="""Hola {nombre}! 👋
+Tu pedido de Market Gamer ya fue despachado 🎮📦
+
+Podés rastrear tu envío con el siguiente código:
+*{tracking}*
+
+🔗 Seguimiento Correo Argentino:
+https://www.correoargentino.com.ar/formularios/e-commerce?id={tracking}
+
+Cualquier consulta estamos a disposición 😊""",
+                height=200,
+                help="Usá {nombre} para el nombre del cliente y {tracking} para el código de seguimiento"
+            )
+
+        st.divider()
+
+        if df_tn.empty:
+            st.info("Buscá primero para ver las órdenes.")
+        else:
+            # Filtrar órdenes con tracking disponible
+            df_track = df_tn.copy()
+
+            # Necesitamos el tracking y teléfono — vienen de las órdenes raw
+            # Reconstruir desde session state con datos adicionales
+            ordenes_raw = st.session_state.get("orders_raw", [])
+
+            if not ordenes_raw:
+                st.warning("Volvé a hacer la búsqueda para cargar los datos de tracking.")
+            else:
+                filas_wpp = []
+                for o in ordenes_raw:
+                    tracking = o.get("shipping_tracking_number") or ""
+                    tracking_url = o.get("shipping_tracking_url") or ""
+                    telefono = o.get("contact_phone") or ""
+                    nombre = o.get("contact_name") or ""
+                    numero = o.get("number")
+                    productos_list = []
+                    for p in o.get("products", []):
+                        n = p.get("name", "")
+                        nombre_prod = n if isinstance(n, str) else (n.get("es", "") if isinstance(n, dict) else "")
+                        productos_list.append(nombre_prod)
+                    productos_str = " / ".join(productos_list)
+                    estado_envio = o.get("shipping_status", "")
+
+                    filas_wpp.append({
+                        "Orden": numero,
+                        "Cliente": nombre,
+                        "Telefono": telefono,
+                        "Productos": productos_str,
+                        "Estado envio": estado_envio,
+                        "Tracking": tracking,
+                        "_tracking_url": tracking_url,
+                    })
+
+                df_wpp = pd.DataFrame(filas_wpp)
+
+                # Métricas
+                con_tracking = df_wpp[df_wpp["Tracking"].str.len() > 0]
+                sin_tracking = df_wpp[df_wpp["Tracking"].str.len() == 0]
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total órdenes", len(df_wpp))
+                m2.metric("✅ Con tracking", len(con_tracking))
+                m3.metric("⏳ Sin tracking aún", len(sin_tracking))
+
+                st.divider()
+
+                # Filtro
+                mostrar = st.radio("Mostrar", ["Con tracking", "Sin tracking", "Todas"], horizontal=True)
+                if mostrar == "Con tracking":
+                    df_mostrar = con_tracking
+                elif mostrar == "Sin tracking":
+                    df_mostrar = sin_tracking
+                else:
+                    df_mostrar = df_wpp
+
+                if df_mostrar.empty:
+                    st.info("No hay órdenes en esta categoría.")
+                else:
+                    st.markdown(f"**{len(df_mostrar)} órdenes**")
+
+                    for _, row in df_mostrar.iterrows():
+                        tracking = str(row["Tracking"]).strip()
+                        telefono = str(row["Telefono"]).strip()
+                        nombre_cliente = str(row["Cliente"]).strip()
+
+                        with st.container():
+                            col_info, col_btn = st.columns([4, 1])
+
+                            with col_info:
+                                tiene_tracking = len(tracking) > 0
+                                estado_icon = "✅" if tiene_tracking else "⏳"
+                                st.markdown(
+                                    f"{estado_icon} **#{row['Orden']}** — {nombre_cliente} "
+                                    f"| 📱 `{telefono}` "
+                                    f"| 📦 {row['Productos']}"
+                                )
+                                if tiene_tracking:
+                                    st.caption(f"Tracking: `{tracking}`")
+                                else:
+                                    st.caption("Sin código de seguimiento todavía")
+
+                            with col_btn:
+                                if tiene_tracking and telefono:
+                                    # Limpiar teléfono para wa.me (solo números)
+                                    tel_limpio = "".join(filter(str.isdigit, telefono))
+                                    # Argentina: si empieza con 54 y tiene 9 después, está bien
+                                    # Si empieza con 0, sacar el 0 y agregar 54
+                                    if tel_limpio.startswith("0"):
+                                        tel_limpio = "54" + tel_limpio[1:]
+                                    elif not tel_limpio.startswith("54"):
+                                        tel_limpio = "54" + tel_limpio
+
+                                    # Armar mensaje desde plantilla
+                                    mensaje = plantilla.replace("{nombre}", nombre_cliente.split()[0] if nombre_cliente else "")
+                                    mensaje = mensaje.replace("{tracking}", tracking)
+
+                                    # Encodear para URL
+                                    import urllib.parse
+                                    msg_encoded = urllib.parse.quote(mensaje)
+                                    wpp_url = f"https://wa.me/{tel_limpio}?text={msg_encoded}"
+
+                                    st.link_button("📲 Enviar WPP", wpp_url, use_container_width=True)
+                                elif not telefono:
+                                    st.caption("Sin teléfono")
+                                else:
+                                    st.button("⏳ Sin tracking", disabled=True, key=f"dis_{row['Orden']}", use_container_width=True)
+
+                            st.divider()
+
 
 else:
     st.info("👈 Seleccioná el período en el panel izquierdo y hacé clic en Buscar.")
