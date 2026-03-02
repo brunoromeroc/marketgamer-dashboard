@@ -458,10 +458,9 @@ def calcular_costo_orden_ars(productos_str, cantidad, tipo_cambio_ars, costos_gs
 
 
 if st.session_state.df_tn is not None:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    tab1, tab2, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📊 Dashboard",
         "🔍 Detalle y ajustes",
-        "💸 Transferencias",
         "💚 Salud Financiera",
         "📦 Stock",
         "📬 Tracking WhatsApp",
@@ -626,47 +625,111 @@ if st.session_state.df_tn is not None:
                 delta=f"{round(total_margen/total_bruto*100,1)}% sobre bruto" if total_bruto > 0 else None
             )
 
-            # ── Alerta de productos sin costo ──────────────────────────────────
+            # ── Mapeo y cobertura de costos ────────────────────────────────────
             st.divider()
-            st.subheader("⚠️ Cobertura de costos")
+            st.subheader("🔗 Cobertura y mapeo de costos")
+
             todos_prods_vendidos = set()
             for _, row in df_tn.iterrows():
                 for p in str(row.get("Productos","")).split(" / "):
                     p = p.strip()
                     if p: todos_prods_vendidos.add(p)
 
+            # Refrescar costos desde session_state (puede haber cambios recientes)
+            _costos_gs_live = st.session_state.get("costos_consolas") or _costos_gs
+
             sin_costo = []
             con_costo = []
             for p in sorted(todos_prods_vendidos):
-                fob = get_fob_usd(p, _costos_gs)
+                fob = get_fob_usd(p, _costos_gs_live)
                 if fob == 0:
                     sin_costo.append(p)
                 else:
-                    con_costo.append({"Producto": p, "FOB (USD)": fob, "Costo ARS": round(fob * _dolar_det)})
+                    con_costo.append({"Producto TN": p, "FOB (USD)": fob, "Costo ARS": round(fob * _dolar_det)})
 
             cc1, cc2 = st.columns(2)
-            cc1.metric("✅ Productos con costo", len(con_costo))
-            cc2.metric("❌ Productos SIN costo", len(sin_costo))
-
-            if sin_costo:
-                st.error(f"⚠️ {len(sin_costo)} productos sin costo — el margen aparece incompleto en esas órdenes:")
-                for p in sin_costo:
-                    st.markdown(f"- **{p}**")
-                st.info("💡 Cargalos en la solapa **💻 Costos de consolas** o verificá que el nombre coincida exactamente con el catálogo")
-                with st.expander("🔍 Ver nombres exactos de productos en TN (para verificar coincidencias)", expanded=False):
-                    st.caption("Estos son los nombres tal como vienen de Tienda Nube en las órdenes del período:")
-                    for p in sorted(todos_prods_vendidos):
-                        fob = get_fob_usd(p, _costos_gs)
-                        icono = "✅" if fob > 0 else "❌"
-                        st.markdown(f"{icono} `{p}` → FOB: **${fob:.2f} USD**")
-            else:
-                st.success("✅ Todos los productos vendidos tienen costo cargado. Margen 100% calculado.")
+            cc1.metric("✅ Con costo", len(con_costo))
+            cc2.metric("❌ Sin costo", len(sin_costo),
+                       delta=f"{len(sin_costo)} con margen incompleto" if sin_costo else None,
+                       delta_color="inverse")
 
             if con_costo:
-                with st.expander("Ver productos con costo cargado", expanded=False):
+                with st.expander(f"✅ {len(con_costo)} productos con costo resuelto", expanded=False):
                     df_cc = pd.DataFrame(con_costo)
                     st.dataframe(df_cc.style.format({"FOB (USD)": "${:,.2f}", "Costo ARS": "${:,.0f}"}),
                         hide_index=True, use_container_width=True)
+
+            if sin_costo:
+                st.warning(f"⚠️ {len(sin_costo)} producto(s) sin costo — asocialos o crealos:")
+
+                # Catálogo disponible para mapear
+                catalogo_nombres = sorted(
+                    list(FOB_DEFAULTS.keys()) +
+                    [k for k in _costos_gs_live.keys() if not k.startswith("_") and k not in FOB_DEFAULTS]
+                )
+
+                if "mapeos_costos" not in st.session_state:
+                    st.session_state.mapeos_costos = gs_read("MapeosCostos") or {}
+
+                st.caption("Para cada producto de TN sin costo: asocialo a uno del catálogo, o creá uno nuevo.")
+
+                for prod_tn in sin_costo:
+                    st.markdown("---")
+                    st.markdown(f"**📦 `{prod_tn}`**")
+                    col_modo1, col_modo2 = st.columns([1, 1])
+                    modo = col_modo1.radio(
+                        "", ["Asociar a existente", "Crear nuevo"],
+                        key=f"modo_{prod_tn}", horizontal=True, label_visibility="collapsed"
+                    )
+
+                    if modo == "Asociar a existente":
+                        # Sugerir el más parecido por palabras en común
+                        palabras_tn = set(_normalizar(prod_tn).split())
+                        mejor = max(catalogo_nombres,
+                            key=lambda c: len(palabras_tn & set(_normalizar(c).split())),
+                            default=catalogo_nombres[0] if catalogo_nombres else ""
+                        )
+                        idx_sug = catalogo_nombres.index(mejor) if mejor in catalogo_nombres else 0
+                        col_sel, col_info, col_btn = st.columns([3, 2, 1])
+                        seleccion = col_sel.selectbox(
+                            "Producto del catálogo", catalogo_nombres, index=idx_sug,
+                            key=f"sel_{prod_tn}"
+                        )
+                        fob_sel = get_fob_usd(seleccion, _costos_gs_live)
+                        col_info.metric("FOB", f"${fob_sel:.2f} USD")
+                        col_info.caption(f"≈ ${fob_sel * _dolar_det:,.0f} ARS")
+                        if col_btn.button("💾", key=f"btn_mapa_{prod_tn}", use_container_width=True, help="Guardar asociación"):
+                            nuevos = (st.session_state.get("costos_consolas") or {}).copy()
+                            nuevos[prod_tn] = {"fob_usd": fob_sel,
+                                               "peso_kg": FOB_DEFAULTS.get(seleccion, {}).get("peso_kg", 0)}
+                            st.session_state.costos_consolas = nuevos
+                            gs_write("CostosConsolas", nuevos)
+                            mapeos = (st.session_state.get("mapeos_costos") or {}).copy()
+                            mapeos[prod_tn] = seleccion
+                            st.session_state.mapeos_costos = mapeos
+                            gs_write("MapeosCostos", mapeos)
+                            st.success(f"✅ '{prod_tn}' → '{seleccion}' guardado")
+                            st.rerun()
+
+                    else:  # Crear nuevo
+                        col_n, col_f, col_p, col_btn2 = st.columns([3, 1.5, 1.5, 1])
+                        nuevo_nombre = col_n.text_input("Nombre en catálogo", value=prod_tn, key=f"nn_{prod_tn}")
+                        nuevo_fob    = col_f.number_input("FOB (USD)", value=0.0, min_value=0.0, step=0.5, key=f"nf_{prod_tn}")
+                        nuevo_peso   = col_p.number_input("Peso (kg)", value=0.35, min_value=0.0, step=0.01, key=f"np_{prod_tn}")
+                        if col_btn2.button("💾", key=f"btn_nuevo_{prod_tn}", use_container_width=True, help="Crear y guardar"):
+                            if nuevo_fob > 0:
+                                nuevos = (st.session_state.get("costos_consolas") or {}).copy()
+                                nuevos[nuevo_nombre] = {"fob_usd": nuevo_fob, "peso_kg": nuevo_peso}
+                                if nuevo_nombre != prod_tn:
+                                    nuevos[prod_tn] = {"fob_usd": nuevo_fob, "peso_kg": nuevo_peso}
+                                st.session_state.costos_consolas = nuevos
+                                gs_write("CostosConsolas", nuevos)
+                                st.success(f"✅ '{nuevo_nombre}' creado con FOB ${nuevo_fob:.2f} USD")
+                                st.rerun()
+                            else:
+                                st.error("El FOB debe ser mayor a 0")
+            else:
+                st.success("✅ Todos los productos vendidos tienen costo cargado. Margen 100% calculado.")
 
         st.divider()
         st.subheader("📊 Resumen por medio de pago")
@@ -695,111 +758,6 @@ if st.session_state.df_tn is not None:
             )
             st.download_button("⬇️ Descargar CSV Pago Nube",
                 df_pagos.to_csv(index=False).encode("utf-8"), "pagos_pagonube.csv", "text/csv")
-
-    # ── TAB 3: TRANSFERENCIAS Y EFECTIVO ─────────────────────────────────────
-    with tab3:
-        st.subheader("💸 Órdenes por transferencia y efectivo")
-        st.caption("Pago Nube ya está integrado en TN — aquí se muestran los pagos fuera de la pasarela.")
-        if df_tn.empty:
-            st.info("Buscá primero para cargar los datos.")
-        else:
-            filas_conc = []
-            for _, row in df_tn.iterrows():
-                orden = str(row["Orden"])
-                total = row["Total ($)"]
-                medio = str(row.get("Medio de Pago", "")).lower()
-
-                # Buscar pago en Pago Nube
-                pago_match = None
-                if not df_pagos.empty:
-                    match = df_pagos[df_pagos["Orden TN"] == orden]
-                    if not match.empty:
-                        pago_match = match.iloc[0]
-
-                if orden in st.session_state.ordenes_efectivo:
-                    estado = "💵 Efectivo"
-                elif pago_match is not None:
-                    if pago_match["Estado"] == "paid":
-                        dif = round(total - pago_match["Monto ($)"], 0)
-                        estado = "✅ Cobrado en PN"
-                    else:
-                        estado = f"⚠️ Estado: {pago_match['Estado']}"
-                elif "transfer" in medio or "efectivo" in medio:
-                    estado = "❓ Sin verificar"
-                else:
-                    estado = "❓ Sin verificar"
-
-                filas_conc.append({
-                    "Orden TN": orden,
-                    "Fecha": row["Fecha"],
-                    "Cliente": row["Cliente"],
-                    "Productos": row["Productos"],
-                    "Medio de Pago": row["Medio de Pago"],
-                    "Total TN ($)": total,
-                    "Estado": estado,
-                    "ID Pago PN": pago_match["ID"] if pago_match is not None else "-",
-                })
-
-            df_conc = pd.DataFrame(filas_conc)
-
-            total_ord = len(df_conc)
-            cobrados = len(df_conc[df_conc["Estado"].str.startswith("✅")])
-            efectivo = len(df_conc[df_conc["Estado"].str.startswith("💵")])
-            sin_ver = len(df_conc[df_conc["Estado"].str.contains("❓|⚠️")])
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total órdenes", total_ord)
-            c2.metric("✅ Verificadas en PN", cobrados)
-            c3.metric("💵 Efectivo", efectivo)
-            c4.metric("❓ Sin verificar", sin_ver)
-            st.divider()
-
-            sin_verif = df_conc[df_conc["Estado"].str.contains("❓|⚠️")]
-            if not sin_verif.empty:
-                with st.expander("💵 Marcar órdenes como Efectivo", expanded=False):
-                    for _, row in sin_verif.drop_duplicates(subset=["Orden TN"]).iterrows():
-                        orden = row["Orden TN"]
-                        es_ef = st.checkbox(
-                            f"📅 {row['Fecha']}  |  👤 {row['Cliente']}  |  💰 {fmt(row['Total TN ($)'])}  |  #{orden}",
-                            value=orden in st.session_state.ordenes_efectivo,
-                            key=f"efec_{orden}"
-                        )
-                        if es_ef: st.session_state.ordenes_efectivo.add(orden)
-                        else: st.session_state.ordenes_efectivo.discard(orden)
-                    # Actualizar estados
-                    df_conc["Estado"] = df_conc.apply(
-                        lambda r: "💵 Efectivo" if r["Orden TN"] in st.session_state.ordenes_efectivo else r["Estado"], axis=1
-                    )
-
-            estados = df_conc["Estado"].unique().tolist()
-            filtro = st.multiselect("Filtrar por estado", estados, default=estados)
-            df_conc_f = df_conc[df_conc["Estado"].isin(filtro)]
-
-            def color_e(val):
-                if "✅" in str(val): return "background-color: #1a3a1a"
-                if "💵" in str(val): return "background-color: #1a2a3a"
-                if "❓" in str(val) or "⚠️" in str(val): return "background-color: #3a2a1a"
-                return ""
-
-            st.dataframe(
-                df_conc_f.style.format({"Total TN ($)": "${:,.0f}"}).applymap(color_e, subset=["Estado"]),
-                use_container_width=True, hide_index=True
-            )
-            st.download_button("⬇️ Descargar conciliación",
-                df_conc_f.to_csv(index=False).encode("utf-8"), "conciliacion.csv", "text/csv")
-
-            # Pagos PN sin orden
-            if not df_pagos.empty:
-                st.divider()
-                st.subheader("🔍 Pagos de Pago Nube sin orden en TN")
-                ordenes_tn_set = set(df_tn["Orden"].astype(str))
-                pagos_sin_orden = df_pagos[~df_pagos["Orden TN"].isin(ordenes_tn_set)]
-                if pagos_sin_orden.empty:
-                    st.success("✅ Todos los pagos de PN están cruzados con órdenes de TN.")
-                else:
-                    st.warning(f"{len(pagos_sin_orden)} pago(s) de PN sin orden en TN.")
-                    st.dataframe(pagos_sin_orden.style.format({"Monto ($)": "${:,.0f}"}),
-                        use_container_width=True, hide_index=True)
 
     # ── TAB 4: SALUD FINANCIERA ───────────────────────────────────────────────
     with tab4:
