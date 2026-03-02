@@ -4,9 +4,52 @@ import pandas as pd
 import plotly.express as px
 from datetime import date, timedelta
 import time
+import json
 
 TN_TOKEN = st.secrets["TN_TOKEN"]
 TN_STORE_ID = st.secrets["TN_STORE_ID"]
+
+# ── Google Sheets helper ───────────────────────────────────────────────
+SHEET_ID = st.secrets.get("SHEET_ID", "1wY2KjSC8SX-nMQD7J43xrdSY0SgG8fJeL9d5I_02DdE")
+GCP_CREDS = st.secrets.get("gcp_service_account", {})
+
+@st.cache_resource
+def get_gsheet_client():
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(dict(GCP_CREDS), scopes=scopes)
+        return gspread.authorize(creds)
+    except Exception as e:
+        return None
+
+def gs_read(sheet_name):
+    try:
+        gc = get_gsheet_client()
+        if not gc or not SHEET_ID: return {}
+        ws = gc.open_by_key(SHEET_ID).worksheet(sheet_name)
+        data = ws.get_all_values()
+        if len(data) >= 2:
+            return json.loads(data[1][0]) if data[1] else {}
+        return {}
+    except:
+        return {}
+
+def gs_write(sheet_name, data_dict):
+    try:
+        gc = get_gsheet_client()
+        if not gc or not SHEET_ID: return False
+        sh = gc.open_by_key(SHEET_ID)
+        try:
+            ws = sh.worksheet(sheet_name)
+        except:
+            ws = sh.add_worksheet(sheet_name, rows=10, cols=2)
+        ws.clear()
+        ws.update("A1", [["key"], [json.dumps(data_dict)]])
+        return True
+    except:
+        return False
 
 st.set_page_config(page_title="Dashboard Market Gamer", layout="wide")
 st.title("🎮 Dashboard de Ventas - Market Gamer")
@@ -269,8 +312,19 @@ def procesar_pagos_pn(pagos):
 if buscar:
     orders = get_tn_orders(fecha_desde, fecha_hasta)
     if orders:
+        # Filtrar estrictamente por fecha (la API puede devolver órdenes del día siguiente)
+        orders_filtrados = []
+        for o in orders:
+            try:
+                fecha_orden = pd.to_datetime(o.get("created_at","")).tz_localize(None) if pd.to_datetime(o.get("created_at","")).tzinfo is None else pd.to_datetime(o.get("created_at","")).tz_convert(None)
+                fecha_ord_date = fecha_orden.date()
+                if fecha_desde <= fecha_ord_date <= fecha_hasta:
+                    orders_filtrados.append(o)
+            except:
+                orders_filtrados.append(o)
+        orders = orders_filtrados
         st.session_state.df_tn = procesar_orders(orders)
-        st.session_state.orders_raw = orders  # guardamos raw para tracking WPP
+        st.session_state.orders_raw = orders
         st.success(f"✅ {len(orders)} órdenes cargadas desde Tienda Nube")
     else:
         st.session_state.df_tn = pd.DataFrame()
@@ -288,14 +342,16 @@ if buscar:
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 if st.session_state.df_tn is not None:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📊 Dashboard",
         "🔍 Detalle y ajustes",
-        "🔗 Conciliación TN vs Pago Nube",
+        "💸 Transferencias",
         "💚 Salud Financiera",
         "📦 Stock",
-        "📬 Enviar tracking por WhatsApp",
-        "🔥 Velocidad de ventas"
+        "📬 Tracking WhatsApp",
+        "🔥 Velocidad de ventas",
+        "🏗️ Gastos fijos",
+        "💻 Costos de consolas"
     ])
     df_tn = st.session_state.df_tn.copy()
     df_pagos = st.session_state.df_pagos.copy() if st.session_state.df_pagos is not None else pd.DataFrame()
@@ -315,12 +371,7 @@ if st.session_state.df_tn is not None:
 
             col_a, col_b = st.columns(2)
             with col_a:
-                pie_medio = df_tn.groupby("Medio de Pago")["Total ($)"].sum().reset_index()
-                st.plotly_chart(px.pie(
-                    pie_medio, names="Medio de Pago", values="Total ($)", hole=0.4,
-                    title="Distribución por medio de pago", color_discrete_sequence=COLORES
-                ), use_container_width=True)
-            with col_b:
+                # Ventas por día
                 fig_dia = px.bar(
                     df_tn.groupby("Fecha")["Total ($)"].sum().reset_index(),
                     x="Fecha", y="Total ($)", title="Ventas por día",
@@ -328,15 +379,7 @@ if st.session_state.df_tn is not None:
                 )
                 fig_dia.update_layout(yaxis_tickformat="$,.0f")
                 st.plotly_chart(fig_dia, use_container_width=True)
-
-            col_c, col_d = st.columns(2)
-            with col_c:
-                canal_data = df_tn.groupby("Canal")["Total ($)"].sum().reset_index()
-                st.plotly_chart(px.pie(
-                    canal_data, names="Canal", values="Total ($)", hole=0.4,
-                    title="Por canal de venta", color_discrete_sequence=COLORES
-                ), use_container_width=True)
-            with col_d:
+            with col_b:
                 top_prods = {}
                 for _, row in df_tn.iterrows():
                     for p in str(row.get("Productos", "")).split(" / "):
@@ -351,14 +394,50 @@ if st.session_state.df_tn is not None:
                     fig_tp.update_layout(yaxis={"categoryorder": "total ascending"})
                     st.plotly_chart(fig_tp, use_container_width=True)
 
-        if not df_pagos.empty:
+            # Distribución de comisiones por medio de pago
             st.divider()
-            st.subheader("💳 Pago Nube")
-            p1, p2, p3 = st.columns(3)
-            pagos_ok = df_pagos[df_pagos["Estado"] == "paid"] if not df_pagos.empty else pd.DataFrame()
-            p1.metric("Transacciones aprobadas", len(pagos_ok))
-            p2.metric("Total cobrado", fmt(pagos_ok["Monto ($)"].sum()) if not pagos_ok.empty else "$0")
-            p3.metric("Total transacciones", len(df_pagos))
+            st.subheader("💳 Distribución de costos Pago Nube por medio de pago")
+            comis_medio = df_tn.groupby("Medio de Pago").agg(
+                Ordenes=("Orden", "count"),
+                Facturacion=("Total ($)", "sum"),
+                Comision=("Comision PN ($)", "sum"),
+            ).reset_index().sort_values("Comision", ascending=False)
+            comis_medio["Costo %"] = (comis_medio["Comision"] / comis_medio["Facturacion"] * 100).round(2)
+
+            col_pie, col_bar = st.columns(2)
+            with col_pie:
+                fig_pie_com = px.pie(
+                    comis_medio, names="Medio de Pago", values="Comision", hole=0.45,
+                    title="Comisiones por medio de pago ($)",
+                    color_discrete_sequence=COLORES
+                )
+                fig_pie_com.update_traces(
+                    texttemplate="<b>%{label}</b><br>$%{value:,.0f}<br>%{percent}",
+                    textposition="outside"
+                )
+                fig_pie_com.update_layout(showlegend=False)
+                st.plotly_chart(fig_pie_com, use_container_width=True)
+            with col_bar:
+                fig_bar_com = px.bar(
+                    comis_medio, x="Medio de Pago", y="Comision",
+                    title="Monto de comisión por medio de pago",
+                    color="Costo %",
+                    color_continuous_scale=["#00C49F", "#FFD700", "#FF5733"],
+                    text="Comision"
+                )
+                fig_bar_com.update_traces(texttemplate="$%{text:,.0f}", textposition="outside")
+                fig_bar_com.update_layout(yaxis_tickformat="$,.0f", coloraxis_showscale=False)
+                st.plotly_chart(fig_bar_com, use_container_width=True)
+
+            # Tabla resumen
+            comis_medio_fmt = comis_medio.copy()
+            comis_medio_fmt["Facturacion"] = comis_medio_fmt["Facturacion"].apply(fmt)
+            comis_medio_fmt["Comision"] = comis_medio_fmt["Comision"].apply(fmt)
+            comis_medio_fmt["Costo %"] = comis_medio_fmt["Costo %"].apply(fmt_pct)
+            comis_medio_fmt.columns = ["Medio de Pago", "Órdenes", "Facturación", "Comisión PN", "Costo %"]
+            st.dataframe(comis_medio_fmt, use_container_width=True, hide_index=True)
+
+
 
     # ── TAB 2: DETALLE ────────────────────────────────────────────────────────
     with tab2:
@@ -411,9 +490,10 @@ if st.session_state.df_tn is not None:
             st.download_button("⬇️ Descargar CSV Pago Nube",
                 df_pagos.to_csv(index=False).encode("utf-8"), "pagos_pagonube.csv", "text/csv")
 
-    # ── TAB 3: CONCILIACIÓN ───────────────────────────────────────────────────
+    # ── TAB 3: TRANSFERENCIAS Y EFECTIVO ─────────────────────────────────────
     with tab3:
-        st.subheader("🔗 Conciliación Tienda Nube vs Pago Nube")
+        st.subheader("💸 Órdenes por transferencia y efectivo")
+        st.caption("Pago Nube ya está integrado en TN — aquí se muestran los pagos fuera de la pasarela.")
         if df_tn.empty:
             st.info("Buscá primero para cargar los datos.")
         else:
@@ -519,10 +599,34 @@ if st.session_state.df_tn is not None:
     with tab4:
         st.subheader("💚 Salud Financiera del Período")
 
+        # ── Dólar blue automático ──────────────────────────────────────────────
+        @st.cache_data(ttl=1800)
+        def get_dolar_blue():
+            try:
+                r = requests.get("https://api.bluelytics.com.ar/v2/latest", timeout=5)
+                if r.status_code == 200:
+                    data = r.json()
+                    return float(data["blue"]["value_sell"])
+            except:
+                pass
+            try:
+                r = requests.get("https://dolarapi.com/v1/dolares/blue", timeout=5)
+                if r.status_code == 200:
+                    return float(r.json().get("venta", 0))
+            except:
+                pass
+            return None
+
+        dolar_blue = get_dolar_blue()
+
         with st.expander("⚙️ Configuración", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
-                tipo_cambio = st.number_input("💵 Tipo de cambio (ARS/USD)", value=1200, step=10)
+                dolar_default = int(dolar_blue) if dolar_blue else 1200
+                dolar_label = f"💵 Dólar blue venta (auto: ${dolar_default:,.0f})" if dolar_blue else "💵 Tipo de cambio (ARS/USD)"
+                tipo_cambio = st.number_input(dolar_label, value=dolar_default, step=10)
+                if dolar_blue:
+                    st.caption(f"🔄 Actualizado automáticamente · ${dolar_blue:,.0f} ARS")
             with col2:
                 pct_iva = st.slider("🧾 IVA efectivo (%)", min_value=0.0, max_value=21.0, value=10.5, step=0.5,
                     help="Configurá el IVA según tu régimen fiscal")
@@ -1068,6 +1172,230 @@ Cualquier consulta estamos a disposición 😊""",
                     "⬇️ Descargar análisis de restock",
                     df_vel[cols_show].to_csv(index=False).encode("utf-8"),
                     "restock_analysis.csv", "text/csv"
+                )
+
+
+    # ── TAB 8: GASTOS FIJOS ───────────────────────────────────────────────────
+    with tab8:
+        st.subheader("🏗️ Gastos fijos mensuales")
+        st.caption("Los datos quedan guardados en Google Sheets automáticamente.")
+
+        # Cargar desde GSheets
+        if "gastos_fijos" not in st.session_state:
+            saved = gs_read("GastosFijos")
+            st.session_state.gastos_fijos = saved if saved else {
+                "Bruno": 0, "Coco": 0, "Agencia": 0, "Local": 0,
+                "Sueldo Agus": 0, "Sueldo Stella": 0, "Contador": 0,
+                "Sueldo Facu": 0, "Otros": 0
+            }
+
+        gastos = st.session_state.gastos_fijos.copy()
+
+        st.markdown("**Editá los gastos fijos mensuales (ARS):**")
+        col_g1, col_g2 = st.columns(2)
+        nuevos_gastos = {}
+        items = list(gastos.items())
+        mid = (len(items) + 1) // 2
+
+        with col_g1:
+            for k, v in items[:mid]:
+                nuevos_gastos[k] = st.number_input(k, value=int(v), step=50000, key=f"gf_{k}")
+        with col_g2:
+            for k, v in items[mid:]:
+                nuevos_gastos[k] = st.number_input(k, value=int(v), step=50000, key=f"gf_{k}")
+
+        # Agregar gasto nuevo
+        with st.expander("➕ Agregar gasto"):
+            ng_col1, ng_col2 = st.columns(2)
+            nuevo_nombre = ng_col1.text_input("Nombre del gasto")
+            nuevo_monto  = ng_col2.number_input("Monto mensual (ARS)", value=0, step=50000)
+            if st.button("Agregar"):
+                if nuevo_nombre:
+                    nuevos_gastos[nuevo_nombre] = nuevo_monto
+                    st.session_state.gastos_fijos = nuevos_gastos
+                    gs_write("GastosFijos", nuevos_gastos)
+                    st.success(f"✅ '{nuevo_nombre}' agregado")
+                    st.rerun()
+
+        col_btn1, col_btn2 = st.columns(2)
+        if col_btn1.button("💾 Guardar gastos fijos", use_container_width=True, type="primary"):
+            st.session_state.gastos_fijos = nuevos_gastos
+            ok = gs_write("GastosFijos", nuevos_gastos)
+            if ok:
+                st.success("✅ Guardado en Google Sheets")
+            else:
+                st.warning("⚠️ Guardado solo en sesión (Google Sheets no configurado)")
+
+        st.divider()
+        total_gastos = sum(nuevos_gastos.values())
+        st.metric("💰 Total gastos fijos mensuales", fmt(total_gastos))
+
+        df_gastos = pd.DataFrame(list(nuevos_gastos.items()), columns=["Concepto", "Monto (ARS)"])
+        df_gastos = df_gastos[df_gastos["Monto (ARS)"] > 0].sort_values("Monto (ARS)", ascending=False)
+        if not df_gastos.empty:
+            fig_g = px.pie(df_gastos, names="Concepto", values="Monto (ARS)", hole=0.4,
+                title="Distribución de gastos fijos", color_discrete_sequence=COLORES)
+            st.plotly_chart(fig_g, use_container_width=True)
+
+        # Prorrateo por período
+        if st.session_state.df_tn is not None and not st.session_state.df_tn.empty:
+            st.divider()
+            st.subheader("📐 Gastos prorrateados al período analizado")
+            dias_periodo = max((fecha_hasta - fecha_desde).days + 1, 1)
+            factor = dias_periodo / 30
+            gastos_periodo = round(total_gastos * factor)
+            st.metric(f"Gastos para {dias_periodo} días ({factor:.2f}x mes)", fmt(gastos_periodo))
+
+
+    # ── TAB 9: COSTOS DE CONSOLAS ─────────────────────────────────────────────
+    with tab9:
+        st.subheader("💻 Costos de consolas")
+        st.caption("FOB + importación (peso × USD/kg). El peso se trae de Tienda Nube automáticamente.")
+
+        # Cargar desde GSheets
+        if "costos_consolas" not in st.session_state:
+            saved = gs_read("CostosConsolas")
+            st.session_state.costos_consolas = saved if saved else {}
+
+        # Dólar blue para mostrar equivalente ARS
+        tc_consolas = int(dolar_blue) if dolar_blue else 1200
+
+        # Traer productos y pesos desde TN
+        if st.button("🔄 Cargar productos desde Tienda Nube", key="btn_load_consolas"):
+            with st.spinner("Cargando productos..."):
+                productos_tn = get_tn_products()
+            if productos_tn:
+                prods_map = {}
+                for p in productos_tn:
+                    nombre_raw = p.get("name", {})
+                    nombre = nombre_raw.get("es", "") if isinstance(nombre_raw, dict) else str(nombre_raw)
+                    # Tomar el peso de la primer variante
+                    variantes = p.get("variants", [])
+                    peso_kg = None
+                    for v in variantes:
+                        w = v.get("weight")
+                        if w:
+                            try:
+                                peso_kg = float(w)
+                                break
+                            except:
+                                pass
+                    if not peso_kg:
+                        peso_raw = p.get("weight")
+                        try: peso_kg = float(peso_raw) if peso_raw else None
+                        except: peso_kg = None
+                    prods_map[nombre] = peso_kg
+                st.session_state.productos_tn_map = prods_map
+                st.success(f"✅ {len(prods_map)} productos cargados")
+
+        productos_map = st.session_state.get("productos_tn_map", {})
+        costos = st.session_state.costos_consolas.copy()
+
+        st.divider()
+
+        # Config global de importación
+        col_imp1, col_imp2 = st.columns(2)
+        costo_kg_usd = col_imp1.number_input(
+            "📦 Costo de importación por kg (USD/kg)",
+            value=float(costos.get("_costo_kg_usd", 65.0)),
+            step=0.5, key="ckg",
+            help="Ej: si el flete es $65 USD por kg, ponés 65"
+        )
+        col_imp2.metric("Dólar blue actual", f"${tc_consolas:,.0f} ARS")
+        costos["_costo_kg_usd"] = costo_kg_usd
+
+        st.divider()
+        st.markdown("**Costos por consola:**")
+
+        # Lista de productos: los de TN + los que ya teníamos guardados
+        all_prods = set(productos_map.keys())
+        for k in costos.keys():
+            if not k.startswith("_"):
+                all_prods.add(k)
+
+        if not all_prods:
+            st.info("Cargá los productos desde Tienda Nube con el botón de arriba.")
+        else:
+            nuevos_costos = {"_costo_kg_usd": costo_kg_usd}
+            header = st.columns([3, 1.2, 1.2, 1.2, 1.5])
+            header[0].markdown("**Producto**")
+            header[1].markdown("**Peso TN (kg)**")
+            header[2].markdown("**FOB (USD)**")
+            header[3].markdown("**Costo total (USD)**")
+            header[4].markdown("**Costo total (ARS)**")
+
+            for prod in sorted(all_prods):
+                peso_tn = productos_map.get(prod)
+                prod_data = costos.get(prod, {})
+                if isinstance(prod_data, dict):
+                    fob_saved = prod_data.get("fob_usd", 0.0)
+                    peso_saved = prod_data.get("peso_kg", peso_tn or 0.0)
+                else:
+                    fob_saved = 0.0
+                    peso_saved = peso_tn or 0.0
+
+                cols = st.columns([3, 1.2, 1.2, 1.2, 1.5])
+                cols[0].write(prod)
+
+                # Peso: mostrar el de TN pero permitir editar si no está
+                peso_input = cols[1].number_input(
+                    "", value=float(peso_tn if peso_tn else peso_saved),
+                    min_value=0.0, step=0.01,
+                    key=f"peso_{prod}", label_visibility="collapsed",
+                    help="kg — se trae automáticamente de TN"
+                )
+                fob_input = cols[2].number_input(
+                    "", value=float(fob_saved), min_value=0.0, step=0.5,
+                    key=f"fob_{prod}", label_visibility="collapsed"
+                )
+
+                # Cálculo
+                costo_import = round(peso_input * costo_kg_usd, 2)
+                costo_total_usd = round(fob_input + costo_import, 2)
+                costo_total_ars = round(costo_total_usd * tc_consolas)
+
+                cols[3].markdown(f"**USD {costo_total_usd:,.2f}**")
+                cols[4].markdown(f"**{fmt(costo_total_ars)}**")
+
+                nuevos_costos[prod] = {
+                    "fob_usd": fob_input,
+                    "peso_kg": peso_input,
+                    "costo_import_usd": costo_import,
+                    "costo_total_usd": costo_total_usd,
+                }
+
+            st.divider()
+            if st.button("💾 Guardar costos de consolas", use_container_width=True, type="primary"):
+                st.session_state.costos_consolas = nuevos_costos
+                ok = gs_write("CostosConsolas", nuevos_costos)
+                if ok:
+                    st.success("✅ Guardado en Google Sheets")
+                else:
+                    st.warning("⚠️ Guardado solo en sesión (Google Sheets no configurado)")
+
+            # Tabla resumen
+            st.divider()
+            st.subheader("📊 Resumen de costos")
+            resumen_rows = []
+            for prod, data in nuevos_costos.items():
+                if prod.startswith("_") or not isinstance(data, dict): continue
+                resumen_rows.append({
+                    "Producto": prod,
+                    "Peso (kg)": data.get("peso_kg", 0),
+                    "FOB (USD)": data.get("fob_usd", 0),
+                    "Importación (USD)": data.get("costo_import_usd", 0),
+                    "Costo total (USD)": data.get("costo_total_usd", 0),
+                    "Costo total (ARS)": round(data.get("costo_total_usd", 0) * tc_consolas),
+                })
+            if resumen_rows:
+                df_costos_res = pd.DataFrame(resumen_rows).sort_values("Costo total (USD)", ascending=False)
+                st.dataframe(
+                    df_costos_res.style.format({
+                        "FOB (USD)": "${:,.2f}", "Importación (USD)": "${:,.2f}",
+                        "Costo total (USD)": "${:,.2f}", "Costo total (ARS)": "${:,.0f}",
+                        "Peso (kg)": "{:.3f}"
+                    }),
+                    use_container_width=True, hide_index=True
                 )
 
 
