@@ -560,24 +560,29 @@ if st.session_state.df_tn is not None:
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
-            # ── Calcular costo en ARS usando FOB_DEFAULTS + dólar blue ────────
+            # ── Calcular costo en ARS: prioridad cost de TN, fallback FOB×dólar ─
             _dolar_det = get_dolar_blue() or 1200
             _costos_gs  = gs_read("CostosConsolas") or {}
 
-            # Recalcular costo y margen con dólar actual + costos de consolas
             df_det = df_tn.copy()
-            df_det["Costo Productos ($)"] = df_det.apply(
-                lambda row: round(calcular_costo_orden_ars(
-                    row.get("Productos",""), row.get("Cantidad",1), _dolar_det, _costos_gs), 0),
-                axis=1
-            )
-            df_det["Neto cobrado ($)"] = df_det["Total ($)"] - df_det["Comision PN ($)"]
-            df_det["Margen ($)"] = df_det.apply(
-                lambda row: round(row["Neto cobrado ($)"] - row["Costo Productos ($)"] - float(row.get("Envio costo ($)",0) or 0), 2),
+
+            def _costo_final(row):
+                """Si TN ya tiene cost cargado (>0), usarlo. Si no, FOB×dólar."""
+                costo_tn = float(row.get("Costo Productos ($)", 0) or 0)
+                if costo_tn > 0:
+                    return round(costo_tn, 0)
+                # Fallback: FOB del catálogo × tipo de cambio
+                return round(calcular_costo_orden_ars(
+                    row.get("Productos",""), row.get("Cantidad",1), _dolar_det, _costos_gs), 0)
+
+            df_det["Costo Productos ($)"] = df_det.apply(_costo_final, axis=1)
+            df_det["Neto cobrado ($)"]    = df_det["Total ($)"] - df_det["Comision PN ($)"]
+            df_det["Margen ($)"]          = df_det.apply(
+                lambda r: round(r["Neto cobrado ($)"] - r["Costo Productos ($)"] - float(r.get("Envio costo ($)",0) or 0), 2),
                 axis=1
             )
             df_det["Margen (%)"] = df_det.apply(
-                lambda row: round((row["Margen ($)"] / row["Total ($)"] * 100) if row["Total ($)"] > 0 else 0, 2),
+                lambda r: round((r["Margen ($)"] / r["Total ($)"] * 100) if r["Total ($)"] > 0 else 0, 2),
                 axis=1
             )
 
@@ -587,14 +592,20 @@ if st.session_state.df_tn is not None:
                        "Margen ($)", "Margen (%)", "Estado Envio", "Productos", "Cantidad", "Canal"]
             cols_tn = [c for c in cols_tn if c in df_det.columns]
 
-            # Colorear margen: verde positivo, rojo negativo
-            def _color_margen(val):
-                try:
-                    color = "#d4edda" if float(val) >= 0 else "#f8d7da"
-                    return f"background-color: {color}"
-                except: return ""
+            # Colorear margen — colores oscuros compatibles con tema dark
+            def _color_margen_row(row):
+                styles = [""] * len(row)
+                idx = list(row.index).index("Margen ($)") if "Margen ($)" in row.index else -1
+                if idx >= 0:
+                    styles[idx] = "background-color: #1e4620; color: white" if float(row["Margen ($)"]) >= 0 else "background-color: #4a1010; color: white"
+                return styles
 
-            st.caption(f"💵 Tipo de cambio usado: ${_dolar_det:,.0f} ARS/USD (dólar blue automático)")
+            sin_costo_tn = int((df_det["Costo Productos ($)"] == 0).sum())
+            caption_txt = f"💵 Tipo de cambio: ${_dolar_det:,.0f} ARS/USD"
+            if sin_costo_tn > 0:
+                caption_txt += f" · ⚠️ {sin_costo_tn} orden(es) sin costo cargado en TN"
+            st.caption(caption_txt)
+
             st.dataframe(
                 df_det[cols_tn].style
                     .format({
@@ -603,7 +614,7 @@ if st.session_state.df_tn is not None:
                         "Costo PN (%)": "{:.2f}%", "Neto cobrado ($)": "${:,.0f}",
                         "Costo Productos ($)": "${:,.0f}", "Margen ($)": "${:,.0f}", "Margen (%)": "{:.2f}%",
                     })
-                    .applymap(_color_margen, subset=["Margen ($)"]),
+                    .apply(_color_margen_row, axis=1),
                 use_container_width=True, hide_index=True
             )
             st.download_button("⬇️ Descargar CSV órdenes TN",
@@ -753,12 +764,14 @@ if st.session_state.df_tn is not None:
             df_calc = df_tn.copy()
             df_calc["Comision PN ($)"] = df_calc.apply(comision_custom, axis=1)
             df_calc["Neto cobrado ($)"] = df_calc["Total ($)"] - df_calc["Comision PN ($)"]
-            # Recalcular costo productos con FOB_DEFAULTS + tipo_cambio configurado
-            df_calc["Costo Productos ($)"] = df_calc.apply(
-                lambda row: round(calcular_costo_orden_ars(
-                    row.get("Productos",""), row.get("Cantidad",1), tipo_cambio, _costos_gs_tab4), 0),
-                axis=1
-            )
+            # Prioridad: cost cargado en TN (>0) → FOB catálogo × tipo de cambio
+            def _costo_final_tab4(row):
+                costo_tn = float(row.get("Costo Productos ($)", 0) or 0)
+                if costo_tn > 0:
+                    return round(costo_tn, 0)
+                return round(calcular_costo_orden_ars(
+                    row.get("Productos",""), row.get("Cantidad",1), tipo_cambio, _costos_gs_tab4), 0)
+            df_calc["Costo Productos ($)"] = df_calc.apply(_costo_final_tab4, axis=1)
             df_calc["Margen ($)"] = df_calc["Neto cobrado ($)"] - df_calc["Costo Productos ($)"] - df_calc["Envio costo ($)"]
 
             # Totales
