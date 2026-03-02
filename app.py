@@ -341,6 +341,62 @@ if buscar:
     st.session_state.ids_venta_local = set()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=1800)
+def get_dolar_blue():
+    try:
+        r = requests.get("https://api.bluelytics.com.ar/v2/latest", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            return float(data["blue"]["value_sell"])
+    except:
+        pass
+    try:
+        r = requests.get("https://dolarapi.com/v1/dolares/blue", timeout=5)
+        if r.status_code == 200:
+            return float(r.json().get("venta", 0))
+    except:
+        pass
+    return None
+
+# ── FOB defaults por producto (promedio ponderado histórico de compras) ────────
+FOB_DEFAULTS = {
+    "Anbernic RG 34XX 64GB":      {"fob_usd": 59.00,  "peso_kg": 0.3400},
+    "Anbernic RG 34XX SP 64GB":   {"fob_usd": 66.00,  "peso_kg": 0.3000},
+    "Anbernic RG 35XX Pro 64GB":  {"fob_usd": 49.00,  "peso_kg": 0.3450},
+    "Anbernic RG 35XX SP 64GB":   {"fob_usd": 49.00,  "peso_kg": 0.3300},
+    "Anbernic RG 406H":           {"fob_usd": 136.34, "peso_kg": 0.4652},
+    "Anbernic RG 406V":           {"fob_usd": 139.70, "peso_kg": 0.4900},
+    "Anbernic RG 40XX H 64GB":    {"fob_usd": 47.30,  "peso_kg": 0.3730},
+    "Anbernic RG 477M 128GB":     {"fob_usd": 284.00, "peso_kg": 0.6400},
+    "Anbernic RG 557 128GB":      {"fob_usd": 264.00, "peso_kg": 0.6070},
+    "Anbernic RG Cube 128GB":     {"fob_usd": 164.00, "peso_kg": 0.4630},
+    "Anbernic RG Cube XX 64GB":   {"fob_usd": 59.00,  "peso_kg": 0.4430},
+    "Anbernic RG P01 Blanco":     {"fob_usd": 12.70,  "peso_kg": 0.4300},
+    "Anbernic RG P01 Negro":      {"fob_usd": 12.70,  "peso_kg": 0.4300},
+    "Anbernic RG Slide 128GB":    {"fob_usd": 174.00, "peso_kg": 0.6500},
+    "Anbernic RG40XX H":          {"fob_usd": 50.60,  "peso_kg": 0.3600},
+    "Anbernic RG40XX V":          {"fob_usd": 48.40,  "peso_kg": 0.3700},
+    "Miyoo A30":                  {"fob_usd": 34.50,  "peso_kg": 0.2200},
+    "Miyoo Flip":                 {"fob_usd": 60.00,  "peso_kg": 0.2800},
+    "Miyoo Mini Plus":            {"fob_usd": 40.00,  "peso_kg": 0.2700},
+    "Powkiddy MAX3":              {"fob_usd": 48.00,  "peso_kg": 0.3800},
+    "Powkiddy MAX3 Pro":          {"fob_usd": 90.00,  "peso_kg": 0.5000},
+    "Powkiddy RGB10X":            {"fob_usd": 30.00,  "peso_kg": 0.3000},
+    "Powkiddy RGB20 Pro":         {"fob_usd": 45.00,  "peso_kg": 0.3800},
+    "Powkiddy RGB20S":            {"fob_usd": 32.00,  "peso_kg": 0.3500},
+    "Powkiddy RGB20SX":           {"fob_usd": 48.00,  "peso_kg": 0.3800},
+    "Powkiddy V10":               {"fob_usd": 28.00,  "peso_kg": 0.3000},
+    "Powkiddy V20 16GB":          {"fob_usd": 33.00,  "peso_kg": 0.3500},
+    "Powkiddy V90S 16GB":         {"fob_usd": 33.00,  "peso_kg": 0.3000},
+    "Powkiddy X35H 16GB":         {"fob_usd": 40.00,  "peso_kg": 0.3500},
+    "Powkiddy X35s":              {"fob_usd": 45.00,  "peso_kg": 0.3500},
+    "R36S Dual":                  {"fob_usd": 21.50,  "peso_kg": 0.3200},
+    "Trimui Brick":               {"fob_usd": 51.00,  "peso_kg": 0.3350},
+    "Trimui Brick Hammer":        {"fob_usd": 60.00,  "peso_kg": 0.4000},
+    "Trimui Smart":               {"fob_usd": 31.50,  "peso_kg": 0.1400},
+    "Trimui Smart Pro":           {"fob_usd": 54.00,  "peso_kg": 0.4050},
+}
+
 if st.session_state.df_tn is not None:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📊 Dashboard",
@@ -599,26 +655,7 @@ if st.session_state.df_tn is not None:
     with tab4:
         st.subheader("💚 Salud Financiera del Período")
 
-        # ── Dólar blue automático ──────────────────────────────────────────────
-        @st.cache_data(ttl=1800)
-        def get_dolar_blue():
-            try:
-                r = requests.get("https://api.bluelytics.com.ar/v2/latest", timeout=5)
-                if r.status_code == 200:
-                    data = r.json()
-                    return float(data["blue"]["value_sell"])
-            except:
-                pass
-            try:
-                r = requests.get("https://dolarapi.com/v1/dolares/blue", timeout=5)
-                if r.status_code == 200:
-                    return float(r.json().get("venta", 0))
-            except:
-                pass
-            return None
-
         dolar_blue = get_dolar_blue()
-
         with st.expander("⚙️ Configuración", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -1255,7 +1292,8 @@ Cualquier consulta estamos a disposición 😊""",
         # Cargar desde GSheets
         if "costos_consolas" not in st.session_state:
             saved = gs_read("CostosConsolas")
-            st.session_state.costos_consolas = saved if saved else {}
+            # Si hay datos en GSheets los usamos, si no arrancamos con los defaults históricos
+            st.session_state.costos_consolas = saved if saved else FOB_DEFAULTS.copy()
 
         # Dólar blue para mostrar equivalente ARS
         tc_consolas = int(dolar_blue) if dolar_blue else 1200
@@ -1338,15 +1376,21 @@ Cualquier consulta estamos a disposición 😊""",
                 cols[0].write(prod)
 
                 # Peso: mostrar el de TN pero permitir editar si no está
+                # Prioridad: TN > FOB_DEFAULTS > guardado manualmente
+                peso_default_fob = FOB_DEFAULTS.get(prod, {}).get("peso_kg", 0.0)
+                peso_final = float(peso_tn if peso_tn else (peso_default_fob if peso_default_fob else peso_saved))
                 peso_input = cols[1].number_input(
-                    "", value=float(peso_tn if peso_tn else peso_saved),
+                    "", value=peso_final,
                     min_value=0.0, step=0.01,
                     key=f"peso_{prod}", label_visibility="collapsed",
-                    help="kg — se trae automáticamente de TN"
+                    help="kg — se trae automáticamente de TN, o del histórico de compras"
                 )
+                fob_default = FOB_DEFAULTS.get(prod, {}).get("fob_usd", 0.0)
+                fob_valor = float(fob_saved) if float(fob_saved) > 0 else float(fob_default)
                 fob_input = cols[2].number_input(
-                    "", value=float(fob_saved), min_value=0.0, step=0.5,
-                    key=f"fob_{prod}", label_visibility="collapsed"
+                    "", value=fob_valor, min_value=0.0, step=0.5,
+                    key=f"fob_{prod}", label_visibility="collapsed",
+                    help="USD — precargado del promedio histórico de tus compras"
                 )
 
                 # Cálculo
