@@ -501,22 +501,126 @@ if st.session_state.df_tn is not None:
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
+            # ── Calcular costo en ARS usando FOB_DEFAULTS + dólar blue ────────
+            _dolar_det = get_dolar_blue() or 1200
+            _costos_gs  = gs_read("CostosConsolas") or {}
+
+            def _get_fob_usd(nombre_prod):
+                """Busca FOB en costos guardados (GSheets) primero, luego FOB_DEFAULTS."""
+                # Buscar en costos guardados (tab9)
+                for k, v in _costos_gs.items():
+                    if k.startswith("_"): continue
+                    if k.lower() == nombre_prod.lower():
+                        return float(v.get("fob_usd", 0) or 0)
+                # Fallback a FOB_DEFAULTS histórico
+                for k, v in FOB_DEFAULTS.items():
+                    if k.lower() == nombre_prod.lower():
+                        return float(v.get("fob_usd", 0) or 0)
+                return 0.0
+
+            # Recalcular costo y margen con dólar actual
+            df_det = df_tn.copy()
+            costos_ars_list = []
+            margenes_list   = []
+            margenes_pct_list = []
+            for _, row in df_det.iterrows():
+                prods_nombres = [p.strip() for p in str(row.get("Productos","")).split(" / ") if p.strip()]
+                qty_total = int(row.get("Cantidad", 1) or 1)
+                # Si hay un solo producto, asignar toda la qty; si hay varios, qty=1 c/u
+                if len(prods_nombres) == 1:
+                    costo_ars = _get_fob_usd(prods_nombres[0]) * qty_total * _dolar_det
+                else:
+                    costo_ars = sum(_get_fob_usd(p) * _dolar_det for p in prods_nombres)
+                neto = float(row.get("Neto cobrado ($)", 0))
+                margen = round(neto - costo_ars - float(row.get("Envio costo ($)", 0) or 0), 2)
+                margen_pct = round((margen / float(row["Total ($)"]) * 100) if row["Total ($)"] > 0 else 0, 2)
+                costos_ars_list.append(round(costo_ars, 0))
+                margenes_list.append(margen)
+                margenes_pct_list.append(margen_pct)
+
+            df_det["Costo Productos ($)"] = costos_ars_list
+            df_det["Margen ($)"]          = margenes_list
+            df_det["Margen (%)"]          = margenes_pct_list
+
             cols_tn = ["Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Total ($)",
                        "Descuento ($)", "Envio costo ($)", "Comision PN ($)",
                        "Costo PN (%)", "Neto cobrado ($)", "Costo Productos ($)",
                        "Margen ($)", "Margen (%)", "Estado Envio", "Productos", "Cantidad", "Canal"]
-            cols_tn = [c for c in cols_tn if c in df_tn.columns]
+            cols_tn = [c for c in cols_tn if c in df_det.columns]
+
+            # Colorear margen: verde positivo, rojo negativo
+            def _color_margen(val):
+                try:
+                    color = "#d4edda" if float(val) >= 0 else "#f8d7da"
+                    return f"background-color: {color}"
+                except: return ""
+
+            st.caption(f"💵 Tipo de cambio usado: ${_dolar_det:,.0f} ARS/USD (dólar blue automático)")
             st.dataframe(
-                df_tn[cols_tn].style.format({
-                    "Total ($)": "${:,.0f}", "Descuento ($)": "${:,.0f}",
-                    "Envio costo ($)": "${:,.0f}", "Comision PN ($)": "${:,.0f}",
-                    "Costo PN (%)": "{:.2f}%", "Neto cobrado ($)": "${:,.0f}",
-                    "Costo Productos ($)": "${:,.0f}", "Margen ($)": "${:,.0f}", "Margen (%)": "{:.2f}%",
-                }),
+                df_det[cols_tn].style
+                    .format({
+                        "Total ($)": "${:,.0f}", "Descuento ($)": "${:,.0f}",
+                        "Envio costo ($)": "${:,.0f}", "Comision PN ($)": "${:,.0f}",
+                        "Costo PN (%)": "{:.2f}%", "Neto cobrado ($)": "${:,.0f}",
+                        "Costo Productos ($)": "${:,.0f}", "Margen ($)": "${:,.0f}", "Margen (%)": "{:.2f}%",
+                    })
+                    .applymap(_color_margen, subset=["Margen ($)"]),
                 use_container_width=True, hide_index=True
             )
             st.download_button("⬇️ Descargar CSV órdenes TN",
-                df_tn[cols_tn].to_csv(index=False).encode("utf-8"), "ordenes_tn.csv", "text/csv")
+                df_det[cols_tn].to_csv(index=False).encode("utf-8"), "ordenes_tn.csv", "text/csv")
+
+            # ── Métricas resumen de margen del período ─────────────────────────
+            st.divider()
+            mg1, mg2, mg3, mg4 = st.columns(4)
+            total_bruto   = df_det["Total ($)"].sum()
+            total_costo   = df_det["Costo Productos ($)"].sum()
+            total_comis   = df_det["Comision PN ($)"].sum()
+            total_margen  = df_det["Margen ($)"].sum()
+            mg1.metric("💰 Facturación bruta", fmt(total_bruto))
+            mg2.metric("📦 Costo productos", fmt(total_costo), delta=f"-{fmt(total_costo)}", delta_color="inverse")
+            mg3.metric("💳 Comisión PN", fmt(total_comis), delta=f"-{fmt(total_comis)}", delta_color="inverse")
+            mg4.metric(
+                f"{'🟢' if total_margen >= 0 else '🔴'} Margen neto del período",
+                fmt(total_margen),
+                delta=f"{round(total_margen/total_bruto*100,1)}% sobre bruto" if total_bruto > 0 else None
+            )
+
+            # ── Alerta de productos sin costo ──────────────────────────────────
+            st.divider()
+            st.subheader("⚠️ Cobertura de costos")
+            todos_prods_vendidos = set()
+            for _, row in df_tn.iterrows():
+                for p in str(row.get("Productos","")).split(" / "):
+                    p = p.strip()
+                    if p: todos_prods_vendidos.add(p)
+
+            sin_costo = []
+            con_costo = []
+            for p in sorted(todos_prods_vendidos):
+                fob = _get_fob_usd(p)
+                if fob == 0:
+                    sin_costo.append(p)
+                else:
+                    con_costo.append({"Producto": p, "FOB (USD)": fob, "Costo ARS": round(fob * _dolar_det)})
+
+            cc1, cc2 = st.columns(2)
+            cc1.metric("✅ Productos con costo", len(con_costo))
+            cc2.metric("❌ Productos SIN costo", len(sin_costo))
+
+            if sin_costo:
+                st.error(f"⚠️ Los siguientes {len(sin_costo)} productos no tienen costo cargado — el margen está subestimado:")
+                for p in sin_costo:
+                    st.markdown(f"- **{p}**")
+                st.info("💡 Cargalos en la solapa **💻 Costos de consolas**")
+            else:
+                st.success("✅ Todos los productos vendidos tienen costo cargado. Margen 100% calculado.")
+
+            if con_costo:
+                with st.expander("Ver productos con costo cargado", expanded=False):
+                    df_cc = pd.DataFrame(con_costo)
+                    st.dataframe(df_cc.style.format({"FOB (USD)": "${:,.2f}", "Costo ARS": "${:,.0f}"}),
+                        hide_index=True, use_container_width=True)
 
         st.divider()
         st.subheader("📊 Resumen por medio de pago")
