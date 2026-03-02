@@ -397,6 +397,66 @@ FOB_DEFAULTS = {
     "Trimui Smart Pro":           {"fob_usd": 54.00,  "peso_kg": 0.4050},
 }
 
+def _normalizar(s):
+    """Normaliza un nombre para comparación: minúsculas, sin espacios extra, sin guiones dobles."""
+    import re
+    return re.sub(r'\s+', ' ', str(s).strip().lower())
+
+def get_fob_usd(nombre_prod, costos_gs=None):
+    """
+    Busca FOB en USD para un producto.
+    Prioridad: costos guardados en GSheets (tab9) → FOB_DEFAULTS histórico.
+    Matching: (1) exacto normalizado, (2) el catálogo contiene al nombre de la orden,
+              (3) el nombre de la orden contiene al catálogo.
+    """
+    nombre_norm = _normalizar(nombre_prod)
+    if not nombre_norm: return 0.0
+
+    # Construir lista de candidatos: primero costos_gs, luego FOB_DEFAULTS
+    candidatos = []
+    if costos_gs:
+        for k, v in costos_gs.items():
+            if k.startswith("_"): continue
+            if isinstance(v, dict):
+                fob = float(v.get("fob_usd", 0) or 0)
+                if fob > 0:
+                    candidatos.append((_normalizar(k), fob))
+    for k, v in FOB_DEFAULTS.items():
+        candidatos.append((_normalizar(k), float(v.get("fob_usd", 0) or 0)))
+
+    # Paso 1: coincidencia exacta
+    for k_norm, fob in candidatos:
+        if k_norm == nombre_norm:
+            return fob
+
+    # Paso 2: el catálogo está contenido en el nombre de la orden
+    # Ej: orden dice "Anbernic RG 406H - Negro" → catálogo tiene "Anbernic RG 406H"
+    for k_norm, fob in candidatos:
+        if k_norm in nombre_norm:
+            return fob
+
+    # Paso 3: el nombre de la orden está contenido en el catálogo
+    # Ej: orden dice "RG 406H" → catálogo tiene "Anbernic RG 406H"
+    for k_norm, fob in candidatos:
+        if nombre_norm in k_norm:
+            return fob
+
+    return 0.0
+
+def calcular_costo_orden_ars(productos_str, cantidad, tipo_cambio_ars, costos_gs=None):
+    """
+    Calcula el costo total en ARS de una orden dado su campo 'Productos'.
+    Si hay un solo producto, multiplica por cantidad.
+    Si hay varios (multiproducto), suma FOB de cada uno × 1.
+    """
+    prods = [p.strip() for p in str(productos_str).split(" / ") if p.strip()]
+    if not prods: return 0.0
+    if len(prods) == 1:
+        return get_fob_usd(prods[0], costos_gs) * int(cantidad or 1) * tipo_cambio_ars
+    else:
+        return sum(get_fob_usd(p, costos_gs) * tipo_cambio_ars for p in prods)
+
+
 if st.session_state.df_tn is not None:
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📊 Dashboard",
@@ -505,42 +565,22 @@ if st.session_state.df_tn is not None:
             _dolar_det = get_dolar_blue() or 1200
             _costos_gs  = gs_read("CostosConsolas") or {}
 
-            def _get_fob_usd(nombre_prod):
-                """Busca FOB en costos guardados (GSheets) primero, luego FOB_DEFAULTS."""
-                # Buscar en costos guardados (tab9)
-                for k, v in _costos_gs.items():
-                    if k.startswith("_"): continue
-                    if k.lower() == nombre_prod.lower():
-                        return float(v.get("fob_usd", 0) or 0)
-                # Fallback a FOB_DEFAULTS histórico
-                for k, v in FOB_DEFAULTS.items():
-                    if k.lower() == nombre_prod.lower():
-                        return float(v.get("fob_usd", 0) or 0)
-                return 0.0
-
-            # Recalcular costo y margen con dólar actual
+            # Recalcular costo y margen con dólar actual + costos de consolas
             df_det = df_tn.copy()
-            costos_ars_list = []
-            margenes_list   = []
-            margenes_pct_list = []
-            for _, row in df_det.iterrows():
-                prods_nombres = [p.strip() for p in str(row.get("Productos","")).split(" / ") if p.strip()]
-                qty_total = int(row.get("Cantidad", 1) or 1)
-                # Si hay un solo producto, asignar toda la qty; si hay varios, qty=1 c/u
-                if len(prods_nombres) == 1:
-                    costo_ars = _get_fob_usd(prods_nombres[0]) * qty_total * _dolar_det
-                else:
-                    costo_ars = sum(_get_fob_usd(p) * _dolar_det for p in prods_nombres)
-                neto = float(row.get("Neto cobrado ($)", 0))
-                margen = round(neto - costo_ars - float(row.get("Envio costo ($)", 0) or 0), 2)
-                margen_pct = round((margen / float(row["Total ($)"]) * 100) if row["Total ($)"] > 0 else 0, 2)
-                costos_ars_list.append(round(costo_ars, 0))
-                margenes_list.append(margen)
-                margenes_pct_list.append(margen_pct)
-
-            df_det["Costo Productos ($)"] = costos_ars_list
-            df_det["Margen ($)"]          = margenes_list
-            df_det["Margen (%)"]          = margenes_pct_list
+            df_det["Costo Productos ($)"] = df_det.apply(
+                lambda row: round(calcular_costo_orden_ars(
+                    row.get("Productos",""), row.get("Cantidad",1), _dolar_det, _costos_gs), 0),
+                axis=1
+            )
+            df_det["Neto cobrado ($)"] = df_det["Total ($)"] - df_det["Comision PN ($)"]
+            df_det["Margen ($)"] = df_det.apply(
+                lambda row: round(row["Neto cobrado ($)"] - row["Costo Productos ($)"] - float(row.get("Envio costo ($)",0) or 0), 2),
+                axis=1
+            )
+            df_det["Margen (%)"] = df_det.apply(
+                lambda row: round((row["Margen ($)"] / row["Total ($)"] * 100) if row["Total ($)"] > 0 else 0, 2),
+                axis=1
+            )
 
             cols_tn = ["Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Total ($)",
                        "Descuento ($)", "Envio costo ($)", "Comision PN ($)",
@@ -598,7 +638,7 @@ if st.session_state.df_tn is not None:
             sin_costo = []
             con_costo = []
             for p in sorted(todos_prods_vendidos):
-                fob = _get_fob_usd(p)
+                fob = get_fob_usd(p, _costos_gs)
                 if fob == 0:
                     sin_costo.append(p)
                 else:
@@ -609,10 +649,16 @@ if st.session_state.df_tn is not None:
             cc2.metric("❌ Productos SIN costo", len(sin_costo))
 
             if sin_costo:
-                st.error(f"⚠️ Los siguientes {len(sin_costo)} productos no tienen costo cargado — el margen está subestimado:")
+                st.error(f"⚠️ {len(sin_costo)} productos sin costo — el margen aparece incompleto en esas órdenes:")
                 for p in sin_costo:
                     st.markdown(f"- **{p}**")
-                st.info("💡 Cargalos en la solapa **💻 Costos de consolas**")
+                st.info("💡 Cargalos en la solapa **💻 Costos de consolas** o verificá que el nombre coincida exactamente con el catálogo")
+                with st.expander("🔍 Ver nombres exactos de productos en TN (para verificar coincidencias)", expanded=False):
+                    st.caption("Estos son los nombres tal como vienen de Tienda Nube en las órdenes del período:")
+                    for p in sorted(todos_prods_vendidos):
+                        fob = get_fob_usd(p, _costos_gs)
+                        icono = "✅" if fob > 0 else "❌"
+                        st.markdown(f"{icono} `{p}` → FOB: **${fob:.2f} USD**")
             else:
                 st.success("✅ Todos los productos vendidos tienen costo cargado. Margen 100% calculado.")
 
@@ -807,16 +853,24 @@ if st.session_state.df_tn is not None:
                     tasa = tasas_custom.get(tasa_key, 0.0414)
                 return round(total * tasa, 2)
 
+            # Traer tipo de cambio y costos guardados para calcular costo real
+            _costos_gs_tab4 = gs_read("CostosConsolas") or {}
             df_calc = df_tn.copy()
             df_calc["Comision PN ($)"] = df_calc.apply(comision_custom, axis=1)
             df_calc["Neto cobrado ($)"] = df_calc["Total ($)"] - df_calc["Comision PN ($)"]
+            # Recalcular costo productos con FOB_DEFAULTS + tipo_cambio configurado
+            df_calc["Costo Productos ($)"] = df_calc.apply(
+                lambda row: round(calcular_costo_orden_ars(
+                    row.get("Productos",""), row.get("Cantidad",1), tipo_cambio, _costos_gs_tab4), 0),
+                axis=1
+            )
             df_calc["Margen ($)"] = df_calc["Neto cobrado ($)"] - df_calc["Costo Productos ($)"] - df_calc["Envio costo ($)"]
 
             # Totales
             facturacion_bruta   = df_calc["Total ($)"].sum()
             comisiones_pn       = df_calc["Comision PN ($)"].sum()
             neto_cobrado        = df_calc["Neto cobrado ($)"].sum()
-            costo_productos     = df_calc["Costo Productos ($)"].sum()
+            costo_productos     = df_calc["Costo Productos ($)"].sum()  # ya calculado con FOB real
             costo_envios        = df_calc["Envio costo ($)"].sum()
             costo_iva           = facturacion_bruta * (pct_iva / 100)
             margen_bruto        = df_calc["Margen ($)"].sum()
