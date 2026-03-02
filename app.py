@@ -625,9 +625,9 @@ if st.session_state.df_tn is not None:
                 delta=f"{round(total_margen/total_bruto*100,1)}% sobre bruto" if total_bruto > 0 else None
             )
 
-            # ── Mapeo y cobertura de costos ────────────────────────────────────
+            # ── Estado de costos por producto ──────────────────────────────────
             st.divider()
-            st.subheader("🔗 Cobertura y mapeo de costos")
+            st.subheader("📋 Estado de costos por producto")
 
             todos_prods_vendidos = set()
             for _, row in df_tn.iterrows():
@@ -635,100 +635,37 @@ if st.session_state.df_tn is not None:
                     p = p.strip()
                     if p: todos_prods_vendidos.add(p)
 
-            # Refrescar costos desde session_state (puede haber cambios recientes)
-            _costos_gs_live = st.session_state.get("costos_consolas") or _costos_gs
-
-            sin_costo = []
-            con_costo = []
+            filas_estado = []
             for p in sorted(todos_prods_vendidos):
-                fob = get_fob_usd(p, _costos_gs_live)
-                if fob == 0:
-                    sin_costo.append(p)
-                else:
-                    con_costo.append({"Producto TN": p, "FOB (USD)": fob, "Costo ARS": round(fob * _dolar_det)})
+                fob = get_fob_usd(p, _costos_gs)
+                filas_estado.append({
+                    "Estado": "✅" if fob > 0 else "❌",
+                    "Producto (nombre en TN)": p,
+                    "FOB (USD)": fob if fob > 0 else None,
+                    "Costo ARS": round(fob * _dolar_det) if fob > 0 else None,
+                })
+
+            df_estado = pd.DataFrame(filas_estado)
+            sin_costo_n = len(df_estado[df_estado["Estado"] == "❌"])
+            con_costo_n = len(df_estado[df_estado["Estado"] == "✅"])
 
             cc1, cc2 = st.columns(2)
-            cc1.metric("✅ Con costo", len(con_costo))
-            cc2.metric("❌ Sin costo", len(sin_costo),
-                       delta=f"{len(sin_costo)} con margen incompleto" if sin_costo else None,
-                       delta_color="inverse")
+            cc1.metric("✅ Con costo", con_costo_n)
+            cc2.metric("❌ Sin costo", sin_costo_n)
 
-            if con_costo:
-                with st.expander(f"✅ {len(con_costo)} productos con costo resuelto", expanded=False):
-                    df_cc = pd.DataFrame(con_costo)
-                    st.dataframe(df_cc.style.format({"FOB (USD)": "${:,.2f}", "Costo ARS": "${:,.0f}"}),
-                        hide_index=True, use_container_width=True)
+            if sin_costo_n > 0:
+                st.info("💡 Los productos en ❌ no tienen costo cargado en Tienda Nube. Cargalos desde el panel de administración de TN usando el FOB que figura en la solapa **💻 Costos de consolas**.")
 
-            if sin_costo:
-                st.warning(f"⚠️ {len(sin_costo)} producto(s) sin costo — asocialos o crealos:")
+            st.dataframe(
+                df_estado.style.apply(
+                    lambda col: ["background-color: #1a3a1a" if v == "✅" else "background-color: #3a1a1a" for v in col],
+                    subset=["Estado"]
+                ).format({"FOB (USD)": lambda x: f"${x:.2f}" if x else "—",
+                          "Costo ARS": lambda x: f"${x:,.0f}" if x else "—"}),
+                use_container_width=True, hide_index=True
+            )
 
-                # Catálogo disponible para mapear
-                catalogo_nombres = sorted(
-                    list(FOB_DEFAULTS.keys()) +
-                    [k for k in _costos_gs_live.keys() if not k.startswith("_") and k not in FOB_DEFAULTS]
-                )
-
-                if "mapeos_costos" not in st.session_state:
-                    st.session_state.mapeos_costos = gs_read("MapeosCostos") or {}
-
-                st.caption("Para cada producto de TN sin costo: asocialo a uno del catálogo, o creá uno nuevo.")
-
-                for prod_tn in sin_costo:
-                    st.markdown("---")
-                    st.markdown(f"**📦 `{prod_tn}`**")
-                    col_modo1, col_modo2 = st.columns([1, 1])
-                    modo = col_modo1.radio(
-                        "", ["Asociar a existente", "Crear nuevo"],
-                        key=f"modo_{prod_tn}", horizontal=True, label_visibility="collapsed"
-                    )
-
-                    if modo == "Asociar a existente":
-                        # Sugerir el más parecido por palabras en común
-                        palabras_tn = set(_normalizar(prod_tn).split())
-                        mejor = max(catalogo_nombres,
-                            key=lambda c: len(palabras_tn & set(_normalizar(c).split())),
-                            default=catalogo_nombres[0] if catalogo_nombres else ""
-                        )
-                        idx_sug = catalogo_nombres.index(mejor) if mejor in catalogo_nombres else 0
-                        col_sel, col_info, col_btn = st.columns([3, 2, 1])
-                        seleccion = col_sel.selectbox(
-                            "Producto del catálogo", catalogo_nombres, index=idx_sug,
-                            key=f"sel_{prod_tn}"
-                        )
-                        fob_sel = get_fob_usd(seleccion, _costos_gs_live)
-                        col_info.metric("FOB", f"${fob_sel:.2f} USD")
-                        col_info.caption(f"≈ ${fob_sel * _dolar_det:,.0f} ARS")
-                        if col_btn.button("💾", key=f"btn_mapa_{prod_tn}", use_container_width=True, help="Guardar asociación"):
-                            nuevos = (st.session_state.get("costos_consolas") or {}).copy()
-                            nuevos[prod_tn] = {"fob_usd": fob_sel,
-                                               "peso_kg": FOB_DEFAULTS.get(seleccion, {}).get("peso_kg", 0)}
-                            st.session_state.costos_consolas = nuevos
-                            gs_write("CostosConsolas", nuevos)
-                            mapeos = (st.session_state.get("mapeos_costos") or {}).copy()
-                            mapeos[prod_tn] = seleccion
-                            st.session_state.mapeos_costos = mapeos
-                            gs_write("MapeosCostos", mapeos)
-                            st.success(f"✅ '{prod_tn}' → '{seleccion}' guardado")
-                            st.rerun()
-
-                    else:  # Crear nuevo
-                        col_n, col_f, col_p, col_btn2 = st.columns([3, 1.5, 1.5, 1])
-                        nuevo_nombre = col_n.text_input("Nombre en catálogo", value=prod_tn, key=f"nn_{prod_tn}")
-                        nuevo_fob    = col_f.number_input("FOB (USD)", value=0.0, min_value=0.0, step=0.5, key=f"nf_{prod_tn}")
-                        nuevo_peso   = col_p.number_input("Peso (kg)", value=0.35, min_value=0.0, step=0.01, key=f"np_{prod_tn}")
-                        if col_btn2.button("💾", key=f"btn_nuevo_{prod_tn}", use_container_width=True, help="Crear y guardar"):
-                            if nuevo_fob > 0:
-                                nuevos = (st.session_state.get("costos_consolas") or {}).copy()
-                                nuevos[nuevo_nombre] = {"fob_usd": nuevo_fob, "peso_kg": nuevo_peso}
-                                if nuevo_nombre != prod_tn:
-                                    nuevos[prod_tn] = {"fob_usd": nuevo_fob, "peso_kg": nuevo_peso}
-                                st.session_state.costos_consolas = nuevos
-                                gs_write("CostosConsolas", nuevos)
-                                st.success(f"✅ '{nuevo_nombre}' creado con FOB ${nuevo_fob:.2f} USD")
-                                st.rerun()
-                            else:
-                                st.error("El FOB debe ser mayor a 0")
-            else:
+            if sin_costo_n == 0:
                 st.success("✅ Todos los productos vendidos tienen costo cargado. Margen 100% calculado.")
 
         st.divider()
