@@ -535,7 +535,7 @@ if buscar:
 dolar_blue = get_dolar_blue()
 
 if st.session_state.df_tn is not None:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
         "📊 Dashboard",
         "🔍 Detalle y ajustes",
         "💚 Salud Financiera",
@@ -545,6 +545,7 @@ if st.session_state.df_tn is not None:
         "💻 Costos de consolas",
         "📐 Margen teórico",
         "📈 Margen real",
+        "🏭 Proveedores",
     ])
     df_tn = st.session_state.df_tn.copy()
     df_pagos = st.session_state.df_pagos.copy() if st.session_state.df_pagos is not None else pd.DataFrame()
@@ -2111,6 +2112,382 @@ if st.session_state.df_tn is not None:
                     st.divider()
                     st.download_button("⬇️ Descargar margen real detallado",
                         df_real.to_csv(index=False).encode("utf-8"), "margen_real_detallado.csv", "text/csv")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 10: PROVEEDORES
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab10:
+        st.subheader("🏭 Proveedores — Catálogos y comparación")
+        st.caption("Cargá listas de precios de proveedores y compará FOB entre ellos.")
+
+        # ── Cargar datos guardados ──
+        if "proveedores_data" not in st.session_state:
+            saved_prov = gs_read("Proveedores")
+            if saved_prov and "suppliers" in saved_prov:
+                st.session_state.proveedores_data = saved_prov
+            else:
+                # Datos iniciales de Anne (Qbuy Technology)
+                st.session_state.proveedores_data = {
+                    "suppliers": {
+                        "Anne - Qbuy Technology": {
+                            "contacto": "Anne Lee | WhatsApp: +86 181 7167 5976 | Wechat: qbuy18",
+                            "web": "qbuytech.en.alibaba.com",
+                            "productos": {
+                                "R36S": {"precio_usd": 23.2, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3200mAh"},
+                                "R36H": {"precio_usd": 27.5, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3000mAh"},
+                                "R36S PLUS": {"precio_usd": 28.4, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3200mAh"},
+                                "R36S Ultra": {"precio_usd": 28.3, "storage": "64G", "marca": "R36 Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "3000mAh"},
+                                "R36 MAX": {"precio_usd": 26.8, "storage": "64G", "marca": "R36 Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "4000mAh"},
+                                "R36 PRO": {"precio_usd": 25.5, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "4000mAh"},
+                                "R50S": {"precio_usd": 34.6, "storage": "64G", "marca": "R36 Series", "screen": "5.1in 854x480", "cpu": "RK3326", "battery": "3200mAh"},
+                                "R35XX": {"precio_usd": 27.0, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3200mAh"},
+                                "R36XX": {"precio_usd": 28.9, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3200mAh"},
+                                "R46H": {"precio_usd": 31.3, "storage": "64G", "marca": "R36 Series", "screen": "4.2in 1024x768", "cpu": "RK3326", "battery": "—"},
+                                "R40XX": {"precio_usd": 34.6, "storage": "64G", "marca": "R36 Series", "screen": "4.2in 1024x768", "cpu": "RK3326", "battery": "4000mAh"},
+                                "R40XX PRO MAX": {"precio_usd": 34.6, "storage": "64G", "marca": "R36 Series", "screen": "4.2in 1024x768", "cpu": "RK3326", "battery": "4500mAh"},
+                                "R46S": {"precio_usd": 48.7, "storage": "64G", "marca": "R36 Series", "screen": "4in 720x720", "cpu": "RK3566", "battery": "3500mAh"},
+                                "R36T": {"precio_usd": 27.8, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3000mAh"},
+                                "K36": {"precio_usd": 23.5, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3500mAh"},
+                                "XF35H": {"precio_usd": 27.8, "storage": "64G", "marca": "XF Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "4000mAh"},
+                                "XF40H": {"precio_usd": 30.4, "storage": "64G", "marca": "XF Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "4000mAh"},
+                                "XF40V": {"precio_usd": 30.4, "storage": "64G", "marca": "XF Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "4000mAh"},
+                                "DC35V": {"precio_usd": 27.8, "storage": "64G", "marca": "DC Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "4000mAh"},
+                                "DC40V": {"precio_usd": 30.4, "storage": "64G", "marca": "DC Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "4000mAh"},
+                                "RG35XX PRO": {"precio_usd": 45.7, "storage": "64G", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "H700", "battery": "3300mAh"},
+                                "RG34XX SP": {"precio_usd": 63.5, "storage": "64G", "marca": "Anbernic", "screen": "3.4in 720x480", "cpu": "H700", "battery": "3300mAh"},
+                                "RG40XX V": {"precio_usd": 57.4, "storage": "64G", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "H700", "battery": "3300mAh"},
+                                "RG40XX H": {"precio_usd": 58.3, "storage": "64G", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "H700", "battery": "3300mAh"},
+                                "RG35XX SP": {"precio_usd": 53.9, "storage": "64G", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "H700", "battery": "3300mAh"},
+                                "RG34XX": {"precio_usd": 60.9, "storage": "64G", "marca": "Anbernic", "screen": "3.4in 720x480", "cpu": "H700", "battery": "3500mAh"},
+                                "RG P01": {"precio_usd": 14.6, "storage": "—", "marca": "Anbernic", "screen": "—", "cpu": "—", "battery": "600mAh"},
+                                "RG556": {"precio_usd": 182.6, "storage": "128G", "marca": "Anbernic", "screen": "5.48in AMOLED", "cpu": "T820", "battery": "—"},
+                                "RG557": {"precio_usd": 263.5, "storage": "256G", "marca": "Anbernic", "screen": "5.48in AMOLED", "cpu": "Dimensity 8300", "battery": "5500mAh"},
+                                "RG SLIDE": {"precio_usd": 180.9, "storage": "128G", "marca": "Anbernic", "screen": "4.7in 1280x960", "cpu": "T820", "battery": "5000mAh"},
+                                "RG477M": {"precio_usd": 288.7, "storage": "256G", "marca": "Anbernic", "screen": "4.7in 1280x960", "cpu": "T820", "battery": "5300mAh"},
+                                "RG CUBE": {"precio_usd": 159.1, "storage": "128G", "marca": "Anbernic", "screen": "3.95in 720x720", "cpu": "T820", "battery": "—"},
+                                "RG CUBE XX": {"precio_usd": 60.9, "storage": "64G", "marca": "Anbernic", "screen": "3.95in 720x720", "cpu": "H700", "battery": "3800mAh"},
+                                "RG35XX 2024": {"precio_usd": 40.9, "storage": "64G", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "H700", "battery": "2600mAh"},
+                                "RG35XX H": {"precio_usd": 54.8, "storage": "64G", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "H700", "battery": "3300mAh"},
+                                "RG353V": {"precio_usd": 87.8, "storage": "—", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "ATM7039S", "battery": "3200mAh"},
+                                "RG353VS": {"precio_usd": 67.8, "storage": "—", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "ATM7039S", "battery": "3200mAh"},
+                                "RG405V": {"precio_usd": 133.9, "storage": "—", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "T618", "battery": "5500mAh"},
+                                "RG406V": {"precio_usd": 161.7, "storage": "128G", "marca": "Anbernic", "screen": "4in 960x720", "cpu": "T820", "battery": "5500mAh"},
+                                "RG406H": {"precio_usd": 158.3, "storage": "128G", "marca": "Anbernic", "screen": "4in 960x720", "cpu": "T820", "battery": "5000mAh"},
+                                "RG ARC-S": {"precio_usd": 72.2, "storage": "—", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "RK3566", "battery": "3500mAh"},
+                                "RG ARC-D": {"precio_usd": 93.9, "storage": "—", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "RK3566", "battery": "3500mAh"},
+                                "Miyoo Mini+ V3": {"precio_usd": 38.3, "storage": "—", "marca": "Miyoo", "screen": "3.5in 640x480", "cpu": "Cortex-A7", "battery": "3000mAh"},
+                                "Trimui Smart Pro": {"precio_usd": 55.7, "storage": "—", "marca": "Trimui", "screen": "4.96in 1280x720", "cpu": "RK3326", "battery": "5000mAh"},
+                                "Trimui Smart Pro S": {"precio_usd": 75.7, "storage": "—", "marca": "Trimui", "screen": "4.96in 1280x720", "cpu": "A523", "battery": "5000mAh"},
+                                "Trimui Brick": {"precio_usd": 53.0, "storage": "—", "marca": "Trimui", "screen": "3.2in 1024x768", "cpu": "—", "battery": "3000mAh"},
+                                "Trimui Brick Hammer": {"precio_usd": 72.0, "storage": "—", "marca": "Trimui", "screen": "3.2in 1024x768", "cpu": "—", "battery": "3000mAh"},
+                                "Retroid Pocket 4 PRO": {"precio_usd": 219.1, "storage": "128G", "marca": "Retroid", "screen": "—", "cpu": "D1100", "battery": "—"},
+                                "Retroid Pocket 5": {"precio_usd": 248.7, "storage": "128G", "marca": "Retroid", "screen": "5.5in AMOLED", "cpu": "—", "battery": "5000mAh"},
+                                "Retroid Pocket Flip2": {"precio_usd": 257.4, "storage": "128G", "marca": "Retroid", "screen": "5.5in AMOLED", "cpu": "—", "battery": "5000mAh"},
+                                "Retroid Pocket Classic": {"precio_usd": 156.5, "storage": "128G", "marca": "Retroid", "screen": "3.92in AMOLED", "cpu": "—", "battery": "5000mAh"},
+                                "Retroid MINI": {"precio_usd": 236.5, "storage": "128G", "marca": "Retroid", "screen": "3.7in 1280x960", "cpu": "—", "battery": "4000mAh"},
+                            },
+                        },
+                    },
+                }
+
+        prov_data = st.session_state.proveedores_data
+        suppliers = prov_data.get("suppliers", {})
+
+        # ── Selector de vista ──
+        vista = st.radio("Vista", ["📋 Catálogo por proveedor", "⚖️ Comparar proveedores", "➕ Agregar proveedor/producto"], horizontal=True)
+
+        # ════════════════════════════════════════════════════════════════════
+        # VISTA 1: Catálogo por proveedor
+        # ════════════════════════════════════════════════════════════════════
+        if vista == "📋 Catálogo por proveedor":
+            if not suppliers:
+                st.info("No hay proveedores cargados.")
+            else:
+                proveedor_sel = st.selectbox("Proveedor", list(suppliers.keys()))
+                if proveedor_sel:
+                    sup = suppliers[proveedor_sel]
+                    st.caption(f"📞 {sup.get('contacto', '—')} | 🌐 {sup.get('web', '—')}")
+
+                    prods = sup.get("productos", {})
+                    if not prods:
+                        st.info("Sin productos cargados.")
+                    else:
+                        # Construir DataFrame
+                        rows_prov = []
+                        for nombre, info in prods.items():
+                            rows_prov.append({
+                                "Producto": nombre,
+                                "FOB (USD)": float(info.get("precio_usd", 0)),
+                                "Marca": info.get("marca", "—"),
+                                "Pantalla": info.get("screen", "—"),
+                                "CPU": info.get("cpu", "—"),
+                                "Batería": info.get("battery", "—"),
+                                "Storage": info.get("storage", "—"),
+                            })
+                        df_prov = pd.DataFrame(rows_prov)
+
+                        # Filtros
+                        col_f1, col_f2, col_f3 = st.columns(3)
+                        buscar_p = col_f1.text_input("🔍 Buscar producto", "", key="buscar_prov")
+                        marcas = sorted(df_prov["Marca"].unique())
+                        marca_sel = col_f2.multiselect("Marca", marcas, default=marcas, key="marca_prov")
+                        orden_prov = col_f3.selectbox("Ordenar por", ["Producto", "FOB (USD)", "Marca"], key="orden_prov")
+
+                        df_prov_f = df_prov.copy()
+                        if buscar_p:
+                            df_prov_f = df_prov_f[df_prov_f["Producto"].str.contains(buscar_p, case=False, na=False)]
+                        if marca_sel:
+                            df_prov_f = df_prov_f[df_prov_f["Marca"].isin(marca_sel)]
+                        df_prov_f = df_prov_f.sort_values(orden_prov)
+
+                        # Métricas
+                        pm1, pm2, pm3 = st.columns(3)
+                        pm1.metric("Productos", len(df_prov_f))
+                        pm2.metric("FOB mín", f"${df_prov_f['FOB (USD)'].min():.1f}" if not df_prov_f.empty else "—")
+                        pm3.metric("FOB máx", f"${df_prov_f['FOB (USD)'].max():.1f}" if not df_prov_f.empty else "—")
+
+                        st.dataframe(
+                            df_prov_f.style.format({"FOB (USD)": "${:.1f}"})
+                                .background_gradient(subset=["FOB (USD)"], cmap="YlOrRd"),
+                            use_container_width=True, hide_index=True,
+                        )
+
+                        # Gráfico de precios por marca
+                        if not df_prov_f.empty:
+                            st.divider()
+                            fig_prov = px.bar(
+                                df_prov_f.sort_values("FOB (USD)", ascending=True),
+                                x="FOB (USD)", y="Producto", orientation="h",
+                                color="Marca", title=f"Precios FOB — {proveedor_sel}",
+                                color_discrete_sequence=COLORES,
+                                text="FOB (USD)",
+                            )
+                            fig_prov.update_layout(
+                                yaxis={"categoryorder": "total ascending"},
+                                xaxis_tickprefix="$",
+                                height=max(400, len(df_prov_f) * 25),
+                            )
+                            fig_prov.update_traces(texttemplate="$%{text:.1f}", textposition="outside")
+                            st.plotly_chart(fig_prov, use_container_width=True)
+
+                        st.download_button(
+                            f"⬇️ Descargar catálogo {proveedor_sel}",
+                            df_prov_f.to_csv(index=False).encode("utf-8"),
+                            f"catalogo_{proveedor_sel.replace(' ', '_')}.csv", "text/csv",
+                        )
+
+        # ════════════════════════════════════════════════════════════════════
+        # VISTA 2: Comparar proveedores
+        # ════════════════════════════════════════════════════════════════════
+        elif vista == "⚖️ Comparar proveedores":
+            if len(suppliers) < 1:
+                st.info("Cargá al menos un proveedor para ver la comparación.")
+            else:
+                # Unificar todos los productos de todos los proveedores
+                all_rows = []
+                for sup_name, sup_data in suppliers.items():
+                    for prod, info in sup_data.get("productos", {}).items():
+                        all_rows.append({
+                            "Producto": prod,
+                            "Proveedor": sup_name,
+                            "FOB (USD)": float(info.get("precio_usd", 0)),
+                            "Marca": info.get("marca", "—"),
+                            "Pantalla": info.get("screen", "—"),
+                            "CPU": info.get("cpu", "—"),
+                        })
+                df_all = pd.DataFrame(all_rows)
+
+                if df_all.empty:
+                    st.info("No hay productos cargados.")
+                else:
+                    # Filtrar
+                    buscar_comp = st.text_input("🔍 Buscar producto", "", key="buscar_comp")
+                    if buscar_comp:
+                        df_all = df_all[df_all["Producto"].str.contains(buscar_comp, case=False, na=False)]
+
+                    if len(suppliers) >= 2:
+                        # Pivot para comparar precios lado a lado
+                        df_pivot = df_all.pivot_table(
+                            index="Producto", columns="Proveedor",
+                            values="FOB (USD)", aggfunc="first",
+                        ).reset_index()
+
+                        # Marcar el mejor precio
+                        sup_cols = [c for c in df_pivot.columns if c != "Producto"]
+                        if len(sup_cols) >= 2:
+                            df_pivot["Mejor"] = df_pivot[sup_cols].idxmin(axis=1)
+                            df_pivot["Ahorro (USD)"] = df_pivot[sup_cols].max(axis=1) - df_pivot[sup_cols].min(axis=1)
+                            df_pivot = df_pivot.sort_values("Ahorro (USD)", ascending=False)
+
+                        st.subheader("⚖️ Comparación de precios FOB")
+                        fmt_pivot = {c: "${:.1f}" for c in sup_cols}
+                        if "Ahorro (USD)" in df_pivot.columns:
+                            fmt_pivot["Ahorro (USD)"] = "${:.1f}"
+                        st.dataframe(
+                            df_pivot.style.format(fmt_pivot),
+                            use_container_width=True, hide_index=True,
+                        )
+                    else:
+                        # Solo 1 proveedor, mostrar todo
+                        st.subheader(f"Catálogo completo — {list(suppliers.keys())[0]}")
+                        st.dataframe(
+                            df_all.style.format({"FOB (USD)": "${:.1f}"}),
+                            use_container_width=True, hide_index=True,
+                        )
+
+                    # Comparación con costos cargados en el dashboard
+                    st.divider()
+                    st.subheader("📊 Comparación vs costos cargados en el dashboard")
+                    _costos_gs_prov = gs_read("CostosConsolas") or {}
+                    if _costos_gs_prov:
+                        rows_comp = []
+                        for prod_name in df_all["Producto"].unique():
+                            fob_dash = get_fob_usd(prod_name, _costos_gs_prov)
+                            mejor_prov_row = df_all[df_all["Producto"] == prod_name].sort_values("FOB (USD)").iloc[0]
+                            fob_prov = mejor_prov_row["FOB (USD)"]
+                            prov_name = mejor_prov_row["Proveedor"]
+                            if fob_dash > 0 and fob_prov > 0:
+                                diff = round(fob_prov - fob_dash, 2)
+                                rows_comp.append({
+                                    "Producto": prod_name,
+                                    "FOB Dashboard (USD)": fob_dash,
+                                    f"FOB {prov_name} (USD)": fob_prov,
+                                    "Diferencia (USD)": diff,
+                                    "Status": "✅ Más barato" if diff < -0.5 else ("⚠️ Más caro" if diff > 0.5 else "≈ Similar"),
+                                })
+                        if rows_comp:
+                            df_comp = pd.DataFrame(rows_comp).sort_values("Diferencia (USD)")
+                            fmt_comp = {"FOB Dashboard (USD)": "${:.2f}", "Diferencia (USD)": "${:+.2f}"}
+                            for col in df_comp.columns:
+                                if "FOB" in col and "Dashboard" not in col:
+                                    fmt_comp[col] = "${:.2f}"
+                            st.dataframe(
+                                df_comp.style.format(fmt_comp),
+                                use_container_width=True, hide_index=True,
+                            )
+                        else:
+                            st.info("No hay productos coincidentes entre el catálogo y los costos del dashboard.")
+                    else:
+                        st.info("Cargá costos en la solapa 💻 Costos de consolas para comparar.")
+
+        # ════════════════════════════════════════════════════════════════════
+        # VISTA 3: Agregar proveedor/producto
+        # ════════════════════════════════════════════════════════════════════
+        elif vista == "➕ Agregar proveedor/producto":
+            st.subheader("Agregar nuevo proveedor")
+            with st.form("form_nuevo_proveedor"):
+                np1, np2 = st.columns(2)
+                nuevo_prov_nombre = np1.text_input("Nombre del proveedor")
+                nuevo_prov_contacto = np2.text_input("Contacto (WhatsApp, email, etc)")
+                nuevo_prov_web = st.text_input("Web / Alibaba", "")
+                submit_prov = st.form_submit_button("➕ Crear proveedor", use_container_width=True)
+                if submit_prov and nuevo_prov_nombre:
+                    if nuevo_prov_nombre not in suppliers:
+                        suppliers[nuevo_prov_nombre] = {
+                            "contacto": nuevo_prov_contacto,
+                            "web": nuevo_prov_web,
+                            "productos": {},
+                        }
+                        prov_data["suppliers"] = suppliers
+                        st.session_state.proveedores_data = prov_data
+                        gs_write("Proveedores", prov_data)
+                        st.success(f"✅ Proveedor '{nuevo_prov_nombre}' creado")
+                        st.rerun()
+                    else:
+                        st.warning("Ya existe un proveedor con ese nombre.")
+
+            st.divider()
+            st.subheader("Agregar productos a un proveedor")
+            if not suppliers:
+                st.info("Primero creá un proveedor.")
+            else:
+                prov_destino = st.selectbox("Proveedor destino", list(suppliers.keys()), key="prov_dest")
+
+                st.markdown("**Cargá productos (uno por fila):**")
+                with st.form("form_productos_prov"):
+                    prod_input = st.text_area(
+                        "Formato: Nombre | Precio USD | Marca | Pantalla | CPU | Batería | Storage",
+                        placeholder="Ejemplo:\nR36S | 23.2 | R36 Series | 3.5in 640x480 | RK3326 | 3200mAh | 64G\nTrimui Brick | 53.0 | Trimui | 3.2in 1024x768 | — | 3000mAh | —",
+                        height=200,
+                    )
+                    submit_prods = st.form_submit_button("➕ Agregar productos", use_container_width=True)
+                    if submit_prods and prod_input and prov_destino:
+                        added = 0
+                        for line in prod_input.strip().split("\n"):
+                            parts = [p.strip() for p in line.split("|")]
+                            if len(parts) >= 2:
+                                nombre = parts[0]
+                                try:
+                                    precio = float(parts[1])
+                                except Exception:
+                                    continue
+                                prod_entry = {"precio_usd": precio}
+                                if len(parts) >= 3:
+                                    prod_entry["marca"] = parts[2]
+                                if len(parts) >= 4:
+                                    prod_entry["screen"] = parts[3]
+                                if len(parts) >= 5:
+                                    prod_entry["cpu"] = parts[4]
+                                if len(parts) >= 6:
+                                    prod_entry["battery"] = parts[5]
+                                if len(parts) >= 7:
+                                    prod_entry["storage"] = parts[6]
+                                suppliers[prov_destino]["productos"][nombre] = prod_entry
+                                added += 1
+                        if added > 0:
+                            prov_data["suppliers"] = suppliers
+                            st.session_state.proveedores_data = prov_data
+                            gs_write("Proveedores", prov_data)
+                            st.success(f"✅ {added} producto(s) agregados a {prov_destino}")
+                            st.rerun()
+
+                # Editor rápido de productos existentes
+                st.divider()
+                st.subheader("📝 Editar productos existentes")
+                prov_edit = st.selectbox("Proveedor", list(suppliers.keys()), key="prov_edit")
+                if prov_edit and suppliers[prov_edit].get("productos"):
+                    prods_edit = suppliers[prov_edit]["productos"]
+                    rows_edit = []
+                    for nombre, info in prods_edit.items():
+                        rows_edit.append({
+                            "Producto": nombre,
+                            "FOB (USD)": float(info.get("precio_usd", 0)),
+                            "Marca": info.get("marca", "—"),
+                            "Pantalla": info.get("screen", "—"),
+                            "CPU": info.get("cpu", "—"),
+                            "Batería": info.get("battery", "—"),
+                            "Storage": info.get("storage", "—"),
+                        })
+                    df_edit_prov = pd.DataFrame(rows_edit).sort_values("Producto")
+                    edited_prov_df = st.data_editor(
+                        df_edit_prov,
+                        column_config={
+                            "Producto": st.column_config.TextColumn("Producto", disabled=True),
+                            "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.1, format="$%.1f"),
+                        },
+                        hide_index=True, use_container_width=True, key="edit_prov_table",
+                    )
+
+                    if st.button("💾 Guardar cambios", key="save_edit_prov", use_container_width=True, type="primary"):
+                        for _, row in edited_prov_df.iterrows():
+                            prod_name = row["Producto"]
+                            if prod_name in prods_edit:
+                                prods_edit[prod_name]["precio_usd"] = float(row["FOB (USD)"])
+                                prods_edit[prod_name]["marca"] = row.get("Marca", "—")
+                                prods_edit[prod_name]["screen"] = row.get("Pantalla", "—")
+                                prods_edit[prod_name]["cpu"] = row.get("CPU", "—")
+                                prods_edit[prod_name]["battery"] = row.get("Batería", "—")
+                                prods_edit[prod_name]["storage"] = row.get("Storage", "—")
+                        prov_data["suppliers"] = suppliers
+                        st.session_state.proveedores_data = prov_data
+                        ok = gs_write("Proveedores", prov_data)
+                        st.success("✅ Guardado" if ok else "⚠️ Solo en sesión")
+
+        # ── Botón global de guardado ──
+        st.divider()
+        if st.button("💾 Guardar todos los datos de proveedores", use_container_width=True):
+            ok = gs_write("Proveedores", st.session_state.proveedores_data)
+            st.success("✅ Proveedores guardados en Google Sheets" if ok else "⚠️ Solo en sesión")
 
 else:
     st.info("👈 Seleccioná el período en el panel izquierdo y hacé clic en Buscar.")
