@@ -2247,8 +2247,7 @@ if st.session_state.df_tn is not None:
                         pm3.metric("FOB máx", f"${df_prov_f['FOB (USD)'].max():.1f}" if not df_prov_f.empty else "—")
 
                         st.dataframe(
-                            df_prov_f.style.format({"FOB (USD)": "${:.1f}"})
-                                .background_gradient(subset=["FOB (USD)"], cmap="YlOrRd"),
+                            df_prov_f.style.format({"FOB (USD)": "${:.1f}"}),
                             use_container_width=True, hide_index=True,
                         )
 
