@@ -2402,43 +2402,251 @@ if st.session_state.df_tn is not None:
             else:
                 prov_destino = st.selectbox("Proveedor destino", list(suppliers.keys()), key="prov_dest")
 
-                st.markdown("**Cargá productos (uno por fila):**")
-                with st.form("form_productos_prov"):
-                    prod_input = st.text_area(
-                        "Formato: Nombre | Precio USD | Marca | Pantalla | CPU | Batería | Storage",
-                        placeholder="Ejemplo:\nR36S | 23.2 | R36 Series | 3.5in 640x480 | RK3326 | 3200mAh | 64G\nTrimui Brick | 53.0 | Trimui | 3.2in 1024x768 | — | 3000mAh | —",
-                        height=200,
+                metodo_carga = st.radio(
+                    "Método de carga",
+                    ["📁 Subir archivo (CSV / Excel)", "📄 Subir PDF (lista de precios)", "✏️ Pegar manualmente"],
+                    horizontal=True, key="metodo_carga",
+                )
+
+                # ── Método 1: CSV / Excel ──
+                if metodo_carga == "📁 Subir archivo (CSV / Excel)":
+                    st.caption(
+                        "El archivo debe tener al menos columnas de **nombre** y **precio**. "
+                        "Columnas opcionales: marca, pantalla, cpu, batería, storage."
                     )
-                    submit_prods = st.form_submit_button("➕ Agregar productos", use_container_width=True)
-                    if submit_prods and prod_input and prov_destino:
-                        added = 0
-                        for line in prod_input.strip().split("\n"):
-                            parts = [p.strip() for p in line.split("|")]
-                            if len(parts) >= 2:
-                                nombre = parts[0]
-                                try:
-                                    precio = float(parts[1])
-                                except Exception:
-                                    continue
-                                prod_entry = {"precio_usd": precio}
-                                if len(parts) >= 3:
-                                    prod_entry["marca"] = parts[2]
-                                if len(parts) >= 4:
-                                    prod_entry["screen"] = parts[3]
-                                if len(parts) >= 5:
-                                    prod_entry["cpu"] = parts[4]
-                                if len(parts) >= 6:
-                                    prod_entry["battery"] = parts[5]
-                                if len(parts) >= 7:
-                                    prod_entry["storage"] = parts[6]
-                                suppliers[prov_destino]["productos"][nombre] = prod_entry
-                                added += 1
-                        if added > 0:
-                            prov_data["suppliers"] = suppliers
-                            st.session_state.proveedores_data = prov_data
-                            gs_write("Proveedores", prov_data)
-                            st.success(f"✅ {added} producto(s) agregados a {prov_destino}")
-                            st.rerun()
+                    uploaded = st.file_uploader(
+                        "Subí tu archivo CSV o Excel",
+                        type=["csv", "xlsx", "xls", "tsv"],
+                        key="upload_prov_csv",
+                    )
+                    if uploaded:
+                        try:
+                            if uploaded.name.endswith(".csv") or uploaded.name.endswith(".tsv"):
+                                sep = "\t" if uploaded.name.endswith(".tsv") else ","
+                                df_up = pd.read_csv(uploaded, sep=sep)
+                            else:
+                                df_up = pd.read_excel(uploaded)
+
+                            st.success(f"✅ Archivo leído: {len(df_up)} filas, {len(df_up.columns)} columnas")
+                            st.caption("Columnas detectadas: " + ", ".join(df_up.columns.tolist()))
+
+                            # Mapeo de columnas
+                            st.markdown("**Mapeá las columnas de tu archivo:**")
+                            cols_archivo = ["— No usar —"] + df_up.columns.tolist()
+                            mc1, mc2, mc3 = st.columns(3)
+                            col_nombre = mc1.selectbox("Columna NOMBRE", cols_archivo, index=1 if len(cols_archivo) > 1 else 0, key="map_nombre")
+                            col_precio = mc2.selectbox("Columna PRECIO (USD)", cols_archivo, index=min(2, len(cols_archivo)-1), key="map_precio")
+                            col_marca = mc3.selectbox("Columna MARCA (opcional)", cols_archivo, index=0, key="map_marca")
+                            mc4, mc5, mc6 = st.columns(3)
+                            col_screen = mc4.selectbox("Columna PANTALLA (opcional)", cols_archivo, index=0, key="map_screen")
+                            col_cpu = mc5.selectbox("Columna CPU (opcional)", cols_archivo, index=0, key="map_cpu")
+                            col_storage = mc6.selectbox("Columna STORAGE (opcional)", cols_archivo, index=0, key="map_storage")
+
+                            # Preview
+                            if col_nombre != "— No usar —" and col_precio != "— No usar —":
+                                rows_preview = []
+                                for _, r in df_up.iterrows():
+                                    nombre = str(r.get(col_nombre, "")).strip()
+                                    try:
+                                        precio = float(str(r.get(col_precio, 0)).replace("$", "").replace(",", "").strip())
+                                    except Exception:
+                                        precio = 0.0
+                                    if nombre and precio > 0:
+                                        rows_preview.append({
+                                            "Producto": nombre,
+                                            "FOB (USD)": precio,
+                                            "Marca": str(r.get(col_marca, "—")).strip() if col_marca != "— No usar —" else "—",
+                                            "Pantalla": str(r.get(col_screen, "—")).strip() if col_screen != "— No usar —" else "—",
+                                            "CPU": str(r.get(col_cpu, "—")).strip() if col_cpu != "— No usar —" else "—",
+                                            "Storage": str(r.get(col_storage, "—")).strip() if col_storage != "— No usar —" else "—",
+                                        })
+
+                                if rows_preview:
+                                    st.markdown(f"**Preview: {len(rows_preview)} productos válidos**")
+                                    df_preview = pd.DataFrame(rows_preview)
+                                    edited_preview = st.data_editor(
+                                        df_preview,
+                                        column_config={
+                                            "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.1, format="$%.1f"),
+                                        },
+                                        hide_index=True, use_container_width=True, key="preview_csv",
+                                        num_rows="dynamic",
+                                    )
+                                    if st.button("✅ Confirmar e importar", key="confirm_csv", type="primary", use_container_width=True):
+                                        added = 0
+                                        for _, row in edited_preview.iterrows():
+                                            nombre = str(row["Producto"]).strip()
+                                            precio = float(row.get("FOB (USD)", 0))
+                                            if nombre and precio > 0:
+                                                suppliers[prov_destino]["productos"][nombre] = {
+                                                    "precio_usd": precio,
+                                                    "marca": str(row.get("Marca", "—")),
+                                                    "screen": str(row.get("Pantalla", "—")),
+                                                    "cpu": str(row.get("CPU", "—")),
+                                                    "storage": str(row.get("Storage", "—")),
+                                                    "battery": "—",
+                                                }
+                                                added += 1
+                                        if added > 0:
+                                            prov_data["suppliers"] = suppliers
+                                            st.session_state.proveedores_data = prov_data
+                                            gs_write("Proveedores", prov_data)
+                                            st.success(f"✅ {added} producto(s) importados a {prov_destino}")
+                                            st.rerun()
+                                else:
+                                    st.warning("No se encontraron productos válidos. Revisá el mapeo de columnas.")
+
+                        except Exception as e:
+                            st.error(f"Error leyendo archivo: {e}")
+
+                # ── Método 2: PDF ──
+                elif metodo_carga == "📄 Subir PDF (lista de precios)":
+                    st.caption(
+                        "Subí el PDF del proveedor. Se extrae el texto y se intenta parsear "
+                        "productos y precios automáticamente. Después podés editar antes de guardar."
+                    )
+                    uploaded_pdf = st.file_uploader(
+                        "Subí tu PDF",
+                        type=["pdf"],
+                        key="upload_prov_pdf",
+                    )
+                    if uploaded_pdf:
+                        extracted_rows = []
+                        raw_text = ""
+                        try:
+                            import pdfplumber
+                            with pdfplumber.open(uploaded_pdf) as pdf:
+                                for page in pdf.pages:
+                                    tables = page.extract_tables()
+                                    for table in tables:
+                                        for row in table:
+                                            if row:
+                                                cells = [str(c).strip() if c else "" for c in row]
+                                                # Buscar filas con un número que parezca precio
+                                                for i, cell in enumerate(cells):
+                                                    try:
+                                                        val = float(cell.replace("$", "").replace(",", ""))
+                                                        if 1 < val < 5000:  # rango razonable para FOB
+                                                            # Buscar nombre en celdas anteriores
+                                                            nombre_parts = [c for c in cells[:i] if c and len(c) > 2 and not c.replace(".", "").isdigit()]
+                                                            if nombre_parts:
+                                                                nombre = nombre_parts[0]
+                                                                # Buscar storage
+                                                                storage = "—"
+                                                                for c in cells:
+                                                                    if any(s in c.upper() for s in ["64G", "128G", "256G", "32G", "16G"]):
+                                                                        storage = c.strip()
+                                                                        break
+                                                                extracted_rows.append({
+                                                                    "Producto": nombre,
+                                                                    "FOB (USD)": val,
+                                                                    "Marca": "—",
+                                                                    "Pantalla": "—",
+                                                                    "CPU": "—",
+                                                                    "Storage": storage,
+                                                                })
+                                                            break
+                                                    except ValueError:
+                                                        continue
+                                    # Also get raw text
+                                    page_text = page.extract_text()
+                                    if page_text:
+                                        raw_text += page_text + "\n"
+                        except ImportError:
+                            st.warning("⚠️ `pdfplumber` no está instalado. Agregalo a requirements.txt: `pdfplumber`")
+                            st.info("Mientras tanto, podés copiar el texto del PDF y pegarlo en el modo manual.")
+                        except Exception as e:
+                            st.error(f"Error procesando PDF: {e}")
+
+                        if extracted_rows:
+                            # Deduplicar por nombre (quedarse con el primero)
+                            seen = set()
+                            unique_rows = []
+                            for r in extracted_rows:
+                                if r["Producto"] not in seen:
+                                    seen.add(r["Producto"])
+                                    unique_rows.append(r)
+                            extracted_rows = unique_rows
+
+                            st.success(f"✅ {len(extracted_rows)} productos extraídos del PDF")
+                            st.caption("Revisá y editá la tabla antes de importar:")
+
+                            df_pdf = pd.DataFrame(extracted_rows)
+                            edited_pdf = st.data_editor(
+                                df_pdf,
+                                column_config={
+                                    "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.1, format="$%.1f"),
+                                },
+                                hide_index=True, use_container_width=True, key="preview_pdf",
+                                num_rows="dynamic",
+                            )
+
+                            if st.button("✅ Confirmar e importar desde PDF", key="confirm_pdf", type="primary", use_container_width=True):
+                                added = 0
+                                for _, row in edited_pdf.iterrows():
+                                    nombre = str(row["Producto"]).strip()
+                                    precio = float(row.get("FOB (USD)", 0))
+                                    if nombre and precio > 0:
+                                        suppliers[prov_destino]["productos"][nombre] = {
+                                            "precio_usd": precio,
+                                            "marca": str(row.get("Marca", "—")),
+                                            "screen": str(row.get("Pantalla", "—")),
+                                            "cpu": str(row.get("CPU", "—")),
+                                            "storage": str(row.get("Storage", "—")),
+                                            "battery": "—",
+                                        }
+                                        added += 1
+                                if added > 0:
+                                    prov_data["suppliers"] = suppliers
+                                    st.session_state.proveedores_data = prov_data
+                                    gs_write("Proveedores", prov_data)
+                                    st.success(f"✅ {added} producto(s) importados a {prov_destino}")
+                                    st.rerun()
+                        elif raw_text:
+                            st.warning("No se pudieron extraer tablas automáticamente. Texto crudo del PDF:")
+                            st.text_area("Texto extraído (copialo y usá el modo manual)", raw_text[:5000], height=300)
+                        elif uploaded_pdf:
+                            st.warning("No se pudo extraer contenido del PDF. Probá con CSV/Excel o el modo manual.")
+
+                # ── Método 3: Manual ──
+                elif metodo_carga == "✏️ Pegar manualmente":
+                    st.markdown("**Cargá productos (uno por fila):**")
+                    with st.form("form_productos_prov"):
+                        prod_input = st.text_area(
+                            "Formato: Nombre | Precio USD | Marca | Pantalla | CPU | Batería | Storage",
+                            placeholder="Ejemplo:\nR36S | 23.2 | R36 Series | 3.5in 640x480 | RK3326 | 3200mAh | 64G\nTrimui Brick | 53.0 | Trimui | 3.2in 1024x768 | — | 3000mAh | —",
+                            height=200,
+                        )
+                        submit_prods = st.form_submit_button("➕ Agregar productos", use_container_width=True)
+                        if submit_prods and prod_input and prov_destino:
+                            added = 0
+                            for line in prod_input.strip().split("\n"):
+                                parts = [p.strip() for p in line.split("|")]
+                                if len(parts) >= 2:
+                                    nombre = parts[0]
+                                    try:
+                                        precio = float(parts[1])
+                                    except Exception:
+                                        continue
+                                    prod_entry = {"precio_usd": precio}
+                                    if len(parts) >= 3:
+                                        prod_entry["marca"] = parts[2]
+                                    if len(parts) >= 4:
+                                        prod_entry["screen"] = parts[3]
+                                    if len(parts) >= 5:
+                                        prod_entry["cpu"] = parts[4]
+                                    if len(parts) >= 6:
+                                        prod_entry["battery"] = parts[5]
+                                    if len(parts) >= 7:
+                                        prod_entry["storage"] = parts[6]
+                                    suppliers[prov_destino]["productos"][nombre] = prod_entry
+                                    added += 1
+                            if added > 0:
+                                prov_data["suppliers"] = suppliers
+                                st.session_state.proveedores_data = prov_data
+                                gs_write("Proveedores", prov_data)
+                                st.success(f"✅ {added} producto(s) agregados a {prov_destino}")
+                                st.rerun()
 
                 # Editor rápido de productos existentes
                 st.divider()
