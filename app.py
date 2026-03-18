@@ -1574,118 +1574,349 @@ if st.session_state.df_tn is not None:
             )
 
     # ══════════════════════════════════════════════════════════════════════════
+    # HELPER: Extraer precios individuales por producto desde órdenes raw
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_product_rows_from_raw(orders_raw):
+        """
+        Extrae precio individual de cada producto desde la API de TN.
+        Cada producto en la orden tiene su propio 'price', así que no
+        dividimos el total de la orden entre productos.
+        """
+        product_rows = []
+        for o in orders_raw:
+            pd_raw = o.get("payment_details", {})
+            gateway = str(o.get("gateway", "")).lower()
+            metodo = gateway
+            cuotas = 1
+            if isinstance(pd_raw, dict):
+                metodo = pd_raw.get("method", gateway)
+                cuotas = int(pd_raw.get("installments", 1) or 1)
+
+            if metodo == "credit_card":
+                label_medio = "Credito contado" if cuotas == 1 else f"Credito {cuotas} cuotas"
+            elif metodo == "debit_card":
+                label_medio = "Debito"
+            elif any(x in str(metodo).lower() for x in ["transfer", "wire"]):
+                label_medio = "Transferencia"
+            elif "account_money" in str(metodo).lower():
+                label_medio = "Dinero en cuenta"
+            else:
+                label_medio = str(metodo).replace("_", " ").title() if metodo else str(gateway)
+
+            try:
+                fecha = pd.to_datetime(o.get("created_at", "")).strftime("%Y-%m-%d")
+            except Exception:
+                fecha = ""
+
+            order_total = float(o.get("total", 0))
+            n_products = len(o.get("products", []))
+            costo_envio = float(o.get("shipping_cost_owner", 0) or 0)
+            tasa = tasa_pago_nube(metodo, cuotas)
+
+            for p in o.get("products", []):
+                nombre = _extraer_nombre_producto(p.get("name", ""))
+                precio_unit = float(p.get("price", 0) or 0)
+                qty = int(p.get("quantity", 1) or 1)
+
+                # Si el precio individual es 0, fallback a dividir total
+                if precio_unit <= 0 and n_products > 0:
+                    precio_unit = order_total / n_products
+
+                # Comisión proporcional al precio del producto respecto al total
+                if order_total > 0:
+                    peso_en_orden = (precio_unit * qty) / order_total
+                else:
+                    peso_en_orden = 1.0 / max(n_products, 1)
+                comision_unit = round(order_total * tasa * peso_en_orden / qty, 2)
+                envio_unit = round(costo_envio * peso_en_orden / qty, 2)
+
+                for _ in range(qty):
+                    product_rows.append({
+                        "Producto": nombre,
+                        "Precio ($)": round(precio_unit, 0),
+                        "Medio de Pago": label_medio,
+                        "Cuotas": cuotas,
+                        "Comisión PN ($)": round(comision_unit, 0),
+                        "Tasa PN (%)": round(tasa * 100, 2),
+                        "Envío ($)": round(envio_unit, 0),
+                        "Fecha": fecha,
+                        "Orden Total ($)": order_total,
+                    })
+        return product_rows
+
+    # ══════════════════════════════════════════════════════════════════════════
     # TAB 8: MARGEN TEÓRICO POR CONSOLA
     # ══════════════════════════════════════════════════════════════════════════
     with tab8:
         st.subheader("📐 Margen teórico por consola")
         st.caption(
-            "Margen estimado considerando: precio de lista, costo total (FOB + import), "
-            "comisión PN ponderada promedio y envío promedio. "
-            "Representa lo que ganarías si todas las ventas fueran con la distribución actual de medios de pago."
+            "Margen estimado usando el **precio individual** de cada producto (no el total de la orden), "
+            "costo total (FOB + import + packaging + IVA), comisión PN y envío. "
+            "Incluye tabla de rentabilidad por cantidad de cuotas."
         )
 
         _costos_gs_mt = gs_read("CostosConsolas") or {}
         _tc_mt = int(dolar_blue) if dolar_blue else 1200
-        _ckg_mt = float(_costos_gs_mt.get("_costo_kg_usd", 65.0) or 65.0)
 
         if df_tn.empty:
             st.info("Buscá primero para ver los datos.")
         else:
-            # Calcular costo ponderado PN del período
-            total_fact = df_tn["Total ($)"].sum()
-            total_com = df_tn["Comision PN ($)"].sum()
-            tasa_ponderada = total_com / total_fact if total_fact > 0 else 0.0415
+            orders_raw = st.session_state.orders_raw
 
-            # Envío promedio del período
-            envio_prom = df_tn["Envio costo ($)"].mean()
+            # ── Configuración de costos adicionales ──
+            with st.expander("⚙️ Costos adicionales", expanded=True):
+                cc1, cc2, cc3 = st.columns(3)
+                with cc1:
+                    iva_mt = cc1.number_input("🧾 IVA (%)", value=10.5, step=0.5, key="iva_mt")
+                with cc2:
+                    packaging_ars = cc2.number_input("📦 Packaging por unidad ($)", value=2500, step=500, key="pkg_mt")
+                with cc3:
+                    cc3.metric("Dólar blue", f"${_tc_mt:,.0f}")
 
-            # Precio promedio por producto
-            precios_prod = {}
-            cantidades_prod = {}
-            for _, row in df_tn.iterrows():
-                prods_list = [p.strip() for p in str(row.get("Productos", "")).split(" / ") if p.strip()]
-                n_prods = max(len(prods_list), 1)
-                for p in prods_list:
-                    if p not in precios_prod:
-                        precios_prod[p] = []
-                        cantidades_prod[p] = 0
-                    precios_prod[p].append(row.get("Total ($)", 0) / n_prods)
-                    cantidades_prod[p] += int(row.get("Cantidad", 1) or 1)
+            # ── Extraer precios individuales desde raw orders ──
+            product_rows = _build_product_rows_from_raw(orders_raw)
+            if not product_rows:
+                st.info("No hay datos de productos.")
+            else:
+                df_prod_raw = pd.DataFrame(product_rows)
 
-            rows_mt = []
-            for prod in sorted(precios_prod.keys()):
-                precio_prom = sum(precios_prod[prod]) / len(precios_prod[prod])
-                unidades = cantidades_prod[prod]
+                # Precio promedio real por producto (precio individual, no total/n)
+                precios_prod = df_prod_raw.groupby("Producto").agg(
+                    Precio_prom=("Precio ($)", "mean"),
+                    Unidades=("Precio ($)", "count"),
+                ).reset_index()
 
-                # Costo total del producto (FOB + import)
-                costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
-                costo_total_ars = costo_total_usd * _tc_mt
+                # Envío promedio del período
+                envio_prom = df_tn["Envio costo ($)"].mean()
 
-                # Comisión PN estimada
-                comision_est = round(precio_prom * tasa_ponderada, 0)
+                # Tasa ponderada
+                total_fact = df_tn["Total ($)"].sum()
+                total_com = df_tn["Comision PN ($)"].sum()
+                tasa_ponderada = total_com / total_fact if total_fact > 0 else 0.0415
 
-                # Margen teórico
-                margen_teorico = round(precio_prom - costo_total_ars - comision_est - envio_prom, 0)
-                margen_pct = round(margen_teorico / precio_prom * 100, 1) if precio_prom > 0 else 0
+                # ── Tabla principal de margen teórico ──
+                rows_mt = []
+                for _, prow in precios_prod.iterrows():
+                    prod = prow["Producto"]
+                    precio_prom = prow["Precio_prom"]
+                    unidades = int(prow["Unidades"])
 
-                rows_mt.append({
-                    "Producto": prod,
-                    "Precio prom ($)": round(precio_prom, 0),
-                    "Costo total ($)": round(costo_total_ars, 0),
-                    f"Comisión PN ({tasa_ponderada*100:.1f}%)": round(comision_est, 0),
-                    "Envío prom ($)": round(envio_prom, 0),
-                    "Margen teórico ($)": margen_teorico,
-                    "Margen (%)": margen_pct,
-                    "Unidades": unidades,
-                })
+                    costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
+                    costo_total_ars = costo_total_usd * _tc_mt
+                    costo_iva = round(precio_prom * (iva_mt / 100), 0)
+                    costo_full = round(costo_total_ars + packaging_ars + costo_iva, 0)
 
-            df_mt = pd.DataFrame(rows_mt).sort_values("Margen (%)", ascending=False)
+                    comision_est = round(precio_prom * tasa_ponderada, 0)
+                    margen_teorico = round(precio_prom - costo_full - comision_est - envio_prom, 0)
+                    margen_pct = round(margen_teorico / precio_prom * 100, 1) if precio_prom > 0 else 0
 
-            # Métricas resumen
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Tasa PN ponderada", f"{tasa_ponderada*100:.2f}%")
-            m2.metric("Envío promedio", fmt(envio_prom))
-            m3.metric("Dólar blue", f"${_tc_mt:,.0f}")
-
-            # Gráfico de margen teórico
-            df_mt_chart = df_mt.sort_values("Margen (%)", ascending=True).tail(20)
-            fig_mt = px.bar(
-                df_mt_chart, x="Margen (%)", y="Producto", orientation="h",
-                title="Margen teórico por consola (%)",
-                color="Margen (%)",
-                color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
-                text="Margen (%)",
-            )
-            fig_mt.update_layout(
-                yaxis={"categoryorder": "total ascending"},
-                coloraxis_showscale=False,
-            )
-            fig_mt.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-            st.plotly_chart(fig_mt, use_container_width=True)
-
-            st.divider()
-            col_com = f"Comisión PN ({tasa_ponderada*100:.1f}%)"
-            st.dataframe(
-                df_mt.style
-                    .format({
-                        "Precio prom ($)": "${:,.0f}",
-                        "Costo total ($)": "${:,.0f}",
-                        col_com: "${:,.0f}",
-                        "Envío prom ($)": "${:,.0f}",
-                        "Margen teórico ($)": "${:,.0f}",
-                        "Margen (%)": "{:.1f}%",
+                    rows_mt.append({
+                        "Producto": prod,
+                        "Precio prom ($)": round(precio_prom, 0),
+                        "Costo prod ($)": round(costo_total_ars, 0),
+                        "Packaging ($)": packaging_ars,
+                        f"IVA ({iva_mt}%)": costo_iva,
+                        "Costo full ($)": costo_full,
+                        f"Comisión PN ({tasa_ponderada*100:.1f}%)": comision_est,
+                        "Envío prom ($)": round(envio_prom, 0),
+                        "Margen ($)": margen_teorico,
+                        "Margen (%)": margen_pct,
+                        "Uds": unidades,
                     })
-                    .map(lambda v: (
-                        "background-color: #1e4620; color: #00C49F" if isinstance(v, (int, float)) and v >= 20
-                        else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v >= 10
-                        else "background-color: #4a1010; color: #ff6b6b" if isinstance(v, (int, float))
-                        else ""
-                    ), subset=["Margen (%)"]),
-                use_container_width=True, hide_index=True,
-            )
 
-            st.download_button("⬇️ Descargar margen teórico",
-                df_mt.to_csv(index=False).encode("utf-8"), "margen_teorico.csv", "text/csv")
+                df_mt = pd.DataFrame(rows_mt).sort_values("Margen (%)", ascending=False)
+
+                # Métricas
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Tasa PN ponderada", f"{tasa_ponderada*100:.2f}%")
+                m2.metric("Envío promedio", fmt(envio_prom))
+                m3.metric("Packaging/u", fmt(packaging_ars))
+                m4.metric(f"IVA", f"{iva_mt}%")
+
+                # Gráfico
+                df_mt_chart = df_mt.sort_values("Margen (%)", ascending=True).tail(20)
+                fig_mt = px.bar(
+                    df_mt_chart, x="Margen (%)", y="Producto", orientation="h",
+                    title="Margen teórico por consola (%)",
+                    color="Margen (%)",
+                    color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
+                    text="Margen (%)",
+                )
+                fig_mt.update_layout(
+                    yaxis={"categoryorder": "total ascending"},
+                    coloraxis_showscale=False,
+                )
+                fig_mt.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                st.plotly_chart(fig_mt, use_container_width=True)
+
+                # Tabla principal
+                st.divider()
+                col_com_mt = f"Comisión PN ({tasa_ponderada*100:.1f}%)"
+                col_iva_mt = f"IVA ({iva_mt}%)"
+                st.dataframe(
+                    df_mt.style
+                        .format({
+                            "Precio prom ($)": "${:,.0f}",
+                            "Costo prod ($)": "${:,.0f}",
+                            "Packaging ($)": "${:,.0f}",
+                            col_iva_mt: "${:,.0f}",
+                            "Costo full ($)": "${:,.0f}",
+                            col_com_mt: "${:,.0f}",
+                            "Envío prom ($)": "${:,.0f}",
+                            "Margen ($)": "${:,.0f}",
+                            "Margen (%)": "{:.1f}%",
+                        })
+                        .map(lambda v: (
+                            "background-color: #1e4620; color: #00C49F" if isinstance(v, (int, float)) and v >= 20
+                            else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v >= 10
+                            else "background-color: #4a1010; color: #ff6b6b" if isinstance(v, (int, float))
+                            else ""
+                        ), subset=["Margen (%)"]),
+                    use_container_width=True, hide_index=True,
+                )
+
+                # ══════════════════════════════════════════════════════════════
+                # TABLA DE RENTABILIDAD POR CUOTAS
+                # ══════════════════════════════════════════════════════════════
+                st.divider()
+                st.subheader("💳 Rentabilidad por cantidad de cuotas")
+                st.caption(
+                    "Muestra cómo cambia el margen de cada consola según la cantidad de cuotas "
+                    "que elija el cliente. La comisión de PN varía según el plan de cuotas."
+                )
+
+                # Tasas por cuota (usar las mismas que Salud Financiera si están cargadas)
+                cuotas_config = {
+                    "Débito/Trans": 0.0415,
+                    "1 cuota": 0.0415,
+                    "3 cuotas": 0.1420,
+                    "6 cuotas": 0.2370,
+                    "12 cuotas": 0.4324,
+                }
+
+                with st.expander("⚙️ Ajustar tasas por cuota", expanded=False):
+                    tc_cols = st.columns(len(cuotas_config))
+                    cuotas_ajustadas = {}
+                    for i, (label, default) in enumerate(cuotas_config.items()):
+                        with tc_cols[i]:
+                            cuotas_ajustadas[label] = st.number_input(
+                                f"{label} (%)", value=round(default * 100, 2),
+                                step=0.1, key=f"cuota_mt_{label}",
+                            ) / 100
+
+                rows_cuotas = []
+                for _, prow in precios_prod.iterrows():
+                    prod = prow["Producto"]
+                    precio = prow["Precio_prom"]
+
+                    costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
+                    costo_total_ars = costo_total_usd * _tc_mt
+                    costo_iva = round(precio * (iva_mt / 100), 0)
+                    costo_full = round(costo_total_ars + packaging_ars + costo_iva, 0)
+
+                    row_data = {
+                        "Producto": prod,
+                        "Precio ($)": round(precio, 0),
+                        "Costo full ($)": costo_full,
+                    }
+
+                    for label, tasa in cuotas_ajustadas.items():
+                        comision = round(precio * tasa, 0)
+                        margen = round(precio - costo_full - comision - envio_prom, 0)
+                        margen_pct = round(margen / precio * 100, 1) if precio > 0 else 0
+                        row_data[f"M {label} ($)"] = margen
+                        row_data[f"M {label} (%)"] = margen_pct
+
+                    rows_cuotas.append(row_data)
+
+                df_cuotas = pd.DataFrame(rows_cuotas).sort_values("Precio ($)", ascending=False)
+
+                # Formato para las columnas de margen
+                fmt_cuotas = {
+                    "Precio ($)": "${:,.0f}",
+                    "Costo full ($)": "${:,.0f}",
+                }
+                pct_cols = []
+                for label in cuotas_ajustadas.keys():
+                    fmt_cuotas[f"M {label} ($)"] = "${:,.0f}"
+                    fmt_cuotas[f"M {label} (%)"] = "{:.1f}%"
+                    pct_cols.append(f"M {label} (%)")
+
+                def _color_margen_cuotas(v):
+                    if isinstance(v, (int, float)):
+                        if v >= 20:
+                            return "background-color: #1e4620; color: #00C49F"
+                        elif v >= 10:
+                            return "background-color: #5a4a1a; color: #ffd700"
+                        elif v >= 0:
+                            return "background-color: #4a3a1a; color: #ffaa00"
+                        else:
+                            return "background-color: #4a1010; color: #ff6b6b"
+                    return ""
+
+                st.dataframe(
+                    df_cuotas.style
+                        .format(fmt_cuotas)
+                        .map(_color_margen_cuotas, subset=pct_cols),
+                    use_container_width=True, hide_index=True,
+                )
+
+                # Gráfico comparativo para un producto seleccionado
+                st.divider()
+                prod_sel_cuotas = st.selectbox(
+                    "Ver detalle por cuotas de:",
+                    df_cuotas["Producto"].tolist(),
+                    key="sel_cuotas_mt",
+                )
+                if prod_sel_cuotas:
+                    row_sel = df_cuotas[df_cuotas["Producto"] == prod_sel_cuotas].iloc[0]
+                    chart_data = []
+                    for label in cuotas_ajustadas.keys():
+                        chart_data.append({
+                            "Cuotas": label,
+                            "Margen ($)": row_sel[f"M {label} ($)"],
+                            "Margen (%)": row_sel[f"M {label} (%)"],
+                            "Tasa PN (%)": round(cuotas_ajustadas[label] * 100, 2),
+                        })
+                    df_chart_cuotas = pd.DataFrame(chart_data)
+
+                    fig_cuotas = go.Figure()
+                    colors_cuotas = [
+                        "#00C49F" if m >= 0 else "#FF5733"
+                        for m in df_chart_cuotas["Margen ($)"]
+                    ]
+                    fig_cuotas.add_trace(go.Bar(
+                        x=df_chart_cuotas["Cuotas"],
+                        y=df_chart_cuotas["Margen ($)"],
+                        name="Margen ($)",
+                        marker_color=colors_cuotas,
+                        text=df_chart_cuotas["Margen ($)"].apply(lambda x: f"${x:,.0f}"),
+                        textposition="outside",
+                    ))
+                    fig_cuotas.add_trace(go.Scatter(
+                        x=df_chart_cuotas["Cuotas"],
+                        y=df_chart_cuotas["Margen (%)"],
+                        name="Margen (%)",
+                        mode="lines+markers+text",
+                        line=dict(color="#009EE3", width=3),
+                        marker=dict(size=10),
+                        text=df_chart_cuotas["Margen (%)"].apply(lambda x: f"{x:.1f}%"),
+                        textposition="top center",
+                        yaxis="y2",
+                    ))
+                    fig_cuotas.update_layout(
+                        title=f"Margen por cuotas — {prod_sel_cuotas} (Precio: {fmt(row_sel['Precio ($)'])})",
+                        yaxis=dict(title="Margen ($)", tickformat="$,.0f"),
+                        yaxis2=dict(title="Margen (%)", overlaying="y", side="right", ticksuffix="%", showgrid=False),
+                        legend=dict(orientation="h", y=-0.15),
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig_cuotas, use_container_width=True)
+
+                st.download_button("⬇️ Descargar margen teórico",
+                    df_mt.to_csv(index=False).encode("utf-8"), "margen_teorico.csv", "text/csv")
+                st.download_button("⬇️ Descargar rentabilidad por cuotas",
+                    df_cuotas.to_csv(index=False).encode("utf-8"), "rentabilidad_cuotas.csv", "text/csv")
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 9: MARGEN REAL POR CONSOLA
@@ -1693,8 +1924,8 @@ if st.session_state.df_tn is not None:
     with tab9:
         st.subheader("📈 Margen real por consola y medio de pago")
         st.caption(
-            "Margen real calculado orden por orden. Muestra cómo el medio de pago "
-            "impacta en la rentabilidad de cada producto."
+            "Margen real calculado orden por orden usando el **precio individual** de cada producto. "
+            "Muestra cómo el medio de pago impacta en la rentabilidad."
         )
 
         if df_tn.empty:
@@ -1702,156 +1933,173 @@ if st.session_state.df_tn is not None:
         else:
             _costos_gs_mr = gs_read("CostosConsolas") or {}
             _tc_mr = int(dolar_blue) if dolar_blue else 1200
+            orders_raw_mr = st.session_state.orders_raw
 
-            # Desglosar órdenes por producto individual
-            rows_real = []
-            for _, row in df_tn.iterrows():
-                prods_list = [p.strip() for p in str(row.get("Productos", "")).split(" / ") if p.strip()]
-                n_prods = max(len(prods_list), 1)
-                for p in prods_list:
-                    precio_unit = row.get("Total ($)", 0) / n_prods
-                    comision_unit = row.get("Comision PN ($)", 0) / n_prods
-                    envio_unit = row.get("Envio costo ($)", 0) / n_prods
-                    costo_total_usd = get_costo_total_usd(p, _costos_gs_mr)
+            # Config costos adicionales (compartido con tab 8)
+            with st.expander("⚙️ Costos adicionales", expanded=False):
+                cr1, cr2 = st.columns(2)
+                iva_mr = cr1.number_input("🧾 IVA (%)", value=10.5, step=0.5, key="iva_mr")
+                packaging_mr = cr2.number_input("📦 Packaging/u ($)", value=2500, step=500, key="pkg_mr")
+
+            # Extraer precios individuales desde raw orders
+            product_rows_mr = _build_product_rows_from_raw(orders_raw_mr)
+
+            if not product_rows_mr:
+                st.info("No hay datos de productos.")
+            else:
+                # Calcular margen real por cada línea de producto
+                rows_real = []
+                for pr in product_rows_mr:
+                    prod = pr["Producto"]
+                    precio = pr["Precio ($)"]
+                    comision = pr["Comisión PN ($)"]
+                    envio = pr["Envío ($)"]
+
+                    costo_total_usd = get_costo_total_usd(prod, _costos_gs_mr)
                     costo_total_ars = costo_total_usd * _tc_mr
-                    neto = precio_unit - comision_unit
-                    margen = neto - costo_total_ars - envio_unit
+                    costo_iva = round(precio * (iva_mr / 100), 0)
+                    costo_full = round(costo_total_ars + packaging_mr + costo_iva, 0)
+
+                    neto = precio - comision
+                    margen = round(neto - costo_full - envio, 0)
 
                     rows_real.append({
-                        "Producto": p,
-                        "Medio de Pago": row.get("Medio de Pago", ""),
-                        "Cuotas": row.get("Cuotas", 1),
-                        "Precio ($)": round(precio_unit, 0),
-                        "Comisión PN ($)": round(comision_unit, 0),
-                        "Costo PN (%)": round(comision_unit / precio_unit * 100, 2) if precio_unit > 0 else 0,
+                        "Producto": prod,
+                        "Medio de Pago": pr["Medio de Pago"],
+                        "Cuotas": pr["Cuotas"],
+                        "Precio ($)": round(precio, 0),
+                        "Comisión PN ($)": round(comision, 0),
+                        "Costo PN (%)": round(comision / precio * 100, 2) if precio > 0 else 0,
                         "Costo prod ($)": round(costo_total_ars, 0),
-                        "Envío ($)": round(envio_unit, 0),
-                        "Margen ($)": round(margen, 0),
-                        "Margen (%)": round(margen / precio_unit * 100, 1) if precio_unit > 0 else 0,
+                        "Packaging ($)": packaging_mr,
+                        f"IVA ({iva_mr}%)": costo_iva,
+                        "Envío ($)": round(envio, 0),
+                        "Margen ($)": margen,
+                        "Margen (%)": round(margen / precio * 100, 1) if precio > 0 else 0,
                     })
 
-            df_real = pd.DataFrame(rows_real)
+                df_real = pd.DataFrame(rows_real)
 
-            if df_real.empty:
-                st.info("No hay datos suficientes.")
-            else:
-                # ── Vista 1: Margen promedio por producto ──
-                st.markdown("### Margen promedio real por consola")
-                df_avg = df_real.groupby("Producto").agg(
-                    Ventas=("Precio ($)", "count"),
-                    Precio_prom=("Precio ($)", "mean"),
-                    Comision_prom=("Comisión PN ($)", "mean"),
-                    Costo_prom=("Costo prod ($)", "mean"),
-                    Margen_prom=("Margen ($)", "mean"),
-                    Margen_pct_prom=("Margen (%)", "mean"),
-                ).reset_index()
-                df_avg.columns = ["Producto", "Ventas", "Precio prom ($)", "Comisión prom ($)", "Costo prod ($)", "Margen prom ($)", "Margen (%)"]
-                df_avg = df_avg.sort_values("Margen (%)", ascending=False)
-
-                # Gráfico
-                df_avg_chart = df_avg.sort_values("Margen (%)", ascending=True).tail(20)
-                fig_mr = px.bar(
-                    df_avg_chart, x="Margen (%)", y="Producto", orientation="h",
-                    title="Margen real promedio por consola (%)",
-                    color="Margen (%)",
-                    color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
-                    text="Margen (%)",
-                )
-                fig_mr.update_layout(
-                    yaxis={"categoryorder": "total ascending"},
-                    coloraxis_showscale=False,
-                )
-                fig_mr.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-                st.plotly_chart(fig_mr, use_container_width=True)
-
-                st.dataframe(
-                    df_avg.style.format({
-                        "Precio prom ($)": "${:,.0f}",
-                        "Comisión prom ($)": "${:,.0f}",
-                        "Costo prod ($)": "${:,.0f}",
-                        "Margen prom ($)": "${:,.0f}",
-                        "Margen (%)": "{:.1f}%",
-                    }).map(lambda v: (
-                        "background-color: #1e4620; color: #00C49F" if isinstance(v, (int, float)) and v >= 20
-                        else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v >= 10
-                        else "background-color: #4a1010; color: #ff6b6b" if isinstance(v, (int, float))
-                        else ""
-                    ), subset=["Margen (%)"]),
-                    use_container_width=True, hide_index=True,
-                )
-
-                # ── Vista 2: Impacto del medio de pago por consola ──
-                st.divider()
-                st.markdown("### Impacto del medio de pago en el margen")
-
-                prod_sel_mr = st.selectbox(
-                    "Seleccioná un producto",
-                    df_avg["Producto"].tolist(),
-                    key="sel_margen_real",
-                )
-
-                if prod_sel_mr:
-                    df_prod = df_real[df_real["Producto"] == prod_sel_mr]
-                    df_by_medio = df_prod.groupby("Medio de Pago").agg(
+                if df_real.empty:
+                    st.info("No hay datos suficientes.")
+                else:
+                    # ── Vista 1: Margen promedio por producto ──
+                    st.markdown("### Margen promedio real por consola")
+                    df_avg = df_real.groupby("Producto").agg(
                         Ventas=("Precio ($)", "count"),
                         Precio_prom=("Precio ($)", "mean"),
                         Comision_prom=("Comisión PN ($)", "mean"),
-                        Costo_PN_pct=("Costo PN (%)", "mean"),
+                        Costo_prom=("Costo prod ($)", "mean"),
                         Margen_prom=("Margen ($)", "mean"),
-                        Margen_pct=("Margen (%)", "mean"),
-                    ).reset_index().sort_values("Margen_pct", ascending=False)
-                    df_by_medio.columns = [
-                        "Medio de Pago", "Ventas", "Precio prom ($)",
-                        "Comisión prom ($)", "Costo PN (%)", "Margen prom ($)", "Margen (%)",
-                    ]
+                        Margen_pct_prom=("Margen (%)", "mean"),
+                    ).reset_index()
+                    df_avg.columns = ["Producto", "Ventas", "Precio prom ($)", "Comisión prom ($)", "Costo prod ($)", "Margen prom ($)", "Margen (%)"]
+                    df_avg = df_avg.sort_values("Margen (%)", ascending=False)
 
-                    col_mr1, col_mr2 = st.columns(2)
-                    with col_mr1:
-                        fig_medio = px.bar(
-                            df_by_medio, x="Medio de Pago", y="Margen (%)",
-                            title=f"Margen real por medio de pago — {prod_sel_mr}",
-                            color="Margen (%)",
-                            color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
-                            text="Margen (%)",
-                        )
-                        fig_medio.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-                        fig_medio.update_layout(coloraxis_showscale=False)
-                        st.plotly_chart(fig_medio, use_container_width=True)
-
-                    with col_mr2:
-                        fig_dist = px.pie(
-                            df_by_medio, names="Medio de Pago", values="Ventas",
-                            title=f"Distribución de ventas — {prod_sel_mr}",
-                            color_discrete_sequence=COLORES, hole=0.35,
-                        )
-                        fig_dist.update_traces(textinfo="label+value+percent")
-                        st.plotly_chart(fig_dist, use_container_width=True)
+                    # Gráfico
+                    df_avg_chart = df_avg.sort_values("Margen (%)", ascending=True).tail(20)
+                    fig_mr = px.bar(
+                        df_avg_chart, x="Margen (%)", y="Producto", orientation="h",
+                        title="Margen real promedio por consola (%)",
+                        color="Margen (%)",
+                        color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
+                        text="Margen (%)",
+                    )
+                    fig_mr.update_layout(
+                        yaxis={"categoryorder": "total ascending"},
+                        coloraxis_showscale=False,
+                    )
+                    fig_mr.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                    st.plotly_chart(fig_mr, use_container_width=True)
 
                     st.dataframe(
-                        df_by_medio.style.format({
+                        df_avg.style.format({
                             "Precio prom ($)": "${:,.0f}",
                             "Comisión prom ($)": "${:,.0f}",
-                            "Costo PN (%)": "{:.2f}%",
+                            "Costo prod ($)": "${:,.0f}",
                             "Margen prom ($)": "${:,.0f}",
                             "Margen (%)": "{:.1f}%",
-                        }),
+                        }).map(lambda v: (
+                            "background-color: #1e4620; color: #00C49F" if isinstance(v, (int, float)) and v >= 20
+                            else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v >= 10
+                            else "background-color: #4a1010; color: #ff6b6b" if isinstance(v, (int, float))
+                            else ""
+                        ), subset=["Margen (%)"]),
                         use_container_width=True, hide_index=True,
                     )
 
-                    # Diferencia entre mejor y peor medio
-                    if len(df_by_medio) >= 2:
-                        mejor = df_by_medio.iloc[0]
-                        peor = df_by_medio.iloc[-1]
-                        diff = round(mejor["Margen (%)"] - peor["Margen (%)"], 1)
-                        st.info(
-                            f"💡 Diferencia de margen entre **{mejor['Medio de Pago']}** "
-                            f"({mejor['Margen (%)']:.1f}%) y **{peor['Medio de Pago']}** "
-                            f"({peor['Margen (%)']:.1f}%): **{diff} puntos porcentuales**"
+                    # ── Vista 2: Impacto del medio de pago por consola ──
+                    st.divider()
+                    st.markdown("### Impacto del medio de pago en el margen")
+
+                    prod_sel_mr = st.selectbox(
+                        "Seleccioná un producto",
+                        df_avg["Producto"].tolist(),
+                        key="sel_margen_real",
+                    )
+
+                    if prod_sel_mr:
+                        df_prod = df_real[df_real["Producto"] == prod_sel_mr]
+                        df_by_medio = df_prod.groupby("Medio de Pago").agg(
+                            Ventas=("Precio ($)", "count"),
+                            Precio_prom=("Precio ($)", "mean"),
+                            Comision_prom=("Comisión PN ($)", "mean"),
+                            Costo_PN_pct=("Costo PN (%)", "mean"),
+                            Margen_prom=("Margen ($)", "mean"),
+                            Margen_pct=("Margen (%)", "mean"),
+                        ).reset_index().sort_values("Margen_pct", ascending=False)
+                        df_by_medio.columns = [
+                            "Medio de Pago", "Ventas", "Precio prom ($)",
+                            "Comisión prom ($)", "Costo PN (%)", "Margen prom ($)", "Margen (%)",
+                        ]
+
+                        col_mr1, col_mr2 = st.columns(2)
+                        with col_mr1:
+                            fig_medio = px.bar(
+                                df_by_medio, x="Medio de Pago", y="Margen (%)",
+                                title=f"Margen real por medio de pago — {prod_sel_mr}",
+                                color="Margen (%)",
+                                color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
+                                text="Margen (%)",
+                            )
+                            fig_medio.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                            fig_medio.update_layout(coloraxis_showscale=False)
+                            st.plotly_chart(fig_medio, use_container_width=True)
+
+                        with col_mr2:
+                            fig_dist = px.pie(
+                                df_by_medio, names="Medio de Pago", values="Ventas",
+                                title=f"Distribución de ventas — {prod_sel_mr}",
+                                color_discrete_sequence=COLORES, hole=0.35,
+                            )
+                            fig_dist.update_traces(textinfo="label+value+percent")
+                            st.plotly_chart(fig_dist, use_container_width=True)
+
+                        st.dataframe(
+                            df_by_medio.style.format({
+                                "Precio prom ($)": "${:,.0f}",
+                                "Comisión prom ($)": "${:,.0f}",
+                                "Costo PN (%)": "{:.2f}%",
+                                "Margen prom ($)": "${:,.0f}",
+                                "Margen (%)": "{:.1f}%",
+                            }),
+                            use_container_width=True, hide_index=True,
                         )
 
-                st.divider()
-                st.download_button("⬇️ Descargar margen real detallado",
-                    df_real.to_csv(index=False).encode("utf-8"), "margen_real_detallado.csv", "text/csv")
+                        # Diferencia entre mejor y peor medio
+                        if len(df_by_medio) >= 2:
+                            mejor = df_by_medio.iloc[0]
+                            peor = df_by_medio.iloc[-1]
+                            diff = round(mejor["Margen (%)"] - peor["Margen (%)"], 1)
+                            st.info(
+                                f"💡 Diferencia de margen entre **{mejor['Medio de Pago']}** "
+                                f"({mejor['Margen (%)']:.1f}%) y **{peor['Medio de Pago']}** "
+                                f"({peor['Margen (%)']:.1f}%): **{diff} puntos porcentuales**"
+                            )
+
+                    st.divider()
+                    st.download_button("⬇️ Descargar margen real detallado",
+                        df_real.to_csv(index=False).encode("utf-8"), "margen_real_detallado.csv", "text/csv")
 
 else:
     st.info("👈 Seleccioná el período en el panel izquierdo y hacé clic en Buscar.")
