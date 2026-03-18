@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import date, timedelta
 import time
 import json
@@ -277,6 +278,31 @@ def get_fob_usd(nombre_prod, costos_gs=None):
             return fob
     return 0.0
 
+def get_costo_total_usd(nombre_prod, costos_gs=None):
+    """Retorna costo total USD (FOB + import) desde costos guardados."""
+    nombre_norm = _normalizar(nombre_prod)
+    if not nombre_norm:
+        return 0.0
+    if costos_gs:
+        for k, v in costos_gs.items():
+            if k.startswith("_"):
+                continue
+            if isinstance(v, dict) and _normalizar(k) == nombre_norm:
+                ct = float(v.get("costo_total_usd", 0) or 0)
+                if ct > 0:
+                    return ct
+                fob = float(v.get("fob_usd", 0) or 0)
+                peso = float(v.get("peso_kg", 0) or 0)
+                ckg = float(costos_gs.get("_costo_kg_usd", 65.0) or 65.0)
+                return fob + peso * ckg
+    # Fallback a FOB_DEFAULTS
+    for k, v in FOB_DEFAULTS.items():
+        if _normalizar(k) == nombre_norm:
+            fob = float(v.get("fob_usd", 0) or 0)
+            peso = float(v.get("peso_kg", 0) or 0)
+            return fob + peso * 65.0
+    return 0.0
+
 def calcular_costo_orden_ars(productos_str, cantidad, tipo_cambio_ars, costos_gs=None):
     prods = [p.strip() for p in str(productos_str).split(" / ") if p.strip()]
     if not prods:
@@ -285,11 +311,26 @@ def calcular_costo_orden_ars(productos_str, cantidad, tipo_cambio_ars, costos_gs
         return get_fob_usd(prods[0], costos_gs) * int(cantidad or 1) * tipo_cambio_ars
     return sum(get_fob_usd(p, costos_gs) * tipo_cambio_ars for p in prods)
 
+def calcular_costo_total_orden_ars(productos_str, cantidad, tipo_cambio_ars, costos_gs=None):
+    """Calcula costo total (FOB + import) en ARS."""
+    prods = [p.strip() for p in str(productos_str).split(" / ") if p.strip()]
+    if not prods:
+        return 0.0
+    if len(prods) == 1:
+        return get_costo_total_usd(prods[0], costos_gs) * int(cantidad or 1) * tipo_cambio_ars
+    return sum(get_costo_total_usd(p, costos_gs) * tipo_cambio_ars for p in prods)
+
 def costo_final_row(row, tipo_cambio, costos_gs):
     costo_tn = float(row.get("Costo Productos ($)", 0) or 0)
     if costo_tn > 0:
         return round(costo_tn, 0)
     return round(calcular_costo_orden_ars(
+        row.get("Productos", ""), row.get("Cantidad", 1), tipo_cambio, costos_gs
+    ), 0)
+
+def costo_total_final_row(row, tipo_cambio, costos_gs):
+    """Costo total (FOB + import) para la fila."""
+    return round(calcular_costo_total_orden_ars(
         row.get("Productos", ""), row.get("Cantidad", 1), tipo_cambio, costos_gs
     ), 0)
 
@@ -409,7 +450,6 @@ def procesar_pagos_pn(pagos):
     return pd.DataFrame(filas) if filas else pd.DataFrame()
 
 def calcular_tasas_reales(df_pagos):
-    """Calcula tasas reales desde las transacciones de Pago Nube si hay datos de fees."""
     if df_pagos.empty or "Fee ($)" not in df_pagos.columns:
         return None
     df_con_fee = df_pagos[df_pagos["Fee ($)"] > 0]
@@ -431,6 +471,14 @@ defaults = {
 for key, default in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = default
+
+# Session state for pauta (so it persists across tab switches)
+if "pauta_manual" not in st.session_state:
+    st.session_state.pauta_manual = 0
+if "pct_iva" not in st.session_state:
+    st.session_state.pct_iva = 10.5
+if "tipo_cambio_sf" not in st.session_state:
+    st.session_state.tipo_cambio_sf = None
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -487,7 +535,7 @@ if buscar:
 dolar_blue = get_dolar_blue()
 
 if st.session_state.df_tn is not None:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📊 Dashboard",
         "🔍 Detalle y ajustes",
         "💚 Salud Financiera",
@@ -495,6 +543,8 @@ if st.session_state.df_tn is not None:
         "🔥 Velocidad de ventas",
         "🏗️ Gastos fijos",
         "💻 Costos de consolas",
+        "📐 Margen teórico",
+        "📈 Margen real",
     ])
     df_tn = st.session_state.df_tn.copy()
     df_pagos = st.session_state.df_pagos.copy() if st.session_state.df_pagos is not None else pd.DataFrame()
@@ -507,23 +557,52 @@ if st.session_state.df_tn is not None:
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
-            k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("Ordenes", len(df_tn))
-            k2.metric("Facturacion bruta", fmt(df_tn["Total ($)"].sum()))
-            k3.metric("Comision PN", fmt(df_tn["Comision PN ($)"].sum()))
-            k4.metric("Neto cobrado", fmt(df_tn["Neto cobrado ($)"].sum()))
-            k5.metric("Margen total", fmt(df_tn["Margen ($)"].sum()))
+            # ── Costo ponderado de comisión PN ──
+            total_facturado = df_tn["Total ($)"].sum()
+            total_comision = df_tn["Comision PN ($)"].sum()
+            costo_ponderado_pn = round(total_comision / total_facturado * 100, 2) if total_facturado > 0 else 0
 
-            # ── Ventas por día + Top 10 por unidades ──
+            k1, k2, k3, k4, k5, k6 = st.columns(6)
+            k1.metric("Ordenes", len(df_tn))
+            k2.metric("Facturación bruta", fmt(total_facturado))
+            k3.metric("Comisión PN", fmt(total_comision))
+            k4.metric("Neto cobrado", fmt(df_tn["Neto cobrado ($)"].sum()))
+            k5.metric(
+                "Margen total",
+                fmt(df_tn["Margen ($)"].sum()),
+                help="⚠️ Usa el campo 'cost' de TN (puede estar en 0). Para margen real usá la solapa Salud Financiera.",
+            )
+            k6.metric(
+                "Costo PN ponderado",
+                f"{costo_ponderado_pn:.2f}%",
+                help="Comisión total PN / Facturación bruta. Promedio real ponderado por monto.",
+            )
+
+            st.caption(
+                "ℹ️ **Margen total**: se calcula como Neto cobrado − Costo productos (campo `cost` de TN) − Envío. "
+                "Si no cargaste costos en TN, el margen aparece inflado. "
+                "Usá la solapa **💚 Salud Financiera** para el margen real con costos FOB."
+            )
+
+            # ── Ventas por día (LÍNEA) + Top 10 por unidades ──
             col_a, col_b = st.columns(2)
             with col_a:
-                fig_dia = px.bar(
-                    df_tn.groupby("Fecha")["Total ($)"].sum().reset_index(),
-                    x="Fecha", y="Total ($)", title="Ventas por día",
+                df_dia = df_tn.groupby("Fecha")["Total ($)"].sum().reset_index()
+                fig_dia = px.line(
+                    df_dia, x="Fecha", y="Total ($)",
+                    title="Ventas por día",
+                    markers=True,
                     color_discrete_sequence=["#009EE3"],
                 )
                 fig_dia.update_layout(yaxis_tickformat="$,.0f")
+                fig_dia.update_traces(
+                    line=dict(width=3),
+                    marker=dict(size=8),
+                    fill="tozeroy",
+                    fillcolor="rgba(0, 158, 227, 0.1)",
+                )
                 st.plotly_chart(fig_dia, use_container_width=True)
+
             with col_b:
                 top_prods = {}
                 for _, row in df_tn.iterrows():
@@ -534,12 +613,22 @@ if st.session_state.df_tn is not None:
                 if top_prods:
                     df_tp = pd.DataFrame(list(top_prods.items()), columns=["Producto", "Unidades"])
                     df_tp = df_tp.sort_values("Unidades", ascending=False).head(10)
-                    fig_tp = px.bar(df_tp, x="Unidades", y="Producto", orientation="h",
-                        title="Top 10 productos (unidades)", color_discrete_sequence=["#00C49F"])
-                    fig_tp.update_layout(yaxis={"categoryorder": "total ascending"})
+                    fig_tp = px.bar(
+                        df_tp, x="Unidades", y="Producto", orientation="h",
+                        title="Top 10 productos (unidades)",
+                        color="Unidades",
+                        color_continuous_scale=["#00C49F", "#009EE3"],
+                        text="Unidades",
+                    )
+                    fig_tp.update_layout(
+                        yaxis={"categoryorder": "total ascending"},
+                        coloraxis_showscale=False,
+                        margin=dict(l=10, r=10),
+                    )
+                    fig_tp.update_traces(textposition="outside", textfont_size=13)
                     st.plotly_chart(fig_tp, use_container_width=True)
 
-            # ── Top 10 por monto vendido ──
+            # ── Top 10 por facturación + Pie comisiones ──
             st.divider()
             col_rev1, col_rev2 = st.columns(2)
             with col_rev1:
@@ -553,14 +642,50 @@ if st.session_state.df_tn is not None:
                     df_rev = pd.DataFrame(list(top_revenue.items()), columns=["Producto", "Monto ($)"])
                     df_rev["Monto ($)"] = df_rev["Monto ($)"].round(0)
                     df_rev = df_rev.sort_values("Monto ($)", ascending=False).head(10)
-                    fig_rev = px.bar(df_rev, x="Monto ($)", y="Producto", orientation="h",
-                        title="Top 10 productos (facturación $)", color_discrete_sequence=["#FFD700"])
-                    fig_rev.update_layout(yaxis={"categoryorder": "total ascending"}, xaxis_tickformat="$,.0f")
-                    fig_rev.update_traces(texttemplate="$%{x:,.0f}", textposition="outside")
+                    fig_rev = px.bar(
+                        df_rev, x="Monto ($)", y="Producto", orientation="h",
+                        title="Top 10 productos (facturación $)",
+                        color="Monto ($)",
+                        color_continuous_scale=["#FFD700", "#FF5733"],
+                        text="Monto ($)",
+                    )
+                    fig_rev.update_layout(
+                        yaxis={"categoryorder": "total ascending"},
+                        xaxis_tickformat="$,.0f",
+                        coloraxis_showscale=False,
+                        margin=dict(l=10, r=10),
+                    )
+                    fig_rev.update_traces(texttemplate="$%{x:,.0f}", textposition="outside", textfont_size=13)
                     st.plotly_chart(fig_rev, use_container_width=True)
 
             with col_rev2:
-                # ── Cantidad de transacciones por medio de pago ──
+                # ── Pie chart comisiones por medio de pago ──
+                comis_medio = df_tn.groupby("Medio de Pago").agg(
+                    Ordenes=("Orden", "count"),
+                    Facturacion=("Total ($)", "sum"),
+                    Comision=("Comision PN ($)", "sum"),
+                ).reset_index().sort_values("Comision", ascending=False)
+                comis_medio["Costo %"] = (comis_medio["Comision"] / comis_medio["Facturacion"] * 100).round(2)
+
+                fig_pie_com = px.pie(
+                    comis_medio, names="Medio de Pago", values="Comision",
+                    title="Comisiones PN por medio de pago",
+                    color_discrete_sequence=COLORES,
+                    hole=0.35,
+                )
+                fig_pie_com.update_traces(
+                    textinfo="label+value+percent",
+                    texttemplate="<b>%{label}</b><br>$%{value:,.0f}<br>(%{percent})",
+                    textfont_size=12,
+                    pull=[0.03] * len(comis_medio),
+                )
+                fig_pie_com.update_layout(showlegend=False)
+                st.plotly_chart(fig_pie_com, use_container_width=True)
+
+            # ── Transacciones por medio de pago ──
+            st.divider()
+            col_tx1, col_tx2 = st.columns(2)
+            with col_tx1:
                 tx_medio = df_tn.groupby("Medio de Pago")["Orden"].count().reset_index()
                 tx_medio.columns = ["Medio de Pago", "Transacciones"]
                 tx_medio = tx_medio.sort_values("Transacciones", ascending=False)
@@ -570,33 +695,16 @@ if st.session_state.df_tn is not None:
                 fig_tx.update_traces(textposition="outside")
                 st.plotly_chart(fig_tx, use_container_width=True)
 
-            # ── Comisiones por medio de pago ──
-            st.divider()
-            st.subheader("💳 Costos Pago Nube por medio de pago")
-            comis_medio = df_tn.groupby("Medio de Pago").agg(
-                Ordenes=("Orden", "count"),
-                Facturacion=("Total ($)", "sum"),
-                Comision=("Comision PN ($)", "sum"),
-            ).reset_index().sort_values("Comision", ascending=False)
-            comis_medio["Costo %"] = (comis_medio["Comision"] / comis_medio["Facturacion"] * 100).round(2)
-
-            fig_bar_com = px.bar(
-                comis_medio, x="Medio de Pago", y="Comision",
-                title="Monto de comisión por medio de pago",
-                color="Costo %",
-                color_continuous_scale=["#00C49F", "#FFD700", "#FF5733"],
-                text="Comision",
-            )
-            fig_bar_com.update_traces(texttemplate="$%{text:,.0f}", textposition="outside")
-            fig_bar_com.update_layout(yaxis_tickformat="$,.0f", coloraxis_showscale=False)
-            st.plotly_chart(fig_bar_com, use_container_width=True)
-
-            comis_fmt = comis_medio.copy()
-            comis_fmt["Facturacion"] = comis_fmt["Facturacion"].apply(fmt)
-            comis_fmt["Comision"] = comis_fmt["Comision"].apply(fmt)
-            comis_fmt["Costo %"] = comis_fmt["Costo %"].apply(fmt_pct)
-            comis_fmt.columns = ["Medio de Pago", "Órdenes", "Facturación", "Comisión PN", "Costo %"]
-            st.dataframe(comis_fmt, use_container_width=True, hide_index=True)
+            with col_tx2:
+                # Tabla resumen comisiones
+                comis_fmt = comis_medio.copy()
+                comis_fmt["Facturacion"] = comis_fmt["Facturacion"].apply(fmt)
+                comis_fmt["Comision"] = comis_fmt["Comision"].apply(fmt)
+                comis_fmt["Costo %"] = comis_fmt["Costo %"].apply(fmt_pct)
+                comis_fmt.columns = ["Medio de Pago", "Órdenes", "Facturación", "Comisión PN", "Costo %"]
+                st.markdown("**Detalle comisiones por medio de pago**")
+                st.dataframe(comis_fmt, use_container_width=True, hide_index=True)
+                st.caption(f"📊 **Costo ponderado total PN: {costo_ponderado_pn:.2f}%** (comisión real promedio sobre facturación)")
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 2: DETALLE Y AJUSTES
@@ -741,23 +849,39 @@ if st.session_state.df_tn is not None:
     with tab3:
         st.subheader("💚 Salud Financiera del Período")
 
+        # ── Configuración con form para evitar rerun al cambiar valores ──
         with st.expander("⚙️ Configuración", expanded=True):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                dolar_default = int(dolar_blue) if dolar_blue else 1200
-                tipo_cambio = st.number_input(
-                    f"💵 Dólar blue (auto: ${dolar_default:,.0f})" if dolar_blue else "💵 Tipo de cambio",
-                    value=dolar_default, step=10,
-                )
-            with col2:
-                pct_iva = st.slider("🧾 IVA efectivo (%)", 0.0, 21.0, 10.5, 0.5)
-            with col3:
-                pauta_manual = st.number_input("📣 Pauta publicitaria (ARS)", value=0, step=50_000)
+            with st.form("config_salud_financiera"):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    dolar_default = int(dolar_blue) if dolar_blue else 1200
+                    tipo_cambio = st.number_input(
+                        f"💵 Dólar blue (auto: ${dolar_default:,.0f})" if dolar_blue else "💵 Tipo de cambio",
+                        value=st.session_state.tipo_cambio_sf or dolar_default, step=10,
+                    )
+                with col2:
+                    pct_iva = st.slider("🧾 IVA efectivo (%)", 0.0, 21.0, st.session_state.pct_iva, 0.5)
+                with col3:
+                    pauta_manual = st.number_input("📣 Pauta publicitaria (ARS)", value=st.session_state.pauta_manual, step=50_000)
+                submitted_config = st.form_submit_button("✅ Aplicar configuración", use_container_width=True)
+                if submitted_config:
+                    st.session_state.tipo_cambio_sf = tipo_cambio
+                    st.session_state.pct_iva = pct_iva
+                    st.session_state.pauta_manual = pauta_manual
+
+        # Use stored values
+        tipo_cambio = st.session_state.tipo_cambio_sf or (int(dolar_blue) if dolar_blue else 1200)
+        pct_iva = st.session_state.pct_iva
+        pauta_manual = st.session_state.pauta_manual
 
         # Tasas de Pago Nube
         tasas_reales = calcular_tasas_reales(df_pagos) if not df_pagos.empty else None
 
         with st.expander("💳 Tasas de Pago Nube por cuotas (ajustables)", expanded=False):
+            st.caption(
+                "📌 Estas tasas se usan para **recalcular la comisión de cada orden** en esta solapa. "
+                "Ajustalas si tus tasas reales difieren de las teóricas de PN."
+            )
             if tasas_reales:
                 st.success(f"✅ Tasas calculadas desde {len(df_pagos)} transacciones reales de Pago Nube")
                 st.json(tasas_reales)
@@ -787,7 +911,7 @@ if st.session_state.df_tn is not None:
                 metodo = str(row.get("Medio de Pago", "")).lower()
                 cuotas = int(row.get("Cuotas", 1) or 1)
                 total = float(row.get("Total ($)", 0))
-                if "debit" in metodo or "debito" in metodo:
+                if "debit" in metodo or "debito" in metodo or "transfer" in metodo or "dinero" in metodo:
                     tasa = tasas_custom.get("debit", 0.0199)
                 else:
                     opciones = [k for k in tasas_custom if isinstance(k, int)]
@@ -828,11 +952,11 @@ if st.session_state.df_tn is not None:
 
             # Métricas principales
             k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("Facturacion bruta", fmt(facturacion_bruta))
+            k1.metric("Facturación bruta", fmt(facturacion_bruta))
             k2.metric("Comisiones PN", fmt(comisiones_pn), delta=f"-{fmt(comisiones_pn)}", delta_color="inverse")
             k3.metric("Neto cobrado", fmt(neto_cobrado))
             k4.metric("Costo productos", fmt(costo_productos), delta=f"-{fmt(costo_productos)}", delta_color="inverse")
-            k5.metric("Costo envios", fmt(costo_envios), delta=f"-{fmt(costo_envios)}", delta_color="inverse")
+            k5.metric("Costo envíos", fmt(costo_envios), delta=f"-{fmt(costo_envios)}", delta_color="inverse")
 
             st.divider()
             g1, g2, g3, g4 = st.columns(4)
@@ -857,6 +981,76 @@ if st.session_state.df_tn is not None:
             else:
                 st.error(f"⚠️ Resultado negativo: -{fmt(abs(resultado_final))}")
 
+            # ── Gráfico de resultado día a día ──
+            st.divider()
+            st.subheader("📈 Resultado diario — Tendencia del período")
+
+            # Calcular P&L por día
+            df_daily = df_calc.groupby("Fecha").agg(
+                Facturacion=("Total ($)", "sum"),
+                Comision=("Comision PN ($)", "sum"),
+                Costo_Prods=("Costo Productos ($)", "sum"),
+                Costo_Envio=("Envio costo ($)", "sum"),
+            ).reset_index()
+
+            # Prorratear gastos diarios
+            iva_diario = df_daily["Facturacion"] * (pct_iva / 100)
+            pauta_diaria = pauta_manual / dias_periodo
+            gastos_fijos_diario = gastos_fijos_periodo / dias_periodo
+
+            df_daily["Margen_Bruto"] = (
+                df_daily["Facturacion"] - df_daily["Comision"] - df_daily["Costo_Prods"] - df_daily["Costo_Envio"]
+            )
+            df_daily["Resultado"] = (
+                df_daily["Margen_Bruto"] - iva_diario - pauta_diaria - gastos_fijos_diario
+            ).round(0)
+            df_daily["Resultado_Acum"] = df_daily["Resultado"].cumsum()
+
+            # Colores por resultado positivo/negativo
+            df_daily["Color"] = df_daily["Resultado"].apply(lambda x: "#00C49F" if x >= 0 else "#FF5733")
+
+            fig_daily = go.Figure()
+
+            # Barras de resultado diario
+            fig_daily.add_trace(go.Bar(
+                x=df_daily["Fecha"], y=df_daily["Resultado"],
+                name="Resultado diario",
+                marker_color=df_daily["Color"],
+                text=df_daily["Resultado"].apply(lambda x: f"${x:,.0f}"),
+                textposition="outside",
+                textfont_size=10,
+            ))
+
+            # Línea acumulada
+            fig_daily.add_trace(go.Scatter(
+                x=df_daily["Fecha"], y=df_daily["Resultado_Acum"],
+                name="Acumulado",
+                mode="lines+markers",
+                line=dict(color="#009EE3", width=3),
+                marker=dict(size=7),
+                yaxis="y2",
+            ))
+
+            fig_daily.update_layout(
+                title="Resultado neto por día + acumulado",
+                yaxis=dict(title="Resultado diario ($)", tickformat="$,.0f"),
+                yaxis2=dict(title="Acumulado ($)", overlaying="y", side="right", tickformat="$,.0f", showgrid=False),
+                legend=dict(orientation="h", y=-0.15),
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_daily, use_container_width=True)
+
+            # Indicador de tendencia
+            if len(df_daily) >= 3:
+                ultimos_3 = df_daily["Resultado"].tail(3).mean()
+                primeros_3 = df_daily["Resultado"].head(3).mean()
+                if ultimos_3 > primeros_3 * 1.1:
+                    st.success("📈 Tendencia alcista: los últimos días vienen mejor que el arranque del período.")
+                elif ultimos_3 < primeros_3 * 0.9:
+                    st.warning("📉 Tendencia bajista: los últimos días vienen más flojos que el arranque.")
+                else:
+                    st.info("➡️ Tendencia estable durante el período.")
+
             # Detalle por orden
             st.divider()
             st.subheader("📋 Detalle por orden con margen real")
@@ -880,8 +1074,8 @@ if st.session_state.df_tn is not None:
             st.subheader("📊 Cascada de resultados")
             wf = pd.DataFrame({
                 "Concepto": [
-                    "Facturacion bruta", "Comisiones PN", "Costo productos",
-                    "Costo envios", f"IVA ({pct_iva:.1f}%)", "Pauta",
+                    "Facturación bruta", "Comisiones PN", "Costo productos",
+                    "Costo envíos", f"IVA ({pct_iva:.1f}%)", "Pauta",
                     "Gastos fijos", "Resultado final",
                 ],
                 "Monto": [
@@ -954,7 +1148,6 @@ if st.session_state.df_tn is not None:
                     use_container_width=True, hide_index=True,
                 )
 
-                # Alertas
                 st.divider()
                 st.subheader("⚠️ Alertas de stock bajo")
                 umbral = st.slider("Umbral (unidades)", 1, 20, 5)
@@ -966,7 +1159,6 @@ if st.session_state.df_tn is not None:
                     st.dataframe(alertas.style.format({"Precio ($)": "${:,.0f}"}),
                         use_container_width=True, hide_index=True)
 
-                # Resumen
                 st.divider()
                 stock_num = df_stock[df_stock["Stock"].apply(lambda x: isinstance(x, (int, float)))]
                 r1, r2, r3 = st.columns(3)
@@ -1105,7 +1297,6 @@ if st.session_state.df_tn is not None:
                     use_container_width=True, hide_index=True,
                 )
 
-                # Evolución por producto
                 st.divider()
                 st.subheader("📈 Evolución de ventas")
                 prod_sel = st.selectbox("Producto", df_vel["Producto"].tolist())
@@ -1147,7 +1338,6 @@ if st.session_state.df_tn is not None:
 
         gastos = st.session_state.gastos_fijos.copy()
 
-        # ── Editar gastos existentes ──
         st.markdown("**Editá, agregá o eliminá gastos fijos (ARS):**")
         nuevos_gastos = {}
         gastos_a_eliminar = []
@@ -1166,7 +1356,6 @@ if st.session_state.df_tn is not None:
                 if st.button("🗑️", key=f"del_{k}", help=f"Eliminar {k}"):
                     gastos_a_eliminar.append(k)
 
-        # Procesar eliminaciones
         if gastos_a_eliminar:
             for k in gastos_a_eliminar:
                 nuevos_gastos.pop(k, None)
@@ -1175,7 +1364,6 @@ if st.session_state.df_tn is not None:
             st.session_state.gastos_fijos = nuevos_gastos
             st.rerun()
 
-        # ── Agregar nuevo gasto ──
         st.divider()
         with st.expander("➕ Agregar gasto"):
             ng1, ng2, ng3 = st.columns([2, 2, 1])
@@ -1191,7 +1379,6 @@ if st.session_state.df_tn is not None:
                         gs_write("GastosFijos", nuevos_gastos)
                         st.rerun()
 
-        # ── Guardar ──
         if st.button("💾 Guardar gastos fijos", use_container_width=True, type="primary"):
             st.session_state.gastos_fijos = nuevos_gastos
             ok = gs_write("GastosFijos", nuevos_gastos)
@@ -1230,7 +1417,6 @@ if st.session_state.df_tn is not None:
 
         tc_consolas = int(dolar_blue) if dolar_blue else 1200
 
-        # ── Cargar productos de TN (merge, no overwrite) ──
         @st.fragment
         def cargar_productos_tn():
             if st.button("🔄 Actualizar productos desde Tienda Nube", key="btn_load_consolas"):
@@ -1258,7 +1444,6 @@ if st.session_state.df_tn is not None:
                         prods_map[nombre] = peso_kg
                     st.session_state.productos_tn_map = prods_map
 
-                    # Merge: agregar productos nuevos sin sobreescribir existentes
                     costos_actual = st.session_state.costos_consolas.copy()
                     nuevos = 0
                     for nombre, peso in prods_map.items():
@@ -1271,7 +1456,6 @@ if st.session_state.df_tn is not None:
                             }
                             nuevos += 1
                         else:
-                            # Solo actualizar peso si viene de TN y el guardado no tiene
                             existing = costos_actual[nombre]
                             if isinstance(existing, dict) and peso:
                                 if not existing.get("peso_kg"):
@@ -1297,7 +1481,6 @@ if st.session_state.df_tn is not None:
 
         st.divider()
 
-        # Construir tabla editable de costos
         all_prods = set(productos_map.keys())
         for k in costos:
             if not k.startswith("_"):
@@ -1306,7 +1489,6 @@ if st.session_state.df_tn is not None:
         if not all_prods:
             st.info("Cargá productos desde TN con el botón de arriba.")
         else:
-            # Construir DataFrame para edición y display
             rows_costos = []
             for prod in sorted(all_prods):
                 prod_data = costos.get(prod, {})
@@ -1339,7 +1521,6 @@ if st.session_state.df_tn is not None:
 
             df_costos_edit = pd.DataFrame(rows_costos)
 
-            # Opción de orden
             orden_col = st.selectbox(
                 "Ordenar por", df_costos_edit.columns.tolist(),
                 index=0, key="orden_costos",
@@ -1347,7 +1528,6 @@ if st.session_state.df_tn is not None:
             orden_asc = st.checkbox("Ascendente", value=True, key="orden_asc")
             df_costos_edit = df_costos_edit.sort_values(orden_col, ascending=orden_asc)
 
-            # Tabla interactiva para edición
             st.markdown("**Editá FOB y peso directamente:**")
             edited_df = st.data_editor(
                 df_costos_edit,
@@ -1364,7 +1544,6 @@ if st.session_state.df_tn is not None:
                 key="costos_editor",
             )
 
-            # Recalcular columnas derivadas después de edición
             if edited_df is not None:
                 edited_df["Import (USD)"] = (edited_df["Peso (kg)"] * costo_kg_usd).round(2)
                 edited_df["Total (USD)"] = (edited_df["FOB (USD)"] + edited_df["Import (USD)"]).round(2)
@@ -1384,7 +1563,6 @@ if st.session_state.df_tn is not None:
                 ok = gs_write("CostosConsolas", nuevos_costos)
                 st.success("✅ Guardado en Google Sheets" if ok else "⚠️ Solo en sesión")
 
-            # Resumen visual
             st.divider()
             st.subheader("📊 Resumen de costos")
             st.dataframe(
@@ -1394,6 +1572,286 @@ if st.session_state.df_tn is not None:
                 }),
                 use_container_width=True, hide_index=True,
             )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 8: MARGEN TEÓRICO POR CONSOLA
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab8:
+        st.subheader("📐 Margen teórico por consola")
+        st.caption(
+            "Margen estimado considerando: precio de lista, costo total (FOB + import), "
+            "comisión PN ponderada promedio y envío promedio. "
+            "Representa lo que ganarías si todas las ventas fueran con la distribución actual de medios de pago."
+        )
+
+        _costos_gs_mt = gs_read("CostosConsolas") or {}
+        _tc_mt = int(dolar_blue) if dolar_blue else 1200
+        _ckg_mt = float(_costos_gs_mt.get("_costo_kg_usd", 65.0) or 65.0)
+
+        if df_tn.empty:
+            st.info("Buscá primero para ver los datos.")
+        else:
+            # Calcular costo ponderado PN del período
+            total_fact = df_tn["Total ($)"].sum()
+            total_com = df_tn["Comision PN ($)"].sum()
+            tasa_ponderada = total_com / total_fact if total_fact > 0 else 0.0415
+
+            # Envío promedio del período
+            envio_prom = df_tn["Envio costo ($)"].mean()
+
+            # Precio promedio por producto
+            precios_prod = {}
+            cantidades_prod = {}
+            for _, row in df_tn.iterrows():
+                prods_list = [p.strip() for p in str(row.get("Productos", "")).split(" / ") if p.strip()]
+                n_prods = max(len(prods_list), 1)
+                for p in prods_list:
+                    if p not in precios_prod:
+                        precios_prod[p] = []
+                        cantidades_prod[p] = 0
+                    precios_prod[p].append(row.get("Total ($)", 0) / n_prods)
+                    cantidades_prod[p] += int(row.get("Cantidad", 1) or 1)
+
+            rows_mt = []
+            for prod in sorted(precios_prod.keys()):
+                precio_prom = sum(precios_prod[prod]) / len(precios_prod[prod])
+                unidades = cantidades_prod[prod]
+
+                # Costo total del producto (FOB + import)
+                costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
+                costo_total_ars = costo_total_usd * _tc_mt
+
+                # Comisión PN estimada
+                comision_est = round(precio_prom * tasa_ponderada, 0)
+
+                # Margen teórico
+                margen_teorico = round(precio_prom - costo_total_ars - comision_est - envio_prom, 0)
+                margen_pct = round(margen_teorico / precio_prom * 100, 1) if precio_prom > 0 else 0
+
+                rows_mt.append({
+                    "Producto": prod,
+                    "Precio prom ($)": round(precio_prom, 0),
+                    "Costo total ($)": round(costo_total_ars, 0),
+                    f"Comisión PN ({tasa_ponderada*100:.1f}%)": round(comision_est, 0),
+                    "Envío prom ($)": round(envio_prom, 0),
+                    "Margen teórico ($)": margen_teorico,
+                    "Margen (%)": margen_pct,
+                    "Unidades": unidades,
+                })
+
+            df_mt = pd.DataFrame(rows_mt).sort_values("Margen (%)", ascending=False)
+
+            # Métricas resumen
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Tasa PN ponderada", f"{tasa_ponderada*100:.2f}%")
+            m2.metric("Envío promedio", fmt(envio_prom))
+            m3.metric("Dólar blue", f"${_tc_mt:,.0f}")
+
+            # Gráfico de margen teórico
+            df_mt_chart = df_mt.sort_values("Margen (%)", ascending=True).tail(20)
+            fig_mt = px.bar(
+                df_mt_chart, x="Margen (%)", y="Producto", orientation="h",
+                title="Margen teórico por consola (%)",
+                color="Margen (%)",
+                color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
+                text="Margen (%)",
+            )
+            fig_mt.update_layout(
+                yaxis={"categoryorder": "total ascending"},
+                coloraxis_showscale=False,
+            )
+            fig_mt.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+            st.plotly_chart(fig_mt, use_container_width=True)
+
+            st.divider()
+            col_com = f"Comisión PN ({tasa_ponderada*100:.1f}%)"
+            st.dataframe(
+                df_mt.style
+                    .format({
+                        "Precio prom ($)": "${:,.0f}",
+                        "Costo total ($)": "${:,.0f}",
+                        col_com: "${:,.0f}",
+                        "Envío prom ($)": "${:,.0f}",
+                        "Margen teórico ($)": "${:,.0f}",
+                        "Margen (%)": "{:.1f}%",
+                    })
+                    .map(lambda v: (
+                        "background-color: #1e4620; color: #00C49F" if isinstance(v, (int, float)) and v >= 20
+                        else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v >= 10
+                        else "background-color: #4a1010; color: #ff6b6b" if isinstance(v, (int, float))
+                        else ""
+                    ), subset=["Margen (%)"]),
+                use_container_width=True, hide_index=True,
+            )
+
+            st.download_button("⬇️ Descargar margen teórico",
+                df_mt.to_csv(index=False).encode("utf-8"), "margen_teorico.csv", "text/csv")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 9: MARGEN REAL POR CONSOLA
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab9:
+        st.subheader("📈 Margen real por consola y medio de pago")
+        st.caption(
+            "Margen real calculado orden por orden. Muestra cómo el medio de pago "
+            "impacta en la rentabilidad de cada producto."
+        )
+
+        if df_tn.empty:
+            st.info("Buscá primero para ver los datos.")
+        else:
+            _costos_gs_mr = gs_read("CostosConsolas") or {}
+            _tc_mr = int(dolar_blue) if dolar_blue else 1200
+
+            # Desglosar órdenes por producto individual
+            rows_real = []
+            for _, row in df_tn.iterrows():
+                prods_list = [p.strip() for p in str(row.get("Productos", "")).split(" / ") if p.strip()]
+                n_prods = max(len(prods_list), 1)
+                for p in prods_list:
+                    precio_unit = row.get("Total ($)", 0) / n_prods
+                    comision_unit = row.get("Comision PN ($)", 0) / n_prods
+                    envio_unit = row.get("Envio costo ($)", 0) / n_prods
+                    costo_total_usd = get_costo_total_usd(p, _costos_gs_mr)
+                    costo_total_ars = costo_total_usd * _tc_mr
+                    neto = precio_unit - comision_unit
+                    margen = neto - costo_total_ars - envio_unit
+
+                    rows_real.append({
+                        "Producto": p,
+                        "Medio de Pago": row.get("Medio de Pago", ""),
+                        "Cuotas": row.get("Cuotas", 1),
+                        "Precio ($)": round(precio_unit, 0),
+                        "Comisión PN ($)": round(comision_unit, 0),
+                        "Costo PN (%)": round(comision_unit / precio_unit * 100, 2) if precio_unit > 0 else 0,
+                        "Costo prod ($)": round(costo_total_ars, 0),
+                        "Envío ($)": round(envio_unit, 0),
+                        "Margen ($)": round(margen, 0),
+                        "Margen (%)": round(margen / precio_unit * 100, 1) if precio_unit > 0 else 0,
+                    })
+
+            df_real = pd.DataFrame(rows_real)
+
+            if df_real.empty:
+                st.info("No hay datos suficientes.")
+            else:
+                # ── Vista 1: Margen promedio por producto ──
+                st.markdown("### Margen promedio real por consola")
+                df_avg = df_real.groupby("Producto").agg(
+                    Ventas=("Precio ($)", "count"),
+                    Precio_prom=("Precio ($)", "mean"),
+                    Comision_prom=("Comisión PN ($)", "mean"),
+                    Costo_prom=("Costo prod ($)", "mean"),
+                    Margen_prom=("Margen ($)", "mean"),
+                    Margen_pct_prom=("Margen (%)", "mean"),
+                ).reset_index()
+                df_avg.columns = ["Producto", "Ventas", "Precio prom ($)", "Comisión prom ($)", "Costo prod ($)", "Margen prom ($)", "Margen (%)"]
+                df_avg = df_avg.sort_values("Margen (%)", ascending=False)
+
+                # Gráfico
+                df_avg_chart = df_avg.sort_values("Margen (%)", ascending=True).tail(20)
+                fig_mr = px.bar(
+                    df_avg_chart, x="Margen (%)", y="Producto", orientation="h",
+                    title="Margen real promedio por consola (%)",
+                    color="Margen (%)",
+                    color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
+                    text="Margen (%)",
+                )
+                fig_mr.update_layout(
+                    yaxis={"categoryorder": "total ascending"},
+                    coloraxis_showscale=False,
+                )
+                fig_mr.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                st.plotly_chart(fig_mr, use_container_width=True)
+
+                st.dataframe(
+                    df_avg.style.format({
+                        "Precio prom ($)": "${:,.0f}",
+                        "Comisión prom ($)": "${:,.0f}",
+                        "Costo prod ($)": "${:,.0f}",
+                        "Margen prom ($)": "${:,.0f}",
+                        "Margen (%)": "{:.1f}%",
+                    }).map(lambda v: (
+                        "background-color: #1e4620; color: #00C49F" if isinstance(v, (int, float)) and v >= 20
+                        else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v >= 10
+                        else "background-color: #4a1010; color: #ff6b6b" if isinstance(v, (int, float))
+                        else ""
+                    ), subset=["Margen (%)"]),
+                    use_container_width=True, hide_index=True,
+                )
+
+                # ── Vista 2: Impacto del medio de pago por consola ──
+                st.divider()
+                st.markdown("### Impacto del medio de pago en el margen")
+
+                prod_sel_mr = st.selectbox(
+                    "Seleccioná un producto",
+                    df_avg["Producto"].tolist(),
+                    key="sel_margen_real",
+                )
+
+                if prod_sel_mr:
+                    df_prod = df_real[df_real["Producto"] == prod_sel_mr]
+                    df_by_medio = df_prod.groupby("Medio de Pago").agg(
+                        Ventas=("Precio ($)", "count"),
+                        Precio_prom=("Precio ($)", "mean"),
+                        Comision_prom=("Comisión PN ($)", "mean"),
+                        Costo_PN_pct=("Costo PN (%)", "mean"),
+                        Margen_prom=("Margen ($)", "mean"),
+                        Margen_pct=("Margen (%)", "mean"),
+                    ).reset_index().sort_values("Margen_pct", ascending=False)
+                    df_by_medio.columns = [
+                        "Medio de Pago", "Ventas", "Precio prom ($)",
+                        "Comisión prom ($)", "Costo PN (%)", "Margen prom ($)", "Margen (%)",
+                    ]
+
+                    col_mr1, col_mr2 = st.columns(2)
+                    with col_mr1:
+                        fig_medio = px.bar(
+                            df_by_medio, x="Medio de Pago", y="Margen (%)",
+                            title=f"Margen real por medio de pago — {prod_sel_mr}",
+                            color="Margen (%)",
+                            color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
+                            text="Margen (%)",
+                        )
+                        fig_medio.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                        fig_medio.update_layout(coloraxis_showscale=False)
+                        st.plotly_chart(fig_medio, use_container_width=True)
+
+                    with col_mr2:
+                        fig_dist = px.pie(
+                            df_by_medio, names="Medio de Pago", values="Ventas",
+                            title=f"Distribución de ventas — {prod_sel_mr}",
+                            color_discrete_sequence=COLORES, hole=0.35,
+                        )
+                        fig_dist.update_traces(textinfo="label+value+percent")
+                        st.plotly_chart(fig_dist, use_container_width=True)
+
+                    st.dataframe(
+                        df_by_medio.style.format({
+                            "Precio prom ($)": "${:,.0f}",
+                            "Comisión prom ($)": "${:,.0f}",
+                            "Costo PN (%)": "{:.2f}%",
+                            "Margen prom ($)": "${:,.0f}",
+                            "Margen (%)": "{:.1f}%",
+                        }),
+                        use_container_width=True, hide_index=True,
+                    )
+
+                    # Diferencia entre mejor y peor medio
+                    if len(df_by_medio) >= 2:
+                        mejor = df_by_medio.iloc[0]
+                        peor = df_by_medio.iloc[-1]
+                        diff = round(mejor["Margen (%)"] - peor["Margen (%)"], 1)
+                        st.info(
+                            f"💡 Diferencia de margen entre **{mejor['Medio de Pago']}** "
+                            f"({mejor['Margen (%)']:.1f}%) y **{peor['Medio de Pago']}** "
+                            f"({peor['Margen (%)']:.1f}%): **{diff} puntos porcentuales**"
+                        )
+
+                st.divider()
+                st.download_button("⬇️ Descargar margen real detallado",
+                    df_real.to_csv(index=False).encode("utf-8"), "margen_real_detallado.csv", "text/csv")
 
 else:
     st.info("👈 Seleccioná el período en el panel izquierdo y hacé clic en Buscar.")
