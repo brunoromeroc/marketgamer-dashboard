@@ -1936,7 +1936,7 @@ if st.session_state.df_tn is not None:
             orders_raw_mr = st.session_state.orders_raw
 
             # Config costos adicionales (compartido con tab 8)
-            with st.expander("⚙️ Costos adicionales", expanded=False):
+            with st.expander("⚙️ Costos adicionales", expanded=True):
                 cr1, cr2 = st.columns(2)
                 iva_mr = cr1.number_input("🧾 IVA (%)", value=10.5, step=0.5, key="iva_mr")
                 packaging_mr = cr2.number_input("📦 Packaging/u ($)", value=2500, step=500, key="pkg_mr")
@@ -1985,15 +1985,23 @@ if st.session_state.df_tn is not None:
                 else:
                     # ── Vista 1: Margen promedio por producto ──
                     st.markdown("### Margen promedio real por consola")
+                    col_iva_mr = f"IVA ({iva_mr}%)"
                     df_avg = df_real.groupby("Producto").agg(
                         Ventas=("Precio ($)", "count"),
                         Precio_prom=("Precio ($)", "mean"),
                         Comision_prom=("Comisión PN ($)", "mean"),
                         Costo_prom=("Costo prod ($)", "mean"),
+                        Packaging_prom=("Packaging ($)", "mean"),
+                        IVA_prom=(col_iva_mr, "mean"),
+                        Envio_prom=("Envío ($)", "mean"),
                         Margen_prom=("Margen ($)", "mean"),
                         Margen_pct_prom=("Margen (%)", "mean"),
                     ).reset_index()
-                    df_avg.columns = ["Producto", "Ventas", "Precio prom ($)", "Comisión prom ($)", "Costo prod ($)", "Margen prom ($)", "Margen (%)"]
+                    df_avg.columns = [
+                        "Producto", "Ventas", "Precio prom ($)", "Comisión prom ($)",
+                        "Costo prod ($)", "Packaging ($)", col_iva_mr, "Envío ($)",
+                        "Margen prom ($)", "Margen (%)",
+                    ]
                     df_avg = df_avg.sort_values("Margen (%)", ascending=False)
 
                     # Gráfico
@@ -2017,6 +2025,9 @@ if st.session_state.df_tn is not None:
                             "Precio prom ($)": "${:,.0f}",
                             "Comisión prom ($)": "${:,.0f}",
                             "Costo prod ($)": "${:,.0f}",
+                            "Packaging ($)": "${:,.0f}",
+                            col_iva_mr: "${:,.0f}",
+                            "Envío ($)": "${:,.0f}",
                             "Margen prom ($)": "${:,.0f}",
                             "Margen (%)": "{:.1f}%",
                         }).map(lambda v: (
