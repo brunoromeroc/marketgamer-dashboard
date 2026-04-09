@@ -72,27 +72,47 @@ def compute_catalog_diff(old_products: dict, new_products: dict) -> list:
 
 
 def parse_pptx_catalog(file_bytes: bytes) -> list:
-    """Extrae filas (Producto, FOB USD, Storage) de un PowerPoint de lista de precios."""
+    """
+    Extrae filas (Producto, FOB USD, Storage) de un PowerPoint de lista de precios.
+    Soporta dos formatos:
+    - Tablas (columnas: nombre, precio, storage)
+    - Text boxes agrupados (ej. Powkiddy): "MODELO  NNpcs  STORAGE  $PRECIO"
+    """
+    import io, re as _re
     from pptx import Presentation
-    import io
     rows = []
     seen = set()
+    NS = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+    PRODUCT_RE = _re.compile(
+        r'([A-Za-z][A-Za-z0-9 ]*?)\s+\d+\s*pcs\s+([^$]*?)\$\s*(\d+\.?\d*)',
+        _re.IGNORECASE,
+    )
+
+    def _slide_xml_text(slide):
+        parts = []
+        for t in slide._element.iter(f'{NS}t'):
+            if t.text and t.text.strip():
+                parts.append(t.text.strip())
+        return ' '.join(parts)
+
     try:
         prs = Presentation(io.BytesIO(file_bytes))
     except Exception:
         return []
+
     for slide in prs.slides:
+        # ── Estrategia 1: tablas explícitas ──────────────────────────────────
+        found_table = False
         for shape in slide.shapes:
             if not shape.has_table:
                 continue
+            found_table = True
             table = shape.table
             for row_idx in range(len(table.rows)):
                 cells = [cell.text.strip() for cell in table.rows[row_idx].cells]
                 for i, cell in enumerate(cells):
                     try:
-                        val = float(
-                            cell.replace("$", "").replace(",", "").replace("USD", "").strip()
-                        )
+                        val = float(cell.replace("$", "").replace(",", "").replace("USD", "").strip())
                         if not (1 < val < 5000):
                             continue
                         nombre_parts = [
@@ -110,17 +130,38 @@ def parse_pptx_catalog(file_bytes: bytes) -> list:
                             if any(s in c.upper() for s in ["64G", "128G", "256G", "32G", "16G", "512G", "1TB"]):
                                 storage = c.strip()
                                 break
-                        rows.append({
-                            "Producto": nombre,
-                            "FOB (USD)": val,
-                            "Marca": "—",
-                            "Pantalla": "—",
-                            "CPU": "—",
-                            "Storage": storage,
-                        })
+                        rows.append({"Producto": nombre, "FOB (USD)": val, "Marca": "—", "Pantalla": "—", "CPU": "—", "Storage": storage})
                         break
                     except ValueError:
                         continue
+
+        if found_table:
+            continue
+
+        # ── Estrategia 2: text boxes agrupados (formato Powkiddy) ────────────
+        # Patrón por slide: "MODELO  NNpcs  STORAGE  $PRECIO / / ..."
+        slide_text = _slide_xml_text(slide)
+        for m in PRODUCT_RE.finditer(slide_text):
+            name_raw = m.group(1).strip()
+            stuff    = m.group(2).strip()
+            try:
+                val = float(m.group(3))
+            except ValueError:
+                continue
+            if not (1 < val < 5000):
+                continue
+            # Si el nombre tiene basura de un producto anterior separada por /
+            name = _re.split(r'\s*/\s*|\s{3,}', name_raw)[-1].strip()
+            # Descartar si el "nombre" es storage (ej. "64GB")
+            if _re.fullmatch(r'\d+\s*GB.*', name, _re.IGNORECASE) or len(name) < 2:
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            storage_m = _re.search(r'(\d+\s*GB\S*)', stuff, _re.IGNORECASE)
+            storage = storage_m.group(1) if storage_m else "—"
+            rows.append({"Producto": name, "FOB (USD)": val, "Marca": "—", "Pantalla": "—", "CPU": "—", "Storage": storage})
+
     return rows
 
 
