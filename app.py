@@ -2335,6 +2335,13 @@ if st.session_state.df_tn is not None:
             elif ext.endswith(".pdf"):
                 try:
                     import pdfplumber
+                    # Formato PDF de Anne (Qbuy): cada producto ocupa 2 filas en la tabla:
+                    #   Fila header: [model_name, "Speicification", "Color", "Price(USD)", ""]
+                    #   Fila data:   [""/None,    specs_text,       colores, precio,       storage]
+                    # El nombre del modelo está en col 0 de la fila header.
+                    # El precio está en col 3 de la fila data siguiente.
+                    current_model = None
+                    SPEC_KEYWORDS = {"speicification", "specification", "price(usd)", "color"}
                     with pdfplumber.open(uploaded_file) as pdf:
                         for page in pdf.pages:
                             tables = page.extract_tables()
@@ -2343,26 +2350,30 @@ if st.session_state.df_tn is not None:
                                     if not row:
                                         continue
                                     cells = [str(c).strip() if c else "" for c in row]
-                                    for i, cell in enumerate(cells):
+                                    col0 = cells[0] if cells else ""
+                                    col1 = cells[1].lower() if len(cells) > 1 else ""
+                                    col3 = cells[3] if len(cells) > 3 else ""
+                                    col4 = cells[4] if len(cells) > 4 else ""
+
+                                    # Fila header: col0 tiene el nombre del modelo (tomar solo la primera línea)
+                                    if col0 and any(kw in col1 for kw in SPEC_KEYWORDS):
+                                        current_model = col0.split("\n")[0].strip()
+                                        continue
+
+                                    # Fila data: col0 vacío, col3 tiene el precio
+                                    if current_model and not col0:
                                         try:
-                                            val = float(cell.replace("$", "").replace(",", ""))
-                                            if not (1 < val < 5000):
-                                                continue
-                                            nombre_parts = [c for c in cells[:i] if c and len(c) > 2 and not c.replace(".", "").isdigit()]
-                                            if nombre_parts:
-                                                storage = "—"
-                                                for c in cells:
-                                                    if any(s in c.upper() for s in ["64G", "128G", "256G", "32G", "16G", "512G"]):
-                                                        storage = c.strip()
-                                                        break
+                                            val = float(col3.replace("$", "").replace(",", "").strip())
+                                            if 1 < val < 5000:
+                                                storage = col4.strip() if col4.strip() else "—"
                                                 raw_rows.append({
-                                                    "Producto": nombre_parts[0],
+                                                    "Producto": current_model,
                                                     "FOB (USD)": val,
                                                     "Marca": "—", "Pantalla": "—", "CPU": "—", "Storage": storage,
                                                 })
-                                                break
+                                                current_model = None  # consumido, esperar el próximo header
                                         except ValueError:
-                                            continue
+                                            pass
                 except ImportError:
                     st.warning("⚠️ `pdfplumber` no instalado. Usá CSV/Excel en su lugar.")
                     return {}
