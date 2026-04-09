@@ -2525,11 +2525,81 @@ if st.session_state.df_tn is not None:
                         st.warning("Ya existe un proveedor con ese nombre.")
 
         # ════════════════════════════════════════════════════════════════════
-        # SECCIÓN 2: COMPARADOR  [STUB — Task 4]
+        # SECCIÓN 2: COMPARADOR
         # ════════════════════════════════════════════════════════════════════
         st.divider()
         st.subheader("⚖️ Comparador de precios")
-        st.info("Comparador en construcción — próxima tarea.")
+        st.caption("Todos los productos de todos los proveedores en una tabla. ✅ = precio más barato para ese producto.")
+
+        if len(suppliers) < 1:
+            st.info("Cargá al menos un proveedor para ver la comparación.")
+        else:
+            buscar_comp = st.text_input("🔍 Buscar producto", key="search_comparador")
+            df_fuzzy = fuzzy_group_products(suppliers)
+
+            if df_fuzzy.empty:
+                st.info("No hay productos cargados en los catálogos.")
+            else:
+                if buscar_comp:
+                    df_fuzzy = df_fuzzy[
+                        df_fuzzy["Producto"].str.contains(buscar_comp, case=False, na=False)
+                    ]
+
+                sup_cols = [c for c in df_fuzzy.columns if c != "Producto"]
+
+                def _highlight_cheapest(row):
+                    styles = [""] * len(row)
+                    prices = [
+                        (i + 1, row[c])
+                        for i, c in enumerate(sup_cols)
+                        if pd.notna(row[c]) and row[c] > 0
+                    ]
+                    if prices:
+                        min_i = min(prices, key=lambda x: x[1])[0]
+                        styles[min_i] = "background-color: #1a3a1a; color: #4caf50; font-weight: bold"
+                    return styles
+
+                fmt = {col: "${:.1f}" for col in sup_cols}
+                st.dataframe(
+                    df_fuzzy.style
+                        .apply(_highlight_cheapest, axis=1)
+                        .format(fmt, na_rep="—"),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                # Comparación vs CostosConsolas
+                st.divider()
+                st.subheader("📊 vs costos cargados en el dashboard")
+                _costos_gs_prov = gs_read("CostosConsolas") or {}
+                if _costos_gs_prov:
+                    rows_comp = []
+                    for _, prod_row in df_fuzzy.iterrows():
+                        prod_name = prod_row["Producto"]
+                        fob_dash = get_fob_usd(prod_name, _costos_gs_prov)
+                        prices_prov = {c: prod_row[c] for c in sup_cols if pd.notna(prod_row[c])}
+                        if not prices_prov or fob_dash <= 0:
+                            continue
+                        best_sup = min(prices_prov, key=prices_prov.get)
+                        fob_prov = prices_prov[best_sup]
+                        diff_val = round(fob_prov - fob_dash, 2)
+                        rows_comp.append({
+                            "Producto": prod_name,
+                            "FOB Dashboard (USD)": fob_dash,
+                            "Mejor proveedor": f"{best_sup} ${fob_prov:.1f}",
+                            "Diferencia (USD)": diff_val,
+                            "Status": "✅ Más barato" if diff_val < -0.5 else ("⚠️ Más caro" if diff_val > 0.5 else "≈ Similar"),
+                        })
+                    if rows_comp:
+                        df_vs = pd.DataFrame(rows_comp).sort_values("Diferencia (USD)")
+                        st.dataframe(
+                            df_vs.style.format({"FOB Dashboard (USD)": "${:.2f}", "Diferencia (USD)": "${:+.2f}"}),
+                            use_container_width=True, hide_index=True,
+                        )
+                    else:
+                        st.info("No hay coincidencias entre catálogos y costos del dashboard.")
+                else:
+                    st.info("Cargá costos en 💻 Costos de consolas para comparar.")
 
         # ════════════════════════════════════════════════════════════════════
         # SECCIÓN 3: PLANIFICADOR  [STUB — Task 5]
