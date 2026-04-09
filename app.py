@@ -2287,8 +2287,7 @@ if st.session_state.df_tn is not None:
     # TAB 10: PROVEEDORES
     # ══════════════════════════════════════════════════════════════════════════
     with tab10:
-        st.subheader("🏭 Proveedores — Catálogos y comparación")
-        st.caption("Cargá listas de precios de proveedores y compará FOB entre ellos.")
+        st.subheader("🏭 Proveedores — Catálogos, Comparación y Compras")
 
         # ── Cargar datos guardados ──
         if "proveedores_data" not in st.session_state:
@@ -2296,254 +2295,213 @@ if st.session_state.df_tn is not None:
             if saved_prov and "suppliers" in saved_prov:
                 st.session_state.proveedores_data = saved_prov
             else:
-                # Datos iniciales de Anne (Qbuy Technology)
                 st.session_state.proveedores_data = {
                     "suppliers": {
                         "Anne - Qbuy Technology": {
                             "contacto": "Anne Lee | WhatsApp: +86 181 7167 5976 | Wechat: qbuy18",
                             "web": "qbuytech.en.alibaba.com",
+                            "updated_at": "",
                             "productos": {
                                 "R36S": {"precio_usd": 23.2, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3200mAh"},
                                 "R36H": {"precio_usd": 27.5, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3000mAh"},
                                 "R36S PLUS": {"precio_usd": 28.4, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3200mAh"},
-                                "R36S Ultra": {"precio_usd": 28.3, "storage": "64G", "marca": "R36 Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "3000mAh"},
-                                "R36 MAX": {"precio_usd": 26.8, "storage": "64G", "marca": "R36 Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "4000mAh"},
-                                "R36 PRO": {"precio_usd": 25.5, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "4000mAh"},
-                                "R50S": {"precio_usd": 34.6, "storage": "64G", "marca": "R36 Series", "screen": "5.1in 854x480", "cpu": "RK3326", "battery": "3200mAh"},
-                                "R35XX": {"precio_usd": 27.0, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3200mAh"},
-                                "R36XX": {"precio_usd": 28.9, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3200mAh"},
-                                "R46H": {"precio_usd": 31.3, "storage": "64G", "marca": "R36 Series", "screen": "4.2in 1024x768", "cpu": "RK3326", "battery": "—"},
-                                "R40XX": {"precio_usd": 34.6, "storage": "64G", "marca": "R36 Series", "screen": "4.2in 1024x768", "cpu": "RK3326", "battery": "4000mAh"},
-                                "R40XX PRO MAX": {"precio_usd": 34.6, "storage": "64G", "marca": "R36 Series", "screen": "4.2in 1024x768", "cpu": "RK3326", "battery": "4500mAh"},
-                                "R46S": {"precio_usd": 48.7, "storage": "64G", "marca": "R36 Series", "screen": "4in 720x720", "cpu": "RK3566", "battery": "3500mAh"},
-                                "R36T": {"precio_usd": 27.8, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3000mAh"},
-                                "K36": {"precio_usd": 23.5, "storage": "64G", "marca": "R36 Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "3500mAh"},
-                                "XF35H": {"precio_usd": 27.8, "storage": "64G", "marca": "XF Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "4000mAh"},
-                                "XF40H": {"precio_usd": 30.4, "storage": "64G", "marca": "XF Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "4000mAh"},
-                                "XF40V": {"precio_usd": 30.4, "storage": "64G", "marca": "XF Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "4000mAh"},
-                                "DC35V": {"precio_usd": 27.8, "storage": "64G", "marca": "DC Series", "screen": "3.5in 640x480", "cpu": "RK3326", "battery": "4000mAh"},
-                                "DC40V": {"precio_usd": 30.4, "storage": "64G", "marca": "DC Series", "screen": "4in 720x720", "cpu": "RK3326", "battery": "4000mAh"},
                                 "RG35XX PRO": {"precio_usd": 45.7, "storage": "64G", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "H700", "battery": "3300mAh"},
-                                "RG34XX SP": {"precio_usd": 63.5, "storage": "64G", "marca": "Anbernic", "screen": "3.4in 720x480", "cpu": "H700", "battery": "3300mAh"},
-                                "RG40XX V": {"precio_usd": 57.4, "storage": "64G", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "H700", "battery": "3300mAh"},
-                                "RG40XX H": {"precio_usd": 58.3, "storage": "64G", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "H700", "battery": "3300mAh"},
-                                "RG35XX SP": {"precio_usd": 53.9, "storage": "64G", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "H700", "battery": "3300mAh"},
-                                "RG34XX": {"precio_usd": 60.9, "storage": "64G", "marca": "Anbernic", "screen": "3.4in 720x480", "cpu": "H700", "battery": "3500mAh"},
-                                "RG P01": {"precio_usd": 14.6, "storage": "—", "marca": "Anbernic", "screen": "—", "cpu": "—", "battery": "600mAh"},
-                                "RG556": {"precio_usd": 182.6, "storage": "128G", "marca": "Anbernic", "screen": "5.48in AMOLED", "cpu": "T820", "battery": "—"},
-                                "RG557": {"precio_usd": 263.5, "storage": "256G", "marca": "Anbernic", "screen": "5.48in AMOLED", "cpu": "Dimensity 8300", "battery": "5500mAh"},
-                                "RG SLIDE": {"precio_usd": 180.9, "storage": "128G", "marca": "Anbernic", "screen": "4.7in 1280x960", "cpu": "T820", "battery": "5000mAh"},
-                                "RG477M": {"precio_usd": 288.7, "storage": "256G", "marca": "Anbernic", "screen": "4.7in 1280x960", "cpu": "T820", "battery": "5300mAh"},
-                                "RG CUBE": {"precio_usd": 159.1, "storage": "128G", "marca": "Anbernic", "screen": "3.95in 720x720", "cpu": "T820", "battery": "—"},
-                                "RG CUBE XX": {"precio_usd": 60.9, "storage": "64G", "marca": "Anbernic", "screen": "3.95in 720x720", "cpu": "H700", "battery": "3800mAh"},
-                                "RG35XX 2024": {"precio_usd": 40.9, "storage": "64G", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "H700", "battery": "2600mAh"},
-                                "RG35XX H": {"precio_usd": 54.8, "storage": "64G", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "H700", "battery": "3300mAh"},
-                                "RG353V": {"precio_usd": 87.8, "storage": "—", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "ATM7039S", "battery": "3200mAh"},
-                                "RG353VS": {"precio_usd": 67.8, "storage": "—", "marca": "Anbernic", "screen": "3.5in 640x480", "cpu": "ATM7039S", "battery": "3200mAh"},
-                                "RG405V": {"precio_usd": 133.9, "storage": "—", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "T618", "battery": "5500mAh"},
                                 "RG406V": {"precio_usd": 161.7, "storage": "128G", "marca": "Anbernic", "screen": "4in 960x720", "cpu": "T820", "battery": "5500mAh"},
                                 "RG406H": {"precio_usd": 158.3, "storage": "128G", "marca": "Anbernic", "screen": "4in 960x720", "cpu": "T820", "battery": "5000mAh"},
-                                "RG ARC-S": {"precio_usd": 72.2, "storage": "—", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "RK3566", "battery": "3500mAh"},
-                                "RG ARC-D": {"precio_usd": 93.9, "storage": "—", "marca": "Anbernic", "screen": "4in 640x480", "cpu": "RK3566", "battery": "3500mAh"},
-                                "Miyoo Mini+ V3": {"precio_usd": 38.3, "storage": "—", "marca": "Miyoo", "screen": "3.5in 640x480", "cpu": "Cortex-A7", "battery": "3000mAh"},
-                                "Trimui Smart Pro": {"precio_usd": 55.7, "storage": "—", "marca": "Trimui", "screen": "4.96in 1280x720", "cpu": "RK3326", "battery": "5000mAh"},
-                                "Trimui Smart Pro S": {"precio_usd": 75.7, "storage": "—", "marca": "Trimui", "screen": "4.96in 1280x720", "cpu": "A523", "battery": "5000mAh"},
-                                "Trimui Brick": {"precio_usd": 53.0, "storage": "—", "marca": "Trimui", "screen": "3.2in 1024x768", "cpu": "—", "battery": "3000mAh"},
-                                "Trimui Brick Hammer": {"precio_usd": 72.0, "storage": "—", "marca": "Trimui", "screen": "3.2in 1024x768", "cpu": "—", "battery": "3000mAh"},
-                                "Retroid Pocket 4 PRO": {"precio_usd": 219.1, "storage": "128G", "marca": "Retroid", "screen": "—", "cpu": "D1100", "battery": "—"},
-                                "Retroid Pocket 5": {"precio_usd": 248.7, "storage": "128G", "marca": "Retroid", "screen": "5.5in AMOLED", "cpu": "—", "battery": "5000mAh"},
-                                "Retroid Pocket Flip2": {"precio_usd": 257.4, "storage": "128G", "marca": "Retroid", "screen": "5.5in AMOLED", "cpu": "—", "battery": "5000mAh"},
-                                "Retroid Pocket Classic": {"precio_usd": 156.5, "storage": "128G", "marca": "Retroid", "screen": "3.92in AMOLED", "cpu": "—", "battery": "5000mAh"},
-                                "Retroid MINI": {"precio_usd": 236.5, "storage": "128G", "marca": "Retroid", "screen": "3.7in 1280x960", "cpu": "—", "battery": "4000mAh"},
+                                "RG556": {"precio_usd": 182.6, "storage": "128G", "marca": "Anbernic", "screen": "5.48in AMOLED", "cpu": "T820", "battery": "—"},
+                                "RG477M": {"precio_usd": 288.7, "storage": "256G", "marca": "Anbernic", "screen": "4.7in 1280x960", "cpu": "T820", "battery": "5300mAh"},
                             },
-                        },
-                    },
+                        }
+                    }
                 }
 
         prov_data = st.session_state.proveedores_data
         suppliers = prov_data.get("suppliers", {})
 
-        # ── Selector de vista ──
-        vista = st.radio("Vista", ["📋 Catálogo por proveedor", "⚖️ Comparar proveedores", "➕ Agregar proveedor/producto"], horizontal=True)
-
         # ════════════════════════════════════════════════════════════════════
-        # VISTA 1: Catálogo por proveedor
+        # SECCIÓN 1: CATÁLOGOS
         # ════════════════════════════════════════════════════════════════════
-        if vista == "📋 Catálogo por proveedor":
-            if not suppliers:
-                st.info("No hay proveedores cargados.")
-            else:
-                proveedor_sel = st.selectbox("Proveedor", list(suppliers.keys()))
-                if proveedor_sel:
-                    sup = suppliers[proveedor_sel]
-                    st.caption(f"📞 {sup.get('contacto', '—')} | 🌐 {sup.get('web', '—')}")
+        st.subheader("📁 Catálogos")
+        st.caption("Cada proveedor muestra sus productos y la fecha de la última lista. Subí una nueva lista para reemplazar el catálogo y ver qué cambió.")
 
-                    prods = sup.get("productos", {})
-                    if not prods:
-                        st.info("Sin productos cargados.")
-                    else:
-                        # Construir DataFrame
-                        rows_prov = []
-                        for nombre, info in prods.items():
-                            rows_prov.append({
-                                "Producto": nombre,
-                                "FOB (USD)": float(info.get("precio_usd", 0)),
-                                "Marca": info.get("marca", "—"),
-                                "Pantalla": info.get("screen", "—"),
-                                "CPU": info.get("cpu", "—"),
-                                "Batería": info.get("battery", "—"),
-                                "Storage": info.get("storage", "—"),
+        def _parse_uploaded_to_products(uploaded_file) -> dict:
+            """Parsea un archivo subido (CSV/Excel/PDF/PPTX) y devuelve dict de productos."""
+            ext = uploaded_file.name.lower()
+            raw_rows = []
+
+            if ext.endswith(".pptx"):
+                raw_rows = parse_pptx_catalog(uploaded_file.read())
+
+            elif ext.endswith(".pdf"):
+                try:
+                    import pdfplumber
+                    with pdfplumber.open(uploaded_file) as pdf:
+                        for page in pdf.pages:
+                            tables = page.extract_tables()
+                            for table in tables:
+                                for row in table:
+                                    if not row:
+                                        continue
+                                    cells = [str(c).strip() if c else "" for c in row]
+                                    for i, cell in enumerate(cells):
+                                        try:
+                                            val = float(cell.replace("$", "").replace(",", ""))
+                                            if not (1 < val < 5000):
+                                                continue
+                                            nombre_parts = [c for c in cells[:i] if c and len(c) > 2 and not c.replace(".", "").isdigit()]
+                                            if nombre_parts:
+                                                storage = "—"
+                                                for c in cells:
+                                                    if any(s in c.upper() for s in ["64G", "128G", "256G", "32G", "16G", "512G"]):
+                                                        storage = c.strip()
+                                                        break
+                                                raw_rows.append({
+                                                    "Producto": nombre_parts[0],
+                                                    "FOB (USD)": val,
+                                                    "Marca": "—", "Pantalla": "—", "CPU": "—", "Storage": storage,
+                                                })
+                                                break
+                                        except ValueError:
+                                            continue
+                except ImportError:
+                    st.warning("⚠️ `pdfplumber` no instalado. Usá CSV/Excel en su lugar.")
+                    return {}
+
+            elif ext.endswith((".csv", ".tsv")):
+                sep = "\t" if ext.endswith(".tsv") else ","
+                df_up = pd.read_csv(uploaded_file, sep=sep)
+                cols = df_up.columns.tolist()
+                col_nombre = cols[0] if cols else None
+                col_precio = cols[1] if len(cols) > 1 else None
+                if col_nombre and col_precio:
+                    for _, r in df_up.iterrows():
+                        try:
+                            precio = float(str(r[col_precio]).replace("$", "").replace(",", ""))
+                        except Exception:
+                            continue
+                        if str(r[col_nombre]).strip() and precio > 0:
+                            raw_rows.append({
+                                "Producto": str(r[col_nombre]).strip(),
+                                "FOB (USD)": precio,
+                                "Marca": str(r.get("marca", r.get("Marca", "—"))).strip(),
+                                "Pantalla": "—", "CPU": "—", "Storage": "—",
                             })
-                        df_prov = pd.DataFrame(rows_prov)
 
-                        # Filtros
-                        col_f1, col_f2, col_f3 = st.columns(3)
-                        buscar_p = col_f1.text_input("🔍 Buscar producto", "", key="buscar_prov")
-                        marcas = sorted(df_prov["Marca"].unique())
-                        marca_sel = col_f2.multiselect("Marca", marcas, default=marcas, key="marca_prov")
-                        orden_prov = col_f3.selectbox("Ordenar por", ["Producto", "FOB (USD)", "Marca"], key="orden_prov")
+            elif ext.endswith((".xlsx", ".xls")):
+                df_up = pd.read_excel(uploaded_file)
+                cols = df_up.columns.tolist()
+                col_nombre = cols[0] if cols else None
+                col_precio = cols[1] if len(cols) > 1 else None
+                if col_nombre and col_precio:
+                    for _, r in df_up.iterrows():
+                        try:
+                            precio = float(str(r[col_precio]).replace("$", "").replace(",", ""))
+                        except Exception:
+                            continue
+                        if str(r[col_nombre]).strip() and precio > 0:
+                            raw_rows.append({
+                                "Producto": str(r[col_nombre]).strip(),
+                                "FOB (USD)": precio,
+                                "Marca": str(r.get("marca", r.get("Marca", "—"))).strip(),
+                                "Pantalla": "—", "CPU": "—", "Storage": "—",
+                            })
 
-                        df_prov_f = df_prov.copy()
-                        if buscar_p:
-                            df_prov_f = df_prov_f[df_prov_f["Producto"].str.contains(buscar_p, case=False, na=False)]
-                        if marca_sel:
-                            df_prov_f = df_prov_f[df_prov_f["Marca"].isin(marca_sel)]
-                        df_prov_f = df_prov_f.sort_values(orden_prov)
+            # Convertir raw_rows a dict de productos (deduplicar por nombre)
+            products = {}
+            for row in raw_rows:
+                nombre = row.get("Producto", "").strip()
+                precio = float(row.get("FOB (USD)", 0))
+                if nombre and precio > 0 and nombre not in products:
+                    products[nombre] = {
+                        "precio_usd": precio,
+                        "marca": row.get("Marca", "—"),
+                        "screen": row.get("Pantalla", "—"),
+                        "cpu": row.get("CPU", "—"),
+                        "storage": row.get("Storage", "—"),
+                        "battery": "—",
+                    }
+            return products
 
-                        # Métricas
-                        pm1, pm2, pm3 = st.columns(3)
-                        pm1.metric("Productos", len(df_prov_f))
-                        pm2.metric("FOB mín", f"${df_prov_f['FOB (USD)'].min():.1f}" if not df_prov_f.empty else "—")
-                        pm3.metric("FOB máx", f"${df_prov_f['FOB (USD)'].max():.1f}" if not df_prov_f.empty else "—")
+        # Mostrar cada proveedor con su catálogo y opción de reemplazo
+        for sup_name in list(suppliers.keys()):
+            sup_data = suppliers[sup_name]
+            updated = sup_data.get("updated_at", "") or "Sin fecha"
+            prod_count = len(sup_data.get("productos", {}))
 
-                        st.dataframe(
-                            df_prov_f.style.format({"FOB (USD)": "${:.1f}"}),
-                            use_container_width=True, hide_index=True,
-                        )
+            with st.expander(f"**{sup_name}** — {prod_count} productos · Última lista: {updated}"):
+                st.caption(f"📞 {sup_data.get('contacto', '—')} | 🌐 {sup_data.get('web', '—')}")
 
-                        # Gráfico de precios por marca
-                        if not df_prov_f.empty:
-                            st.divider()
-                            fig_prov = px.bar(
-                                df_prov_f.sort_values("FOB (USD)", ascending=True),
-                                x="FOB (USD)", y="Producto", orientation="h",
-                                color="Marca", title=f"Precios FOB — {proveedor_sel}",
-                                color_discrete_sequence=COLORES,
-                                text="FOB (USD)",
-                            )
-                            fig_prov.update_layout(
-                                yaxis={"categoryorder": "total ascending"},
-                                xaxis_tickprefix="$",
-                                height=max(400, len(df_prov_f) * 25),
-                            )
-                            fig_prov.update_traces(texttemplate="$%{text:.1f}", textposition="outside")
-                            st.plotly_chart(fig_prov, use_container_width=True)
+                if sup_data.get("productos"):
+                    df_cat = pd.DataFrame([
+                        {"Producto": n, "FOB (USD)": float(info.get("precio_usd", 0)),
+                         "Marca": info.get("marca", "—"), "Storage": info.get("storage", "—")}
+                        for n, info in sup_data["productos"].items()
+                    ]).sort_values("FOB (USD)")
+                    st.dataframe(
+                        df_cat.style.format({"FOB (USD)": "${:.1f}"}),
+                        use_container_width=True, hide_index=True,
+                    )
 
-                        st.download_button(
-                            f"⬇️ Descargar catálogo {proveedor_sel}",
-                            df_prov_f.to_csv(index=False).encode("utf-8"),
-                            f"catalogo_{proveedor_sel.replace(' ', '_')}.csv", "text/csv",
-                        )
+                st.markdown("**Actualizar catálogo** — reemplaza la lista anterior completa")
+                uploaded = st.file_uploader(
+                    f"Nueva lista de precios ({sup_name})",
+                    type=["csv", "xlsx", "xls", "pdf", "pptx"],
+                    key=f"upload_replace_{sup_name}",
+                )
 
-        # ════════════════════════════════════════════════════════════════════
-        # VISTA 2: Comparar proveedores
-        # ════════════════════════════════════════════════════════════════════
-        elif vista == "⚖️ Comparar proveedores":
-            if len(suppliers) < 1:
-                st.info("Cargá al menos un proveedor para ver la comparación.")
-            else:
-                # Unificar todos los productos de todos los proveedores
-                all_rows = []
-                for sup_name, sup_data in suppliers.items():
-                    for prod, info in sup_data.get("productos", {}).items():
-                        all_rows.append({
-                            "Producto": prod,
-                            "Proveedor": sup_name,
-                            "FOB (USD)": float(info.get("precio_usd", 0)),
-                            "Marca": info.get("marca", "—"),
-                            "Pantalla": info.get("screen", "—"),
-                            "CPU": info.get("cpu", "—"),
-                        })
-                df_all = pd.DataFrame(all_rows)
+                if uploaded:
+                    try:
+                        new_products = _parse_uploaded_to_products(uploaded)
+                    except Exception as e:
+                        st.error(f"Error procesando archivo: {e}")
+                        new_products = {}
 
-                if df_all.empty:
-                    st.info("No hay productos cargados.")
-                else:
-                    # Filtrar
-                    buscar_comp = st.text_input("🔍 Buscar producto", "", key="buscar_comp")
-                    if buscar_comp:
-                        df_all = df_all[df_all["Producto"].str.contains(buscar_comp, case=False, na=False)]
+                    if new_products:
+                        st.success(f"✅ {len(new_products)} productos leídos del archivo")
+                        old_products = sup_data.get("productos", {})
+                        diff = compute_catalog_diff(old_products, new_products)
 
-                    if len(suppliers) >= 2:
-                        # Pivot para comparar precios lado a lado
-                        df_pivot = df_all.pivot_table(
-                            index="Producto", columns="Proveedor",
-                            values="FOB (USD)", aggfunc="first",
-                        ).reset_index()
-
-                        # Marcar el mejor precio
-                        sup_cols = [c for c in df_pivot.columns if c != "Producto"]
-                        if len(sup_cols) >= 2:
-                            df_pivot["Mejor"] = df_pivot[sup_cols].idxmin(axis=1)
-                            df_pivot["Ahorro (USD)"] = df_pivot[sup_cols].max(axis=1) - df_pivot[sup_cols].min(axis=1)
-                            df_pivot = df_pivot.sort_values("Ahorro (USD)", ascending=False)
-
-                        st.subheader("⚖️ Comparación de precios FOB")
-                        fmt_pivot = {c: "${:.1f}" for c in sup_cols}
-                        if "Ahorro (USD)" in df_pivot.columns:
-                            fmt_pivot["Ahorro (USD)"] = "${:.1f}"
-                        st.dataframe(
-                            df_pivot.style.format(fmt_pivot),
-                            use_container_width=True, hide_index=True,
-                        )
-                    else:
-                        # Solo 1 proveedor, mostrar todo
-                        st.subheader(f"Catálogo completo — {list(suppliers.keys())[0]}")
-                        st.dataframe(
-                            df_all.style.format({"FOB (USD)": "${:.1f}"}),
-                            use_container_width=True, hide_index=True,
-                        )
-
-                    # Comparación con costos cargados en el dashboard
-                    st.divider()
-                    st.subheader("📊 Comparación vs costos cargados en el dashboard")
-                    _costos_gs_prov = gs_read("CostosConsolas") or {}
-                    if _costos_gs_prov:
-                        rows_comp = []
-                        for prod_name in df_all["Producto"].unique():
-                            fob_dash = get_fob_usd(prod_name, _costos_gs_prov)
-                            mejor_prov_row = df_all[df_all["Producto"] == prod_name].sort_values("FOB (USD)").iloc[0]
-                            fob_prov = mejor_prov_row["FOB (USD)"]
-                            prov_name = mejor_prov_row["Proveedor"]
-                            if fob_dash > 0 and fob_prov > 0:
-                                diff = round(fob_prov - fob_dash, 2)
-                                rows_comp.append({
-                                    "Producto": prod_name,
-                                    "FOB Dashboard (USD)": fob_dash,
-                                    f"FOB {prov_name} (USD)": fob_prov,
-                                    "Diferencia (USD)": diff,
-                                    "Status": "✅ Más barato" if diff < -0.5 else ("⚠️ Más caro" if diff > 0.5 else "≈ Similar"),
-                                })
-                        if rows_comp:
-                            df_comp = pd.DataFrame(rows_comp).sort_values("Diferencia (USD)")
-                            fmt_comp = {"FOB Dashboard (USD)": "${:.2f}", "Diferencia (USD)": "${:+.2f}"}
-                            for col in df_comp.columns:
-                                if "FOB" in col and "Dashboard" not in col:
-                                    fmt_comp[col] = "${:.2f}"
-                            st.dataframe(
-                                df_comp.style.format(fmt_comp),
-                                use_container_width=True, hide_index=True,
-                            )
+                        if diff:
+                            st.markdown("**Cambios respecto al catálogo actual:**")
+                            emoji_map = {"cambiado": "🟡", "nuevo": "🟢", "eliminado": "🔴"}
+                            df_diff = pd.DataFrame(diff)
+                            df_diff.insert(0, "", df_diff["tipo"].map(emoji_map))
+                            df_diff = df_diff.drop(columns=["tipo"])
+                            fmt_diff = {}
+                            if "Antes (USD)" in df_diff.columns:
+                                fmt_diff["Antes (USD)"] = lambda x: f"${x:.1f}" if x is not None and not pd.isna(x) else "—"
+                            if "Después (USD)" in df_diff.columns:
+                                fmt_diff["Después (USD)"] = lambda x: f"${x:.1f}" if x is not None and not pd.isna(x) else "—"
+                            st.dataframe(df_diff, use_container_width=True, hide_index=True)
                         else:
-                            st.info("No hay productos coincidentes entre el catálogo y los costos del dashboard.")
-                    else:
-                        st.info("Cargá costos en la solapa 💻 Costos de consolas para comparar.")
+                            st.info("Sin cambios de precio respecto al catálogo anterior.")
 
-        # ════════════════════════════════════════════════════════════════════
-        # VISTA 3: Agregar proveedor/producto
-        # ════════════════════════════════════════════════════════════════════
-        elif vista == "➕ Agregar proveedor/producto":
-            st.subheader("Agregar nuevo proveedor")
+                        if st.button(
+                            f"✅ Confirmar reemplazo — {sup_name}",
+                            key=f"confirm_replace_{sup_name}",
+                            type="primary",
+                        ):
+                            suppliers[sup_name]["productos"] = new_products
+                            suppliers[sup_name]["updated_at"] = str(_date.today())
+                            prov_data["suppliers"] = suppliers
+                            st.session_state.proveedores_data = prov_data
+                            gs_write("Proveedores", prov_data)
+                            st.success(f"✅ Catálogo de {sup_name} actualizado ({len(new_products)} productos)")
+                            st.rerun()
+                    else:
+                        st.warning("No se encontraron productos válidos en el archivo.")
+
+                col_del1, col_del2 = st.columns([4, 1])
+                with col_del2:
+                    if st.button("🗑️ Eliminar proveedor", key=f"del_{sup_name}"):
+                        del suppliers[sup_name]
+                        prov_data["suppliers"] = suppliers
+                        st.session_state.proveedores_data = prov_data
+                        gs_write("Proveedores", prov_data)
+                        st.rerun()
+
+        # Agregar nuevo proveedor
+        with st.expander("➕ Agregar nuevo proveedor"):
             with st.form("form_nuevo_proveedor"):
                 np1, np2 = st.columns(2)
                 nuevo_prov_nombre = np1.text_input("Nombre del proveedor")
@@ -2555,6 +2513,7 @@ if st.session_state.df_tn is not None:
                         suppliers[nuevo_prov_nombre] = {
                             "contacto": nuevo_prov_contacto,
                             "web": nuevo_prov_web,
+                            "updated_at": "",
                             "productos": {},
                         }
                         prov_data["suppliers"] = suppliers
@@ -2565,306 +2524,25 @@ if st.session_state.df_tn is not None:
                     else:
                         st.warning("Ya existe un proveedor con ese nombre.")
 
-            st.divider()
-            st.subheader("Agregar productos a un proveedor")
-            if not suppliers:
-                st.info("Primero creá un proveedor.")
-            else:
-                prov_destino = st.selectbox("Proveedor destino", list(suppliers.keys()), key="prov_dest")
+        # ════════════════════════════════════════════════════════════════════
+        # SECCIÓN 2: COMPARADOR  [STUB — Task 4]
+        # ════════════════════════════════════════════════════════════════════
+        st.divider()
+        st.subheader("⚖️ Comparador de precios")
+        st.info("Comparador en construcción — próxima tarea.")
 
-                metodo_carga = st.radio(
-                    "Método de carga",
-                    ["📁 Subir archivo (CSV / Excel)", "📄 Subir PDF (lista de precios)", "✏️ Pegar manualmente"],
-                    horizontal=True, key="metodo_carga",
-                )
+        # ════════════════════════════════════════════════════════════════════
+        # SECCIÓN 3: PLANIFICADOR  [STUB — Task 5]
+        # ════════════════════════════════════════════════════════════════════
+        st.divider()
+        st.subheader("🛒 Planificador de compra")
+        st.info("Planificador en construcción — próxima tarea.")
 
-                # ── Método 1: CSV / Excel ──
-                if metodo_carga == "📁 Subir archivo (CSV / Excel)":
-                    st.caption(
-                        "El archivo debe tener al menos columnas de **nombre** y **precio**. "
-                        "Columnas opcionales: marca, pantalla, cpu, batería, storage."
-                    )
-                    uploaded = st.file_uploader(
-                        "Subí tu archivo CSV o Excel",
-                        type=["csv", "xlsx", "xls", "tsv"],
-                        key="upload_prov_csv",
-                    )
-                    if uploaded:
-                        try:
-                            if uploaded.name.endswith(".csv") or uploaded.name.endswith(".tsv"):
-                                sep = "\t" if uploaded.name.endswith(".tsv") else ","
-                                df_up = pd.read_csv(uploaded, sep=sep)
-                            else:
-                                df_up = pd.read_excel(uploaded)
-
-                            st.success(f"✅ Archivo leído: {len(df_up)} filas, {len(df_up.columns)} columnas")
-                            st.caption("Columnas detectadas: " + ", ".join(df_up.columns.tolist()))
-
-                            # Mapeo de columnas
-                            st.markdown("**Mapeá las columnas de tu archivo:**")
-                            cols_archivo = ["— No usar —"] + df_up.columns.tolist()
-                            mc1, mc2, mc3 = st.columns(3)
-                            col_nombre = mc1.selectbox("Columna NOMBRE", cols_archivo, index=1 if len(cols_archivo) > 1 else 0, key="map_nombre")
-                            col_precio = mc2.selectbox("Columna PRECIO (USD)", cols_archivo, index=min(2, len(cols_archivo)-1), key="map_precio")
-                            col_marca = mc3.selectbox("Columna MARCA (opcional)", cols_archivo, index=0, key="map_marca")
-                            mc4, mc5, mc6 = st.columns(3)
-                            col_screen = mc4.selectbox("Columna PANTALLA (opcional)", cols_archivo, index=0, key="map_screen")
-                            col_cpu = mc5.selectbox("Columna CPU (opcional)", cols_archivo, index=0, key="map_cpu")
-                            col_storage = mc6.selectbox("Columna STORAGE (opcional)", cols_archivo, index=0, key="map_storage")
-
-                            # Preview
-                            if col_nombre != "— No usar —" and col_precio != "— No usar —":
-                                rows_preview = []
-                                for _, r in df_up.iterrows():
-                                    nombre = str(r.get(col_nombre, "")).strip()
-                                    try:
-                                        precio = float(str(r.get(col_precio, 0)).replace("$", "").replace(",", "").strip())
-                                    except Exception:
-                                        precio = 0.0
-                                    if nombre and precio > 0:
-                                        rows_preview.append({
-                                            "Producto": nombre,
-                                            "FOB (USD)": precio,
-                                            "Marca": str(r.get(col_marca, "—")).strip() if col_marca != "— No usar —" else "—",
-                                            "Pantalla": str(r.get(col_screen, "—")).strip() if col_screen != "— No usar —" else "—",
-                                            "CPU": str(r.get(col_cpu, "—")).strip() if col_cpu != "— No usar —" else "—",
-                                            "Storage": str(r.get(col_storage, "—")).strip() if col_storage != "— No usar —" else "—",
-                                        })
-
-                                if rows_preview:
-                                    st.markdown(f"**Preview: {len(rows_preview)} productos válidos**")
-                                    df_preview = pd.DataFrame(rows_preview)
-                                    edited_preview = st.data_editor(
-                                        df_preview,
-                                        column_config={
-                                            "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.1, format="$%.1f"),
-                                        },
-                                        hide_index=True, use_container_width=True, key="preview_csv",
-                                        num_rows="dynamic",
-                                    )
-                                    if st.button("✅ Confirmar e importar", key="confirm_csv", type="primary", use_container_width=True):
-                                        added = 0
-                                        for _, row in edited_preview.iterrows():
-                                            nombre = str(row["Producto"]).strip()
-                                            precio = float(row.get("FOB (USD)", 0))
-                                            if nombre and precio > 0:
-                                                suppliers[prov_destino]["productos"][nombre] = {
-                                                    "precio_usd": precio,
-                                                    "marca": str(row.get("Marca", "—")),
-                                                    "screen": str(row.get("Pantalla", "—")),
-                                                    "cpu": str(row.get("CPU", "—")),
-                                                    "storage": str(row.get("Storage", "—")),
-                                                    "battery": "—",
-                                                }
-                                                added += 1
-                                        if added > 0:
-                                            prov_data["suppliers"] = suppliers
-                                            st.session_state.proveedores_data = prov_data
-                                            gs_write("Proveedores", prov_data)
-                                            st.success(f"✅ {added} producto(s) importados a {prov_destino}")
-                                            st.rerun()
-                                else:
-                                    st.warning("No se encontraron productos válidos. Revisá el mapeo de columnas.")
-
-                        except Exception as e:
-                            st.error(f"Error leyendo archivo: {e}")
-
-                # ── Método 2: PDF ──
-                elif metodo_carga == "📄 Subir PDF (lista de precios)":
-                    st.caption(
-                        "Subí el PDF del proveedor. Se extrae el texto y se intenta parsear "
-                        "productos y precios automáticamente. Después podés editar antes de guardar."
-                    )
-                    uploaded_pdf = st.file_uploader(
-                        "Subí tu PDF",
-                        type=["pdf"],
-                        key="upload_prov_pdf",
-                    )
-                    if uploaded_pdf:
-                        extracted_rows = []
-                        raw_text = ""
-                        try:
-                            import pdfplumber
-                            with pdfplumber.open(uploaded_pdf) as pdf:
-                                for page in pdf.pages:
-                                    tables = page.extract_tables()
-                                    for table in tables:
-                                        for row in table:
-                                            if row:
-                                                cells = [str(c).strip() if c else "" for c in row]
-                                                # Buscar filas con un número que parezca precio
-                                                for i, cell in enumerate(cells):
-                                                    try:
-                                                        val = float(cell.replace("$", "").replace(",", ""))
-                                                        if 1 < val < 5000:  # rango razonable para FOB
-                                                            # Buscar nombre en celdas anteriores
-                                                            nombre_parts = [c for c in cells[:i] if c and len(c) > 2 and not c.replace(".", "").isdigit()]
-                                                            if nombre_parts:
-                                                                nombre = nombre_parts[0]
-                                                                # Buscar storage
-                                                                storage = "—"
-                                                                for c in cells:
-                                                                    if any(s in c.upper() for s in ["64G", "128G", "256G", "32G", "16G"]):
-                                                                        storage = c.strip()
-                                                                        break
-                                                                extracted_rows.append({
-                                                                    "Producto": nombre,
-                                                                    "FOB (USD)": val,
-                                                                    "Marca": "—",
-                                                                    "Pantalla": "—",
-                                                                    "CPU": "—",
-                                                                    "Storage": storage,
-                                                                })
-                                                            break
-                                                    except ValueError:
-                                                        continue
-                                    # Also get raw text
-                                    page_text = page.extract_text()
-                                    if page_text:
-                                        raw_text += page_text + "\n"
-                        except ImportError:
-                            st.warning("⚠️ `pdfplumber` no está instalado. Agregalo a requirements.txt: `pdfplumber`")
-                            st.info("Mientras tanto, podés copiar el texto del PDF y pegarlo en el modo manual.")
-                        except Exception as e:
-                            st.error(f"Error procesando PDF: {e}")
-
-                        if extracted_rows:
-                            # Deduplicar por nombre (quedarse con el primero)
-                            seen = set()
-                            unique_rows = []
-                            for r in extracted_rows:
-                                if r["Producto"] not in seen:
-                                    seen.add(r["Producto"])
-                                    unique_rows.append(r)
-                            extracted_rows = unique_rows
-
-                            st.success(f"✅ {len(extracted_rows)} productos extraídos del PDF")
-                            st.caption("Revisá y editá la tabla antes de importar:")
-
-                            df_pdf = pd.DataFrame(extracted_rows)
-                            edited_pdf = st.data_editor(
-                                df_pdf,
-                                column_config={
-                                    "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.1, format="$%.1f"),
-                                },
-                                hide_index=True, use_container_width=True, key="preview_pdf",
-                                num_rows="dynamic",
-                            )
-
-                            if st.button("✅ Confirmar e importar desde PDF", key="confirm_pdf", type="primary", use_container_width=True):
-                                added = 0
-                                for _, row in edited_pdf.iterrows():
-                                    nombre = str(row["Producto"]).strip()
-                                    precio = float(row.get("FOB (USD)", 0))
-                                    if nombre and precio > 0:
-                                        suppliers[prov_destino]["productos"][nombre] = {
-                                            "precio_usd": precio,
-                                            "marca": str(row.get("Marca", "—")),
-                                            "screen": str(row.get("Pantalla", "—")),
-                                            "cpu": str(row.get("CPU", "—")),
-                                            "storage": str(row.get("Storage", "—")),
-                                            "battery": "—",
-                                        }
-                                        added += 1
-                                if added > 0:
-                                    prov_data["suppliers"] = suppliers
-                                    st.session_state.proveedores_data = prov_data
-                                    gs_write("Proveedores", prov_data)
-                                    st.success(f"✅ {added} producto(s) importados a {prov_destino}")
-                                    st.rerun()
-                        elif raw_text:
-                            st.warning("No se pudieron extraer tablas automáticamente. Texto crudo del PDF:")
-                            st.text_area("Texto extraído (copialo y usá el modo manual)", raw_text[:5000], height=300)
-                        elif uploaded_pdf:
-                            st.warning("No se pudo extraer contenido del PDF. Probá con CSV/Excel o el modo manual.")
-
-                # ── Método 3: Manual ──
-                elif metodo_carga == "✏️ Pegar manualmente":
-                    st.markdown("**Cargá productos (uno por fila):**")
-                    with st.form("form_productos_prov"):
-                        prod_input = st.text_area(
-                            "Formato: Nombre | Precio USD | Marca | Pantalla | CPU | Batería | Storage",
-                            placeholder="Ejemplo:\nR36S | 23.2 | R36 Series | 3.5in 640x480 | RK3326 | 3200mAh | 64G\nTrimui Brick | 53.0 | Trimui | 3.2in 1024x768 | — | 3000mAh | —",
-                            height=200,
-                        )
-                        submit_prods = st.form_submit_button("➕ Agregar productos", use_container_width=True)
-                        if submit_prods and prod_input and prov_destino:
-                            added = 0
-                            for line in prod_input.strip().split("\n"):
-                                parts = [p.strip() for p in line.split("|")]
-                                if len(parts) >= 2:
-                                    nombre = parts[0]
-                                    try:
-                                        precio = float(parts[1])
-                                    except Exception:
-                                        continue
-                                    prod_entry = {"precio_usd": precio}
-                                    if len(parts) >= 3:
-                                        prod_entry["marca"] = parts[2]
-                                    if len(parts) >= 4:
-                                        prod_entry["screen"] = parts[3]
-                                    if len(parts) >= 5:
-                                        prod_entry["cpu"] = parts[4]
-                                    if len(parts) >= 6:
-                                        prod_entry["battery"] = parts[5]
-                                    if len(parts) >= 7:
-                                        prod_entry["storage"] = parts[6]
-                                    suppliers[prov_destino]["productos"][nombre] = prod_entry
-                                    added += 1
-                            if added > 0:
-                                prov_data["suppliers"] = suppliers
-                                st.session_state.proveedores_data = prov_data
-                                gs_write("Proveedores", prov_data)
-                                st.success(f"✅ {added} producto(s) agregados a {prov_destino}")
-                                st.rerun()
-
-                # Editor rápido de productos existentes
-                st.divider()
-                st.subheader("📝 Editar productos existentes")
-                prov_edit = st.selectbox("Proveedor", list(suppliers.keys()), key="prov_edit")
-                if prov_edit and suppliers[prov_edit].get("productos"):
-                    prods_edit = suppliers[prov_edit]["productos"]
-                    rows_edit = []
-                    for nombre, info in prods_edit.items():
-                        rows_edit.append({
-                            "Producto": nombre,
-                            "FOB (USD)": float(info.get("precio_usd", 0)),
-                            "Marca": info.get("marca", "—"),
-                            "Pantalla": info.get("screen", "—"),
-                            "CPU": info.get("cpu", "—"),
-                            "Batería": info.get("battery", "—"),
-                            "Storage": info.get("storage", "—"),
-                        })
-                    df_edit_prov = pd.DataFrame(rows_edit).sort_values("Producto")
-                    edited_prov_df = st.data_editor(
-                        df_edit_prov,
-                        column_config={
-                            "Producto": st.column_config.TextColumn("Producto", disabled=True),
-                            "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.1, format="$%.1f"),
-                        },
-                        hide_index=True, use_container_width=True, key="edit_prov_table",
-                    )
-
-                    if st.button("💾 Guardar cambios", key="save_edit_prov", use_container_width=True, type="primary"):
-                        for _, row in edited_prov_df.iterrows():
-                            prod_name = row["Producto"]
-                            if prod_name in prods_edit:
-                                prods_edit[prod_name]["precio_usd"] = float(row["FOB (USD)"])
-                                prods_edit[prod_name]["marca"] = row.get("Marca", "—")
-                                prods_edit[prod_name]["screen"] = row.get("Pantalla", "—")
-                                prods_edit[prod_name]["cpu"] = row.get("CPU", "—")
-                                prods_edit[prod_name]["battery"] = row.get("Batería", "—")
-                                prods_edit[prod_name]["storage"] = row.get("Storage", "—")
-                        prov_data["suppliers"] = suppliers
-                        st.session_state.proveedores_data = prov_data
-                        ok = gs_write("Proveedores", prov_data)
-                        st.success("✅ Guardado" if ok else "⚠️ Solo en sesión")
-
-        # ── Botón global de guardado ──
+        # ── Guardado global ──
         st.divider()
         if st.button("💾 Guardar todos los datos de proveedores", use_container_width=True):
             ok = gs_write("Proveedores", st.session_state.proveedores_data)
-            st.success("✅ Proveedores guardados en Google Sheets" if ok else "⚠️ Solo en sesión")
+            st.success("✅ Guardado en Google Sheets" if ok else "⚠️ Solo en sesión")
 
 else:
     st.info("👈 Seleccioná el período en el panel izquierdo y hacé clic en Buscar.")
