@@ -2643,11 +2643,15 @@ if st.session_state.df_tn is not None:
                     """Devuelve (proveedor, precio) del proveedor más barato para ese producto."""
                     candidates = []
                     for sup_name, sup_data in suppliers.items():
+                        best_ratio_sup = 0.0
+                        best_price_sup = 0.0
                         for p_name, p_info in sup_data.get("productos", {}).items():
                             ratio = _SM(None, _normalizar(prod_name), _normalizar(p_name)).ratio()
-                            if ratio >= 0.80:
-                                candidates.append((sup_name, float(p_info.get("precio_usd", 0))))
-                                break
+                            if ratio >= 0.80 and ratio > best_ratio_sup:
+                                best_ratio_sup = ratio
+                                best_price_sup = float(p_info.get("precio_usd", 0))
+                        if best_ratio_sup >= 0.80:
+                            candidates.append((sup_name, best_price_sup))
                     if not candidates:
                         return ("—", 0.0)
                     return min(candidates, key=lambda x: x[1])
@@ -2672,6 +2676,8 @@ if st.session_state.df_tn is not None:
                         else:
                             urgency = "❓ Sin dato"
 
+                        if best_sup == "—":
+                            continue
                         plan_rows.append({
                             "Producto": prod_name,
                             "Stock": stock_val if stock_val not in (None, "?") else ("Sin límite" if stock_val is None else "—"),
