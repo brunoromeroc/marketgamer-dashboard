@@ -2607,11 +2607,140 @@ if st.session_state.df_tn is not None:
                         st.info("Cargá costos en 💻 Costos de consolas para comparar.")
 
         # ════════════════════════════════════════════════════════════════════
-        # SECCIÓN 3: PLANIFICADOR  [STUB — Task 5]
+        # SECCIÓN 3: PLANIFICADOR DE COMPRA
         # ════════════════════════════════════════════════════════════════════
         st.divider()
         st.subheader("🛒 Planificador de compra")
-        st.info("Planificador en construcción — próxima tarea.")
+        st.caption("Cruzá tu stock actual con los precios de los catálogos. Seleccioná qué reponer y generá el resumen del pedido por proveedor.")
+
+        if not suppliers:
+            st.info("Cargá al menos un proveedor para usar el planificador.")
+        else:
+            if st.button("🔄 Cargar stock desde Tienda Nube", key="btn_load_stock_planner"):
+                with st.spinner("Consultando stock..."):
+                    st.session_state.stock_planner = get_stock_for_planner()
+                st.success(f"✅ {len(st.session_state.stock_planner)} productos cargados")
+
+            if "stock_planner" not in st.session_state:
+                st.info("Hacé clic en 'Cargar stock' para ver los niveles actuales.")
+            else:
+                from difflib import SequenceMatcher as _SM
+
+                stock_dict = st.session_state.stock_planner
+
+                def _best_stock_match(prod_name: str, stock_dict: dict) -> int | None:
+                    """Busca el stock en TN usando fuzzy match. None = sin límite / no encontrado."""
+                    best_ratio = 0.0
+                    best_val = None
+                    for tn_name, tn_stock in stock_dict.items():
+                        ratio = _SM(None, _normalizar(prod_name), _normalizar(tn_name)).ratio()
+                        if ratio > best_ratio:
+                            best_ratio = ratio
+                            best_val = tn_stock
+                    return best_val if best_ratio >= 0.70 else "?"
+
+                def _best_supplier_price(prod_name: str, suppliers: dict) -> tuple[str, float]:
+                    """Devuelve (proveedor, precio) del proveedor más barato para ese producto."""
+                    candidates = []
+                    for sup_name, sup_data in suppliers.items():
+                        for p_name, p_info in sup_data.get("productos", {}).items():
+                            ratio = _SM(None, _normalizar(prod_name), _normalizar(p_name)).ratio()
+                            if ratio >= 0.80:
+                                candidates.append((sup_name, float(p_info.get("precio_usd", 0))))
+                                break
+                    if not candidates:
+                        return ("—", 0.0)
+                    return min(candidates, key=lambda x: x[1])
+
+                # Construir tabla del planificador (un producto por fila, sin duplicados)
+                seen_products: set = set()
+                plan_rows = []
+                for sup_name, sup_data in suppliers.items():
+                    for prod_name in sup_data.get("productos", {}).keys():
+                        canonical = _normalizar(prod_name)
+                        if canonical in seen_products:
+                            continue
+                        seen_products.add(canonical)
+
+                        stock_val = _best_stock_match(prod_name, stock_dict)
+                        best_sup, best_price = _best_supplier_price(prod_name, suppliers)
+
+                        if isinstance(stock_val, int):
+                            urgency = "🔴 Crítico" if stock_val <= 2 else ("🟡 Bajo" if stock_val <= 5 else "🟢 OK")
+                        elif stock_val is None:
+                            urgency = "♾️ Sin límite"
+                        else:
+                            urgency = "❓ Sin dato"
+
+                        plan_rows.append({
+                            "Producto": prod_name,
+                            "Stock": stock_val if stock_val not in (None, "?") else ("Sin límite" if stock_val is None else "—"),
+                            "Urgencia": urgency,
+                            "Mejor precio (USD)": best_price,
+                            "Proveedor sugerido": best_sup,
+                            "Comprar": False,
+                            "Cantidad": 1,
+                        })
+
+                if not plan_rows:
+                    st.info("No hay productos en los catálogos cargados.")
+                else:
+                    # Ordenar por urgencia (Crítico primero)
+                    urgency_order = {"🔴 Crítico": 0, "🟡 Bajo": 1, "🟢 OK": 2, "❓ Sin dato": 3, "♾️ Sin límite": 4}
+                    plan_rows.sort(key=lambda r: urgency_order.get(r["Urgencia"], 5))
+
+                    df_plan = pd.DataFrame(plan_rows)
+                    edited_plan = st.data_editor(
+                        df_plan,
+                        column_config={
+                            "Comprar": st.column_config.CheckboxColumn("✓ Comprar", default=False),
+                            "Cantidad": st.column_config.NumberColumn("Cant.", min_value=1, step=1, default=1),
+                            "Mejor precio (USD)": st.column_config.NumberColumn("Precio (USD)", format="$%.1f", disabled=True),
+                            "Producto": st.column_config.TextColumn("Producto", disabled=True),
+                            "Stock": st.column_config.TextColumn("Stock", disabled=True),
+                            "Urgencia": st.column_config.TextColumn("Urgencia", disabled=True),
+                            "Proveedor sugerido": st.column_config.TextColumn("Proveedor", disabled=True),
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        key="plan_table",
+                    )
+
+                    selected = edited_plan[edited_plan["Comprar"] == True]
+                    if not selected.empty:
+                        st.divider()
+                        st.subheader("📋 Resumen del pedido")
+
+                        by_supplier: dict = {}
+                        for _, row in selected.iterrows():
+                            sup = str(row["Proveedor sugerido"])
+                            if sup not in by_supplier:
+                                by_supplier[sup] = []
+                            by_supplier[sup].append({
+                                "producto": str(row["Producto"]),
+                                "cantidad": int(row["Cantidad"]),
+                                "precio": float(row["Mejor precio (USD)"]),
+                            })
+
+                        order_text = ""
+                        grand_total = 0.0
+                        for sup, items in by_supplier.items():
+                            subtotal = sum(i["cantidad"] * i["precio"] for i in items)
+                            grand_total += subtotal
+                            st.markdown(f"**📦 Pedido a {sup} — Total: ${subtotal:.0f} USD**")
+                            order_text += f"Pedido a {sup} — Total: ${subtotal:.0f} USD\n"
+                            for item in items:
+                                line_total = item["cantidad"] * item["precio"]
+                                st.markdown(f"  · {item['cantidad']}× {item['producto']} × ${item['precio']:.0f} = ${line_total:.0f}")
+                                order_text += f"  · {item['cantidad']}x {item['producto']} x ${item['precio']:.0f}\n"
+                            order_text += "\n"
+
+                        st.markdown(f"**💰 Total general: ${grand_total:.0f} USD**")
+                        order_text += f"Total general: ${grand_total:.0f} USD"
+
+                        st.divider()
+                        st.markdown("**Copiá esto para WhatsApp:**")
+                        st.code(order_text, language=None)
 
         # ── Guardado global ──
         st.divider()
