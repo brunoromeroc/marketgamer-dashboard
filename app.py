@@ -42,8 +42,11 @@ def compute_catalog_diff(old_products: dict, new_products: dict) -> list:
     old_keys = set(old_products.keys())
     new_keys = set(new_products.keys())
     for name in old_keys & new_keys:
-        old_price = float(old_products[name].get("precio_usd", 0))
-        new_price = float(new_products[name].get("precio_usd", 0))
+        try:
+            old_price = float(old_products[name].get("precio_usd", 0))
+            new_price = float(new_products[name].get("precio_usd", 0))
+        except (TypeError, ValueError):
+            continue
         if abs(old_price - new_price) > 0.01:
             diff.append({
                 "Producto": name,
@@ -125,6 +128,10 @@ def fuzzy_group_products(suppliers: dict, threshold: float = 0.80) -> pd.DataFra
     """
     Agrupa productos similares de distintos proveedores usando difflib.
     Devuelve DataFrame con Producto | Proveedor1 | Proveedor2 | ...
+
+    Nota: usa un algoritmo greedy — cada producto se asigna al primer grupo
+    con similitud >= threshold. El orden de iteración afecta los resultados.
+    Para los 3 proveedores de Market Gamer (catálogos pequeños), esto es suficiente.
     """
     from difflib import SequenceMatcher
 
@@ -183,6 +190,8 @@ def get_stock_for_planner() -> dict:
         ).strip()
         if not nombre:
             continue
+        # Si cualquier variante no tiene límite de stock, tratamos el producto como sin límite.
+        # Así el planificador no lo marca como urgente.
         total = 0
         unlimited = False
         for v in p.get("variants", []):
@@ -191,7 +200,7 @@ def get_stock_for_planner() -> dict:
                 unlimited = True
                 break
             total += int(s)
-        stock_dict[nombre] = None if unlimited else total
+        stock_dict[nombre] = None if unlimited else total  # None = sin límite
     return stock_dict
 
 # ── Google Sheets ──────────────────────────────────────────────────────────────
