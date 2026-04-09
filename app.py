@@ -33,6 +33,167 @@ def fmt_pct(n):
 def _normalizar(s):
     return re.sub(r'\s+', ' ', str(s).strip().lower())
 
+# ── Proveedores helpers ────────────────────────────────────────────────────────
+from datetime import date as _date
+
+def compute_catalog_diff(old_products: dict, new_products: dict) -> list:
+    """Compara dos catálogos y devuelve lista de cambios (cambiado/nuevo/eliminado)."""
+    diff = []
+    old_keys = set(old_products.keys())
+    new_keys = set(new_products.keys())
+    for name in old_keys & new_keys:
+        old_price = float(old_products[name].get("precio_usd", 0))
+        new_price = float(new_products[name].get("precio_usd", 0))
+        if abs(old_price - new_price) > 0.01:
+            diff.append({
+                "Producto": name,
+                "Antes (USD)": old_price,
+                "Después (USD)": new_price,
+                "tipo": "cambiado",
+            })
+    for name in new_keys - old_keys:
+        diff.append({
+            "Producto": name,
+            "Antes (USD)": None,
+            "Después (USD)": float(new_products[name].get("precio_usd", 0)),
+            "tipo": "nuevo",
+        })
+    for name in old_keys - new_keys:
+        diff.append({
+            "Producto": name,
+            "Antes (USD)": float(old_products[name].get("precio_usd", 0)),
+            "Después (USD)": None,
+            "tipo": "eliminado",
+        })
+    return diff
+
+
+def parse_pptx_catalog(file_bytes: bytes) -> list:
+    """Extrae filas (Producto, FOB USD, Storage) de un PowerPoint de lista de precios."""
+    from pptx import Presentation
+    import io
+    rows = []
+    seen = set()
+    try:
+        prs = Presentation(io.BytesIO(file_bytes))
+    except Exception:
+        return []
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not shape.has_table:
+                continue
+            table = shape.table
+            for row_idx in range(len(table.rows)):
+                cells = [cell.text.strip() for cell in table.rows[row_idx].cells]
+                for i, cell in enumerate(cells):
+                    try:
+                        val = float(
+                            cell.replace("$", "").replace(",", "").replace("USD", "").strip()
+                        )
+                        if not (1 < val < 5000):
+                            continue
+                        nombre_parts = [
+                            c for c in cells[:i]
+                            if c and len(c) > 2 and not c.replace(".", "").isdigit()
+                        ]
+                        if not nombre_parts:
+                            continue
+                        nombre = nombre_parts[0]
+                        if nombre in seen:
+                            break
+                        seen.add(nombre)
+                        storage = "—"
+                        for c in cells:
+                            if any(s in c.upper() for s in ["64G", "128G", "256G", "32G", "16G", "512G", "1TB"]):
+                                storage = c.strip()
+                                break
+                        rows.append({
+                            "Producto": nombre,
+                            "FOB (USD)": val,
+                            "Marca": "—",
+                            "Pantalla": "—",
+                            "CPU": "—",
+                            "Storage": storage,
+                        })
+                        break
+                    except ValueError:
+                        continue
+    return rows
+
+
+def fuzzy_group_products(suppliers: dict, threshold: float = 0.80) -> pd.DataFrame:
+    """
+    Agrupa productos similares de distintos proveedores usando difflib.
+    Devuelve DataFrame con Producto | Proveedor1 | Proveedor2 | ...
+    """
+    from difflib import SequenceMatcher
+
+    sup_names = list(suppliers.keys())
+    all_items = []
+    for sup_name in sup_names:
+        for prod_name, prod_info in suppliers[sup_name].get("productos", {}).items():
+            all_items.append({
+                "supplier": sup_name,
+                "name": prod_name,
+                "price": float(prod_info.get("precio_usd", 0)),
+            })
+
+    if not all_items:
+        return pd.DataFrame()
+
+    # Agrupar por similitud de nombre
+    groups: list[list] = []
+    for item in all_items:
+        matched = None
+        for group in groups:
+            rep = group[0]["name"]
+            if SequenceMatcher(None, _normalizar(item["name"]), _normalizar(rep)).ratio() >= threshold:
+                matched = group
+                break
+        if matched is None:
+            groups.append([item])
+        else:
+            matched.append(item)
+
+    rows = []
+    for group in groups:
+        canonical = group[0]["name"]
+        row: dict = {"Producto": canonical}
+        for sup in sup_names:
+            match = next((x for x in group if x["supplier"] == sup), None)
+            row[sup] = match["price"] if match else None
+        rows.append(row)
+
+    return pd.DataFrame(rows).sort_values("Producto")
+
+
+@st.cache_data(ttl=300)
+def get_stock_for_planner() -> dict:
+    """
+    Devuelve {nombre_producto: stock_total} consultando la API de TN.
+    Stock None = sin límite configurado.
+    TTL 5 min.
+    """
+    products = get_tn_products()
+    stock_dict: dict = {}
+    for p in products:
+        nombre_raw = p.get("name", {})
+        nombre = (
+            nombre_raw.get("es", "") if isinstance(nombre_raw, dict) else str(nombre_raw)
+        ).strip()
+        if not nombre:
+            continue
+        total = 0
+        unlimited = False
+        for v in p.get("variants", []):
+            s = v.get("stock", None)
+            if s is None:
+                unlimited = True
+                break
+            total += int(s)
+        stock_dict[nombre] = None if unlimited else total
+    return stock_dict
+
 # ── Google Sheets ──────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_gsheet_client():
