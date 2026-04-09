@@ -138,29 +138,67 @@ def parse_pptx_catalog(file_bytes: bytes) -> list:
         if found_table:
             continue
 
-        # ── Estrategia 2: text boxes agrupados (formato Powkiddy) ────────────
-        # Patrón por slide: "MODELO  NNpcs  STORAGE  $PRECIO / / ..."
+        # ── Estrategia 2: text boxes agrupados (formato Powkiddy/Trimui) ────────
+        # Estructura: "MODELO NNpcs STORAGE $PRECIO / / MODELO2 NNpcs STORAGE $PRECIO2"
+        # Algunos slides no usan "/" como separador (ej. "X28 50pcs $93 X55 50pcs $48").
+        # Algoritmo por marcador "NNpcs":
+        #   - Nombre: en el segmento ANTERIOR al pcs, tomar texto después del último precio.
+        #     Si no hay precio previo, tomar el último word-group (split en /  o espacios).
+        #   - Precio: primer $XX en el segmento POSTERIOR al pcs (hasta el siguiente pcs).
         slide_text = _slide_xml_text(slide)
-        for m in PRODUCT_RE.finditer(slide_text):
-            name_raw = m.group(1).strip()
-            stuff    = m.group(2).strip()
+        PCS_ITER = list(_re.finditer(r'\d+\s*pcs', slide_text, _re.IGNORECASE))
+        NAME_MAP = {"HAMMER": "Brick Hammer", "SMART PRO S": "Smart Pro S",
+                    "SMART PRO": "Smart Pro", "SMART": "Smart"}
+        TRIMUI_MODELS = {"Smart", "Smart Pro", "Smart Pro S", "Brick", "Brick Hammer"}
+
+        for idx, pcs_m in enumerate(PCS_ITER):
+            # Segmento anterior: desde el fin del pcs previo (o inicio) hasta este pcs
+            prev_end = PCS_ITER[idx - 1].end() if idx > 0 else 0
+            seg_before = slide_text[prev_end:pcs_m.start()]
+
+            # Extraer nombre: texto después del último precio en seg_before
+            last_price = list(_re.finditer(r'\$\s*\d+\.?\d*', seg_before))
+            if last_price:
+                name_raw = seg_before[last_price[-1].end():].strip()
+            else:
+                parts = _re.split(r'\s*/\s*|\s{3,}', seg_before.strip())
+                name_raw = parts[-1].strip() if parts else ''
+
+            # Limpiar el nombre de slashes, storage y noise
+            name_raw = _re.sub(r'^[\s/]+', '', name_raw)  # slashes/espacios al inicio
+            name_raw = _re.sub(r'\b\d+\s*GB\S*\b', '', name_raw, flags=_re.IGNORECASE).strip()
+            name_raw = _re.sub(r'\s+', ' ', name_raw).strip()
+
+            if not name_raw or len(name_raw) < 2:
+                continue
+            if _re.fullmatch(r'[\d/\s.]+', name_raw):
+                continue
+
+            # Segmento posterior: desde este pcs hasta el siguiente (para encontrar el precio)
+            seg_end = PCS_ITER[idx + 1].start() if idx + 1 < len(PCS_ITER) else len(slide_text)
+            seg_after = slide_text[pcs_m.end():seg_end]
+            price_m = _re.search(r'\$\s*(\d+\.?\d*)', seg_after)
+            if not price_m:
+                continue  # producto sin precio en este catálogo
             try:
-                val = float(m.group(3))
+                val = float(price_m.group(1))
             except ValueError:
                 continue
             if not (1 < val < 5000):
                 continue
-            # Si el nombre tiene basura de un producto anterior separada por /
-            name = _re.split(r'\s*/\s*|\s{3,}', name_raw)[-1].strip()
-            # Descartar si el "nombre" es storage (ej. "64GB")
-            if _re.fullmatch(r'\d+\s*GB.*', name, _re.IGNORECASE) or len(name) < 2:
+
+            name = NAME_MAP.get(name_raw.upper(), name_raw)
+            brand = "Trimui" if name in TRIMUI_MODELS else "Powkiddy"
+            full_name = f"{brand} {name}"
+
+            if full_name in seen:
                 continue
-            if name in seen:
-                continue
-            seen.add(name)
-            storage_m = _re.search(r'(\d+\s*GB\S*)', stuff, _re.IGNORECASE)
+            seen.add(full_name)
+
+            storage_m = _re.search(r'(\d+\s*GB\S*)', seg_after, _re.IGNORECASE)
             storage = storage_m.group(1) if storage_m else "—"
-            rows.append({"Producto": name, "FOB (USD)": val, "Marca": "—", "Pantalla": "—", "CPU": "—", "Storage": storage})
+            rows.append({"Producto": full_name, "FOB (USD)": val, "Marca": brand,
+                         "Pantalla": "—", "CPU": "—", "Storage": storage})
 
     return rows
 
