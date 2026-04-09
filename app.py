@@ -177,9 +177,16 @@ def parse_pptx_catalog(file_bytes: bytes) -> list:
             # Segmento posterior: desde este pcs hasta el siguiente (para encontrar el precio)
             seg_end = PCS_ITER[idx + 1].start() if idx + 1 < len(PCS_ITER) else len(slide_text)
             seg_after = slide_text[pcs_m.end():seg_end]
+            # Buscar precio con $ (ej. "$45") o sin $ si el catálogo lo omitió (ej. "28")
             price_m = _re.search(r'\$\s*(\d+\.?\d*)', seg_after)
             if not price_m:
-                continue  # producto sin precio en este catálogo
+                # Fallback: número suelto entre 5 y 999 que no sea parte de storage/dimensiones
+                price_m = _re.search(
+                    r'(?<![GB\d])(?<!\d)\b(\d{2,3}(?:\.\d)?)\b(?!\s*(?:GB|g\b|mm|kg|pcs|\d))',
+                    seg_after, _re.IGNORECASE
+                )
+            if not price_m:
+                continue  # producto genuinamente sin precio en este catálogo
             try:
                 val = float(price_m.group(1))
             except ValueError:
