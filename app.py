@@ -2508,6 +2508,21 @@ if st.session_state.df_tn is not None:
                     fig_mr.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
                     st.plotly_chart(fig_mr, use_container_width=True)
 
+                    # ── Margen promedio ponderado del total ──
+                    _total_revenue = df_avg["Precio prom ($)"].mul(df_avg["Ventas"]).sum()
+                    _total_margen = df_avg["Margen prom ($)"].mul(df_avg["Ventas"]).sum()
+                    _total_ventas = df_avg["Ventas"].sum()
+                    _margen_pct_pond = (_total_margen / _total_revenue * 100) if _total_revenue > 0 else 0
+                    _margen_prom_unit = _total_margen / _total_ventas if _total_ventas > 0 else 0
+                    _color_mg = "#00C49F" if _margen_pct_pond >= 20 else "#FFD700" if _margen_pct_pond >= 10 else "#FF5733"
+
+                    _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+                    _mc1.metric("📦 Unidades vendidas", f"{int(_total_ventas)}")
+                    _mc2.metric("💰 Revenue total", f"${_total_revenue:,.0f}")
+                    _mc3.metric("📊 Margen total", f"${_total_margen:,.0f}")
+                    _mc4.metric("📈 Margen promedio pond.", f"{_margen_pct_pond:.1f}%")
+                    st.caption(f"Margen promedio por unidad: **${_margen_prom_unit:,.0f}** · Comisiones PN son reales (calculadas con la tasa según medio de pago y cuotas de cada orden)")
+
                     st.dataframe(
                         df_avg.style.format({
                             "Precio prom ($)": "${:,.0f}",
