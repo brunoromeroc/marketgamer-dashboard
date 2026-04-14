@@ -1931,10 +1931,11 @@ if st.session_state.df_tn is not None:
                 key="costos_editor",
             )
 
-            # Sincronizar ediciones al session_state para que no se pierdan
+            # NO tocar st.session_state.costos_df_editor acá — el widget
+            # gestiona sus edits internamente via key="costos_editor".
+            # Sobreescribirlo causa conflicto y resetea el editor.
             if edited_df is not None:
                 edited_df = edited_df.fillna({"Producto": "", "Peso (kg)": 0.0, "FOB (USD)": 0.0})
-                st.session_state.costos_df_editor = edited_df.copy()
 
             # Calcular columnas derivadas para resumen y guardado
             edited_df["Import (USD)"] = (edited_df["Peso (kg)"] * costo_kg_usd).round(2)
