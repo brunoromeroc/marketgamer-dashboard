@@ -2465,6 +2465,9 @@ if st.session_state.df_tn is not None:
                             break
 
                         SKIP_VALUES = {"item", ""}
+                        # Regex para variantes con label: "8+128GB: US$201.5" o "US$29.00"
+                        VARIANT_RE = _re.compile(r'^(.+?):\s*(?:US)?\$([\d,]+\.?\d*)$')
+                        PLAIN_RE = _re.compile(r'(?:US)?\$([\d,]+\.?\d*)')
                         for table in all_tables:
                             for row in table:
                                 if not row:
@@ -2477,20 +2480,33 @@ if st.session_state.df_tn is not None:
                                 model_clean = model.split("\n")[0].strip()
                                 if model_clean.lower() in SKIP_VALUES:
                                     continue
-                                # Extraer precio: "US$29.00", "$234.00", "8+128GB: US$201.00"
-                                m = _re.search(r'(?:US)?\$\s*([\d,]+\.?\d*)', price_raw)
-                                if not m:
-                                    continue
-                                try:
-                                    val = float(m.group(1).replace(",", ""))
-                                    if 1 < val < 5000:
-                                        raw_rows.append({
-                                            "Producto": model_clean,
-                                            "FOB (USD)": val,
-                                            "Marca": "Anbernic", "Pantalla": "—", "CPU": "—", "Storage": "—",
-                                        })
-                                except ValueError:
-                                    pass
+                                # Separar por línea: cada línea puede ser una variante
+                                for line in price_raw.split("\n"):
+                                    line = line.strip()
+                                    if not line:
+                                        continue
+                                    vm = VARIANT_RE.match(line)
+                                    if vm:
+                                        # "8+128GB: US$201.5" → producto "RG 477V 8+128GB"
+                                        label = vm.group(1).strip()
+                                        price_str = vm.group(2).replace(",", "")
+                                        product_name = f"{model_clean} {label}"
+                                    else:
+                                        pm = PLAIN_RE.search(line)
+                                        if not pm:
+                                            continue
+                                        price_str = pm.group(1).replace(",", "")
+                                        product_name = model_clean
+                                    try:
+                                        val = float(price_str)
+                                        if 1 < val < 5000:
+                                            raw_rows.append({
+                                                "Producto": product_name,
+                                                "FOB (USD)": val,
+                                                "Marca": "Anbernic", "Pantalla": "—", "CPU": "—", "Storage": "—",
+                                            })
+                                    except ValueError:
+                                        pass
 
                     else:
                         # Formato Anne (Qbuy): cada producto ocupa 2 filas en la tabla:
