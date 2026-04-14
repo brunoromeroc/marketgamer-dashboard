@@ -622,28 +622,54 @@ def get_fob_usd(nombre_prod, costos_gs=None):
     return 0.0
 
 def get_costo_total_usd(nombre_prod, costos_gs=None):
-    """Retorna costo total USD (FOB + import) desde costos guardados."""
+    """Retorna costo total USD (FOB + import) desde costos guardados.
+    Usa 3 niveles de matching: exacto, parcial (key in prod), reverso (prod in key)."""
     nombre_norm = _normalizar(nombre_prod)
     if not nombre_norm:
         return 0.0
-    if costos_gs:
-        for k, v in costos_gs.items():
-            if k.startswith("_"):
-                continue
-            if isinstance(v, dict) and _normalizar(k) == nombre_norm:
-                ct = float(v.get("costo_total_usd", 0) or 0)
-                if ct > 0:
-                    return ct
-                fob = float(v.get("fob_usd", 0) or 0)
-                peso = float(v.get("peso_kg", 0) or 0)
-                ckg = float(costos_gs.get("_costo_kg_usd", 65.0) or 65.0)
-                return fob + peso * ckg
-    # Fallback a FOB_DEFAULTS
-    for k, v in FOB_DEFAULTS.items():
-        if _normalizar(k) == nombre_norm:
+    ckg_default = float(costos_gs.get("_costo_kg_usd", 65.0) or 65.0) if costos_gs else 65.0
+
+    def _calc(v, ckg):
+        if isinstance(v, dict):
+            ct = float(v.get("costo_total_usd", 0) or 0)
+            if ct > 0:
+                return ct
             fob = float(v.get("fob_usd", 0) or 0)
             peso = float(v.get("peso_kg", 0) or 0)
-            return fob + peso * 65.0
+            return fob + peso * ckg
+        return 0.0
+
+    # Construir candidatos: (nombre_normalizado, data_dict, costo_kg)
+    candidatos = []
+    if costos_gs:
+        for k, v in costos_gs.items():
+            if k.startswith("_") or not isinstance(v, dict):
+                continue
+            candidatos.append((_normalizar(k), v, ckg_default))
+    for k, v in FOB_DEFAULTS.items():
+        candidatos.append((_normalizar(k), v, 65.0))
+
+    # Tier 1: match exacto
+    for k_norm, v, ckg in candidatos:
+        if k_norm == nombre_norm:
+            r = _calc(v, ckg)
+            if r > 0:
+                return r
+    # Tier 2: key contenido en nombre del producto (ej: "rg40xxh" in "anbernicrg40xxh128gbnegro")
+    best, best_len = 0.0, 0
+    for k_norm, v, ckg in candidatos:
+        if k_norm in nombre_norm and len(k_norm) > best_len:
+            r = _calc(v, ckg)
+            if r > 0:
+                best, best_len = r, len(k_norm)
+    if best > 0:
+        return best
+    # Tier 3: nombre del producto contenido en key
+    for k_norm, v, ckg in candidatos:
+        if nombre_norm in k_norm:
+            r = _calc(v, ckg)
+            if r > 0:
+                return r
     return 0.0
 
 def calcular_costo_orden_ars(productos_str, cantidad, tipo_cambio_ars, costos_gs=None):
@@ -1873,11 +1899,11 @@ if st.session_state.df_tn is not None:
             orden_asc = st.checkbox("Ascendente", value=True, key="orden_asc")
             df_costos_edit = df_costos_edit.sort_values(orden_col, ascending=orden_asc)
 
-            st.markdown("**Editá FOB y peso directamente:**")
+            st.markdown("**Editá FOB y peso directamente. Usá ➕ abajo de la tabla para agregar productos nuevos:**")
             edited_df = st.data_editor(
                 df_costos_edit,
                 column_config={
-                    "Producto": st.column_config.TextColumn("Producto", disabled=True),
+                    "Producto": st.column_config.TextColumn("Producto"),
                     "Peso (kg)": st.column_config.NumberColumn("Peso (kg)", min_value=0.0, step=0.01, format="%.3f"),
                     "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.5, format="$%.2f"),
                     "Import (USD)": st.column_config.NumberColumn("Import (USD)", disabled=True, format="$%.2f"),
@@ -1886,6 +1912,7 @@ if st.session_state.df_tn is not None:
                 },
                 hide_index=True,
                 use_container_width=True,
+                num_rows="dynamic",
                 key="costos_editor",
             )
 
@@ -1898,7 +1925,9 @@ if st.session_state.df_tn is not None:
             if st.button("💾 Guardar costos de consolas", use_container_width=True, type="primary"):
                 nuevos_costos = {"_costo_kg_usd": costo_kg_usd}
                 for _, row in edited_df.iterrows():
-                    nuevos_costos[row["Producto"]] = {
+                    if not row["Producto"] or str(row["Producto"]).strip() == "":
+                        continue
+                    nuevos_costos[row["Producto"].strip()] = {
                         "fob_usd": float(row["FOB (USD)"]),
                         "peso_kg": float(row["Peso (kg)"]),
                         "costo_import_usd": float(row["Import (USD)"]),
