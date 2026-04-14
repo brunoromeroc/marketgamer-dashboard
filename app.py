@@ -680,6 +680,7 @@ def _match_costo_entry(nombre_prod, costos_gs=None):
         return (fob, imp, ct)
 
     # Construir candidatos: (norm_basico, norm_compacto, data_dict, costo_kg)
+    # Ordenar: entradas con FOB > 0 primero para que matcheen antes que las vacías
     candidatos = []
     if costos_gs:
         for k, v in costos_gs.items():
@@ -688,6 +689,7 @@ def _match_costo_entry(nombre_prod, costos_gs=None):
             candidatos.append((_normalizar(k), _norm_compact(k), v, ckg_default))
     for k, v in FOB_DEFAULTS.items():
         candidatos.append((_normalizar(k), _norm_compact(k), v, 65.0))
+    candidatos.sort(key=lambda c: -(float(c[2].get("fob_usd", 0) or 0) if isinstance(c[2], dict) else 0))
 
     nombre_compact = _norm_compact(nombre_prod)
 
@@ -1933,7 +1935,9 @@ if st.session_state.df_tn is not None:
             for k in _costos:
                 if not k.startswith("_"):
                     _all.add(k)
-            rows = []
+            # Construir filas y deduplicar por nombre compacto
+            # Si dos productos normalizan igual, queda el que tiene FOB > 0
+            _seen_compact = {}  # norm_compact → (prod, peso, fob)
             for prod in sorted(_all):
                 pd_ = _costos.get(prod, {})
                 fob_s = float(pd_.get("fob_usd", 0.0) or 0.0) if isinstance(pd_, dict) else 0.0
@@ -1943,7 +1947,19 @@ if st.session_state.df_tn is not None:
                 peso_f = float(peso_tn or peso_s or peso_def)
                 fob_def = FOB_DEFAULTS.get(prod, {}).get("fob_usd", 0.0)
                 fob_f = fob_s if fob_s > 0 else float(fob_def)
-                rows.append({"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f})
+
+                nc = _norm_compact(prod)
+                if nc in _seen_compact:
+                    # Ya existe: quedarse con el que tenga mejor FOB
+                    _prev = _seen_compact[nc]
+                    if fob_f > _prev["FOB (USD)"]:
+                        _seen_compact[nc] = {"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f}
+                    elif fob_f == _prev["FOB (USD)"] and peso_f > _prev["Peso (kg)"]:
+                        _seen_compact[nc] = {"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f}
+                else:
+                    _seen_compact[nc] = {"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f}
+
+            rows = sorted(_seen_compact.values(), key=lambda r: r["Producto"])
             return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Producto", "Peso (kg)", "FOB (USD)"])
 
         if "costos_df_editor" not in st.session_state:
