@@ -1917,7 +1917,7 @@ if st.session_state.df_tn is not None:
         if st.session_state.costos_df_editor.empty:
             st.info("Cargá productos desde TN con el botón de arriba.")
         else:
-            st.markdown("**Editá FOB y peso directamente. Usá ➕ abajo de la tabla para agregar productos nuevos:**")
+            st.markdown("**Editá FOB y peso. Usá ➕ para agregar y ☑️ + 🗑️ (o tecla Delete) para eliminar filas:**")
             edited_df = st.data_editor(
                 st.session_state.costos_df_editor,
                 column_config={
@@ -1955,8 +1955,12 @@ if st.session_state.df_tn is not None:
                         "costo_total_usd": float(row["Total (USD)"]),
                     }
                 st.session_state.costos_consolas = nuevos_costos
+                # Actualizar el DF base del editor con los datos limpios (sin eliminados/vacíos)
+                _clean = edited_df[edited_df["Producto"].str.strip().astype(bool)][["Producto", "Peso (kg)", "FOB (USD)"]].copy()
+                st.session_state.costos_df_editor = _clean.reset_index(drop=True)
                 ok = gs_write("CostosConsolas", nuevos_costos)
                 st.success("✅ Guardado en Google Sheets" if ok else "⚠️ Solo en sesión")
+                st.rerun()
 
             st.divider()
             st.subheader("📊 Resumen de costos")
