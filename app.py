@@ -2736,82 +2736,115 @@ if st.session_state.df_tn is not None:
         # ════════════════════════════════════════════════════════════════════
         st.divider()
         st.subheader("⚖️ Comparador de precios")
-        st.caption("Todos los productos de todos los proveedores en una tabla. ✅ = precio más barato para ese producto.")
+        st.caption("Todos los productos de todos los proveedores en una tabla. Verde = precio más barato.")
 
-        if len(suppliers) < 1:
-            st.info("Cargá al menos un proveedor para ver la comparación.")
-        else:
-            buscar_comp = st.text_input("🔍 Buscar producto", key="search_comparador")
-            df_fuzzy = fuzzy_group_products(suppliers)
+        @st.fragment
+        def _render_comparador(suppliers_snap):
+            if len(suppliers_snap) < 1:
+                st.info("Cargá al menos un proveedor para ver la comparación.")
+                return
+
+            buscar = st.text_input(
+                "🔍 Buscar producto", key="search_comparador",
+                placeholder="ej: RG35, Trimui, 477…"
+            )
+            df_fuzzy = fuzzy_group_products(suppliers_snap)
 
             if df_fuzzy.empty:
                 st.info("No hay productos cargados en los catálogos.")
-            else:
-                if buscar_comp:
-                    df_fuzzy = df_fuzzy[
-                        df_fuzzy["Producto"].str.contains(buscar_comp, case=False, na=False)
-                    ]
+                return
 
-                if df_fuzzy.empty:
-                    st.info("No se encontraron productos con ese filtro.")
-                else:
-                    sup_cols = [c for c in df_fuzzy.columns if c != "Producto"]
+            if buscar:
+                df_fuzzy = df_fuzzy[
+                    df_fuzzy["Producto"].str.contains(buscar, case=False, na=False)
+                ]
 
-                    if len(sup_cols) == 1:
-                        st.caption("Solo hay 1 proveedor cargado — cargá más para comparar precios.")
+            if df_fuzzy.empty:
+                st.info("No se encontraron productos con ese filtro.")
+                return
 
-                    def _highlight_cheapest(row):
-                        vals = {c: row[c] for c in sup_cols if pd.notna(row[c]) and row[c] > 0}
-                        if not vals:
-                            return [""] * len(row)
-                        cheapest_col = min(vals, key=vals.get)
-                        return [
-                            "background-color: #1a3a1a; color: #4caf50; font-weight: bold"
-                            if col == cheapest_col else ""
-                            for col in row.index
-                        ]
+            sup_cols = [c for c in df_fuzzy.columns if c != "Producto"]
+            if len(sup_cols) == 1:
+                st.caption("Solo hay 1 proveedor cargado — cargá más para comparar precios.")
 
-                    fmt = {col: "${:.1f}" for col in sup_cols}
-                    st.dataframe(
-                        df_fuzzy.style
-                            .apply(_highlight_cheapest, axis=1)
-                            .format(fmt, na_rep="—"),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                    # Comparación vs CostosConsolas
-                    st.divider()
-                    st.subheader("📊 vs costos cargados en el dashboard")
-                    _costos_gs_prov = gs_read("CostosConsolas") or {}
-                    if _costos_gs_prov:
-                        rows_comp = []
-                        for _, prod_row in df_fuzzy.iterrows():
-                            prod_name = prod_row["Producto"]
-                            fob_dash = get_fob_usd(prod_name, _costos_gs_prov)
-                            prices_prov = {c: prod_row[c] for c in sup_cols if pd.notna(prod_row[c])}
-                            if not prices_prov or fob_dash <= 0:
-                                continue
-                            best_sup = min(prices_prov, key=prices_prov.get)
-                            fob_prov = prices_prov[best_sup]
-                            diff_val = round(fob_prov - fob_dash, 2)
-                            rows_comp.append({
-                                "Producto": prod_name,
-                                "FOB Dashboard (USD)": fob_dash,
-                                "Mejor proveedor": f"{best_sup} ${fob_prov:.1f}",
-                                "Diferencia (USD)": diff_val,
-                                "Status": "✅ Más barato" if diff_val < -0.5 else ("⚠️ Más caro" if diff_val > 0.5 else "≈ Similar"),
-                            })
-                        if rows_comp:
-                            df_vs = pd.DataFrame(rows_comp).sort_values("Diferencia (USD)")
-                            st.dataframe(
-                                df_vs.style.format({"FOB Dashboard (USD)": "${:.2f}", "Diferencia (USD)": "${:+.2f}"}),
-                                use_container_width=True, hide_index=True,
-                            )
+            # Tabla HTML custom: precios grandes, verde para el más barato
+            CSS = """
+            <style>
+            .comp-wrap{overflow-x:auto;margin-top:8px;}
+            .comp-tbl{width:100%;border-collapse:collapse;font-family:inherit;}
+            .comp-tbl thead tr{border-bottom:2px solid #2d3748;}
+            .comp-tbl th{padding:10px 18px;text-align:left;font-size:11px;font-weight:700;
+                color:#6b7280;text-transform:uppercase;letter-spacing:.8px;}
+            .comp-tbl th.pc{text-align:right;}
+            .comp-tbl td{padding:11px 18px;border-bottom:1px solid #1a2030;vertical-align:middle;}
+            .comp-tbl tr:hover td{background:rgba(255,255,255,0.025);}
+            .pname{font-size:15px;font-weight:600;color:#e2e8f0;}
+            .pval{display:block;text-align:right;font-size:20px;font-weight:700;color:#9ca3af;}
+            .pval.cheap{color:#4ade80;font-size:22px;}
+            .pval.none{font-size:13px;color:#374151;}
+            td.cheap-cell{background:rgba(20,50,20,.55);border-radius:6px;}
+            </style>
+            """
+            th_prod = '<th>Producto</th>'
+            th_sups = "".join(f'<th class="pc">{c}</th>' for c in sup_cols)
+            rows_html = []
+            for _, row in df_fuzzy.iterrows():
+                prices = {c: row[c] for c in sup_cols if pd.notna(row[c]) and row[c] > 0}
+                cheapest = min(prices, key=prices.get) if len(prices) > 0 else None
+                tds = f'<td><span class="pname">{row["Producto"]}</span></td>'
+                for c in sup_cols:
+                    v = row[c]
+                    if pd.notna(v) and v > 0:
+                        if c == cheapest and len(prices) > 1:
+                            tds += f'<td class="cheap-cell"><span class="pval cheap">${v:.1f}</span></td>'
                         else:
-                            st.info("No hay coincidencias entre catálogos y costos del dashboard.")
+                            tds += f'<td><span class="pval">${v:.1f}</span></td>'
                     else:
-                        st.info("Cargá costos en 💻 Costos de consolas para comparar.")
+                        tds += '<td><span class="pval none">—</span></td>'
+                rows_html.append(f"<tr>{tds}</tr>")
+
+            tabla = (
+                f'{CSS}<div class="comp-wrap"><table class="comp-tbl">'
+                f"<thead><tr>{th_prod}{th_sups}</tr></thead>"
+                f'<tbody>{"".join(rows_html)}</tbody>'
+                f"</table></div>"
+            )
+            st.markdown(tabla, unsafe_allow_html=True)
+
+            # Comparación vs CostosConsolas
+            st.divider()
+            st.subheader("📊 vs costos cargados en el dashboard")
+            _costos_gs_prov = gs_read("CostosConsolas") or {}
+            if _costos_gs_prov:
+                rows_comp = []
+                for _, prod_row in df_fuzzy.iterrows():
+                    prod_name = prod_row["Producto"]
+                    fob_dash = get_fob_usd(prod_name, _costos_gs_prov)
+                    prices_prov = {c: prod_row[c] for c in sup_cols if pd.notna(prod_row[c])}
+                    if not prices_prov or fob_dash <= 0:
+                        continue
+                    best_sup = min(prices_prov, key=prices_prov.get)
+                    fob_prov = prices_prov[best_sup]
+                    diff_val = round(fob_prov - fob_dash, 2)
+                    rows_comp.append({
+                        "Producto": prod_name,
+                        "FOB Dashboard (USD)": fob_dash,
+                        "Mejor proveedor": f"{best_sup} ${fob_prov:.1f}",
+                        "Diferencia (USD)": diff_val,
+                        "Status": "✅ Más barato" if diff_val < -0.5 else ("⚠️ Más caro" if diff_val > 0.5 else "≈ Similar"),
+                    })
+                if rows_comp:
+                    df_vs = pd.DataFrame(rows_comp).sort_values("Diferencia (USD)")
+                    st.dataframe(
+                        df_vs.style.format({"FOB Dashboard (USD)": "${:.2f}", "Diferencia (USD)": "${:+.2f}"}),
+                        use_container_width=True, hide_index=True,
+                    )
+                else:
+                    st.info("No hay coincidencias entre catálogos y costos del dashboard.")
+            else:
+                st.info("Cargá costos en 💻 Costos de consolas para comparar.")
+
+        _render_comparador(suppliers)
 
         # ════════════════════════════════════════════════════════════════════
         # SECCIÓN 3: PLANIFICADOR DE COMPRA
