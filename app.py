@@ -39,6 +39,21 @@ def _normalizar(s):
     s = re.sub(r'([a-z\d])\s+([a-z\d])', r'\1\2', s)
     return s
 
+_NOISE_WORDS = ('almacenamiento', 'transparente', 'ram', 'negro', 'blanco',
+                'azul', 'rojo', 'naranja', 'verde', 'gris', 'violeta',
+                'purpura', 'rosa', 'dorado', 'plateado')
+
+def _norm_compact(s):
+    """Normalización agresiva: solo alfanumérico, sin colores ni 'GB/RAM/etc'.
+    Ej: 'ANBERNIC RG 477 V (12GB RAM + 256GB Almacenamiento)' → 'anbernicrg477v12256'
+        'Anbernic RG 477 V 12+256'                             → 'anbernicrg477v12256'
+    """
+    s = re.sub(r'[^a-z0-9]', '', str(s).lower())
+    s = s.replace('gb', '').replace('tb', '')
+    for w in _NOISE_WORDS:
+        s = s.replace(w, '')
+    return s
+
 # ── Brand catalog (fuente: catalogo_market_gamer.csv + modelos TN) ─────────────
 BRAND_CATALOG = {
     # ── Anbernic (bare model keys) ──────────────────────────────────────────────
@@ -639,33 +654,51 @@ def get_costo_total_usd(nombre_prod, costos_gs=None):
             return fob + peso * ckg
         return 0.0
 
-    # Construir candidatos: (nombre_normalizado, data_dict, costo_kg)
+    # Construir candidatos: (norm_basico, norm_compacto, data_dict, costo_kg)
     candidatos = []
     if costos_gs:
         for k, v in costos_gs.items():
             if k.startswith("_") or not isinstance(v, dict):
                 continue
-            candidatos.append((_normalizar(k), v, ckg_default))
+            candidatos.append((_normalizar(k), _norm_compact(k), v, ckg_default))
     for k, v in FOB_DEFAULTS.items():
-        candidatos.append((_normalizar(k), v, 65.0))
+        candidatos.append((_normalizar(k), _norm_compact(k), v, 65.0))
 
-    # Tier 1: match exacto
-    for k_norm, v, ckg in candidatos:
+    nombre_compact = _norm_compact(nombre_prod)
+
+    # Tier 1: match exacto (normalización básica)
+    for k_norm, k_compact, v, ckg in candidatos:
         if k_norm == nombre_norm:
             r = _calc(v, ckg)
             if r > 0:
                 return r
-    # Tier 2: key contenido en nombre del producto (ej: "rg40xxh" in "anbernicrg40xxh128gbnegro")
+    # Tier 2: match exacto compacto (sin colores/GB/RAM — cruza variantes)
+    # ej: "Anbernic RG 477 V 12+256" ↔ "ANBERNIC RG 477 V (12GB RAM + 256GB Almacenamiento)"
+    for k_norm, k_compact, v, ckg in candidatos:
+        if k_compact and k_compact == nombre_compact:
+            r = _calc(v, ckg)
+            if r > 0:
+                return r
+    # Tier 3: key contenido en nombre del producto (normalización básica)
     best, best_len = 0.0, 0
-    for k_norm, v, ckg in candidatos:
+    for k_norm, k_compact, v, ckg in candidatos:
         if k_norm in nombre_norm and len(k_norm) > best_len:
             r = _calc(v, ckg)
             if r > 0:
                 best, best_len = r, len(k_norm)
     if best > 0:
         return best
-    # Tier 3: nombre del producto contenido en key
-    for k_norm, v, ckg in candidatos:
+    # Tier 4: key compacto contenido en nombre compacto (el más largo gana)
+    best, best_len = 0.0, 0
+    for k_norm, k_compact, v, ckg in candidatos:
+        if k_compact and k_compact in nombre_compact and len(k_compact) > best_len:
+            r = _calc(v, ckg)
+            if r > 0:
+                best, best_len = r, len(k_compact)
+    if best > 0:
+        return best
+    # Tier 5: nombre del producto contenido en key
+    for k_norm, k_compact, v, ckg in candidatos:
         if nombre_norm in k_norm:
             r = _calc(v, ckg)
             if r > 0:
