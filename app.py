@@ -1900,15 +1900,14 @@ if st.session_state.df_tn is not None:
             df_costos_edit = df_costos_edit.sort_values(orden_col, ascending=orden_asc)
 
             st.markdown("**Editá FOB y peso directamente. Usá ➕ abajo de la tabla para agregar productos nuevos:**")
+            # Solo columnas editables en el editor
+            df_editable = df_costos_edit[["Producto", "Peso (kg)", "FOB (USD)"]].copy()
             edited_df = st.data_editor(
-                df_costos_edit,
+                df_editable,
                 column_config={
                     "Producto": st.column_config.TextColumn("Producto"),
                     "Peso (kg)": st.column_config.NumberColumn("Peso (kg)", min_value=0.0, step=0.01, format="%.3f"),
                     "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.5, format="$%.2f"),
-                    "Import (USD)": st.column_config.NumberColumn("Import (USD)", disabled=True, format="$%.2f"),
-                    "Total (USD)": st.column_config.NumberColumn("Total (USD)", disabled=True, format="$%.2f"),
-                    "Total (ARS)": st.column_config.NumberColumn("Total (ARS)", disabled=True, format="$%d"),
                 },
                 hide_index=True,
                 use_container_width=True,
@@ -1917,7 +1916,7 @@ if st.session_state.df_tn is not None:
             )
 
             if edited_df is not None:
-                edited_df = edited_df.fillna({"Peso (kg)": 0.0, "FOB (USD)": 0.0, "Import (USD)": 0.0, "Total (USD)": 0.0, "Total (ARS)": 0})
+                edited_df = edited_df.fillna({"Producto": "", "Peso (kg)": 0.0, "FOB (USD)": 0.0})
                 edited_df["Import (USD)"] = (edited_df["Peso (kg)"] * costo_kg_usd).round(2)
                 edited_df["Total (USD)"] = (edited_df["FOB (USD)"] + edited_df["Import (USD)"]).round(2)
                 edited_df["Total (ARS)"] = (edited_df["Total (USD)"] * tc_consolas).round(0).astype(int)
