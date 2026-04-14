@@ -1984,16 +1984,30 @@ if st.session_state.df_tn is not None:
 
             st.divider()
             if st.button("💾 Guardar costos de consolas", use_container_width=True, type="primary"):
-                nuevos_costos = {"_costo_kg_usd": costo_kg_usd}
+                # MERGE: partir de los costos existentes, actualizar con lo editado
+                nuevos_costos = {k: v for k, v in st.session_state.costos_consolas.items()}
+                nuevos_costos["_costo_kg_usd"] = costo_kg_usd
+
+                # Productos que estaban en el editor original (para detectar eliminados)
+                _orig_prods = set(st.session_state.costos_df_editor["Producto"].tolist())
+                _editor_prods = set()
+
                 for _, row in edited_df.iterrows():
-                    if not row["Producto"] or str(row["Producto"]).strip() == "":
+                    name = str(row.get("Producto", "")).strip()
+                    if not name:
                         continue
-                    nuevos_costos[row["Producto"].strip()] = {
+                    _editor_prods.add(name)
+                    nuevos_costos[name] = {
                         "fob_usd": float(row["FOB (USD)"]),
                         "peso_kg": float(row["Peso (kg)"]),
                         "costo_import_usd": float(row["Import (USD)"]),
                         "costo_total_usd": float(row["Total (USD)"]),
                     }
+
+                # Eliminar solo los que el usuario borró explícitamente del editor
+                for p in _orig_prods - _editor_prods:
+                    nuevos_costos.pop(p, None)
+
                 st.session_state.costos_consolas = nuevos_costos
                 # Actualizar el DF base del editor con los datos limpios (sin eliminados/vacíos)
                 _clean = edited_df[edited_df["Producto"].str.strip().astype(bool)][["Producto", "Peso (kg)", "FOB (USD)"]].copy()
