@@ -2538,11 +2538,22 @@ if st.session_state.df_tn is not None:
                                         val = float(col3.replace("$", "").replace(",", "").strip())
                                         if 1 < val < 5000:
                                             storage = col4.strip() if col4.strip() else "—"
-                                            # Extraer variante RAM+Storage del texto de specs
-                                            # ej: "12+256GB" o "8+128GB" en la descripción
+                                            # Extraer variante RAM+Storage del texto de specs.
+                                            # Formato 1: "8g+128g, 12g+256g" → tomar el último par
+                                            # Formato 2: "12GB LPDDR4X,256G UFS" → RAM y storage por separado
                                             import re as _re2
-                                            vm = _re2.search(r'(\d+\+\d+\s*GB)', col1, _re2.IGNORECASE)
-                                            product_name = f"{current_model} {vm.group(1).replace(' ', '')}" if vm else current_model
+                                            spec_lower = col1.lower()
+                                            pairs = _re2.findall(r'(\d+)\s*gb?\s*\+\s*(\d+)\s*gb?', spec_lower)
+                                            if pairs:
+                                                ram, stor = pairs[-1]  # último = mayor spec
+                                                product_name = f"{current_model} {ram}+{stor}GB"
+                                            else:
+                                                ram_m = _re2.search(r'(\d+)\s*gb\b', spec_lower)
+                                                stor_m = _re2.search(r'\b(\d{3})\s*g\b', spec_lower)
+                                                if ram_m and stor_m:
+                                                    product_name = f"{current_model} {ram_m.group(1)}+{stor_m.group(1)}GB"
+                                                else:
+                                                    product_name = current_model
                                             raw_rows.append({
                                                 "Producto": product_name,
                                                 "FOB (USD)": val,
