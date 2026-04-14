@@ -31,7 +31,12 @@ def fmt_pct(n):
     return f"{n:.2f}%"
 
 def _normalizar(s):
-    return re.sub(r'\s+', ' ', str(s).strip().lower())
+    # Colapsar espacios y eliminar espacios entre letras/números del modelo
+    # ej: "RG 477M 12+256GB" → "rg477m 12+256gb"  (espacios dentro del modelo se quitan)
+    s = re.sub(r'\s+', ' ', str(s).strip().lower())
+    # Quitar espacios entre partes alfanuméricas del modelo (no entre modelo y variante)
+    s = re.sub(r'([a-z\d])\s+([a-z\d])', r'\1\2', s)
+    return s
 
 # ── Proveedores helpers ────────────────────────────────────────────────────────
 from datetime import date as _date
@@ -2533,8 +2538,13 @@ if st.session_state.df_tn is not None:
                                         val = float(col3.replace("$", "").replace(",", "").strip())
                                         if 1 < val < 5000:
                                             storage = col4.strip() if col4.strip() else "—"
+                                            # Extraer variante RAM+Storage del texto de specs
+                                            # ej: "12+256GB" o "8+128GB" en la descripción
+                                            import re as _re2
+                                            vm = _re2.search(r'(\d+\+\d+\s*GB)', col1, _re2.IGNORECASE)
+                                            product_name = f"{current_model} {vm.group(1).replace(' ', '')}" if vm else current_model
                                             raw_rows.append({
-                                                "Producto": current_model,
+                                                "Producto": product_name,
                                                 "FOB (USD)": val,
                                                 "Marca": "—", "Pantalla": "—", "CPU": "—", "Storage": storage,
                                             })
