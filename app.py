@@ -2971,6 +2971,27 @@ if st.session_state.df_tn is not None:
                                     best_row = _row
                         return best_row
 
+                    # ── DEBUG: mostrar catálogo del proveedor vs TN ──────────
+                    with st.expander("🔍 Debug matching (temporal)", expanded=False):
+                        st.write(f"**Productos en catálogos de proveedores (df_fuzzy):** {len(df_fuzzy)}")
+                        st.write(f"**Consolas en TN:** {len(_tn_consolas)}")
+                        st.write("---")
+                        st.write("**_sup_items (norm → producto):**")
+                        for _dbg_cat, _dbg_row in _sup_items:
+                            _dbg_prices = {k: v for k, v in _dbg_row.items() if k != "Producto" and v is not None}
+                            st.write(f"`{_dbg_cat}` ← {_dbg_row.get('Producto')} → precios: {_dbg_prices}")
+                        st.write("---")
+                        st.write("**Matching TN → proveedor:**")
+                        _dbg_tests = ["anbernicrg40xxh", "anbernicrg40xxv", "anbernicrg406h", "anbernicslide"]
+                        for _dbt in _dbg_tests:
+                            _dbm = _best_match(_dbt)
+                            if _dbm:
+                                _dbp = {k: v for k, v in _dbm.items() if k != "Producto" and v is not None}
+                                st.write(f"`{_dbt}` → **{_dbm.get('Producto')}** precios={_dbp}")
+                            else:
+                                st.write(f"`{_dbt}` → ❌ SIN MATCH")
+                    # ── FIN DEBUG ─────────────────────────────────────────────
+
                     # Construir una fila por cada consola de TN
                     _new_rows = []
                     for _tn_name in _tn_consolas:
