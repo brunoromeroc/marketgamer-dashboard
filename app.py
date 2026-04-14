@@ -1865,6 +1865,7 @@ if st.session_state.df_tn is not None:
                                 if not existing.get("peso_kg"):
                                     existing["peso_kg"] = peso
                     st.session_state.costos_consolas = costos_actual
+                    st.session_state._costos_needs_refresh = True
                     st.success(f"✅ {len(prods_map)} productos cargados ({nuevos} nuevos agregados, existentes conservados)")
                 else:
                     st.warning("No se pudieron cargar productos.")
@@ -1881,62 +1882,44 @@ if st.session_state.df_tn is not None:
             value=float(costos.get("_costo_kg_usd", 65.0)), step=0.5, key="ckg",
         )
         col_imp2.metric("Dólar blue", f"${tc_consolas:,.0f} ARS")
-        costos["_costo_kg_usd"] = costo_kg_usd
 
         st.divider()
 
-        all_prods = set(productos_map.keys())
-        for k in costos:
-            if not k.startswith("_"):
-                all_prods.add(k)
+        # ── Construir DF editable UNA sola vez en session_state ──
+        def _build_costos_df():
+            _costos = st.session_state.costos_consolas.copy()
+            _prods_map = st.session_state.get("productos_tn_map", {})
+            _all = set(_prods_map.keys())
+            for k in _costos:
+                if not k.startswith("_"):
+                    _all.add(k)
+            rows = []
+            for prod in sorted(_all):
+                pd_ = _costos.get(prod, {})
+                fob_s = float(pd_.get("fob_usd", 0.0) or 0.0) if isinstance(pd_, dict) else 0.0
+                peso_s = float(pd_.get("peso_kg", 0.0) or 0.0) if isinstance(pd_, dict) else 0.0
+                peso_tn = _prods_map.get(prod)
+                peso_def = FOB_DEFAULTS.get(prod, {}).get("peso_kg", 0.0)
+                peso_f = float(peso_tn or peso_s or peso_def)
+                fob_def = FOB_DEFAULTS.get(prod, {}).get("fob_usd", 0.0)
+                fob_f = fob_s if fob_s > 0 else float(fob_def)
+                rows.append({"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f})
+            return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Producto", "Peso (kg)", "FOB (USD)"])
 
-        if not all_prods:
+        if "costos_df_editor" not in st.session_state:
+            st.session_state.costos_df_editor = _build_costos_df()
+
+        # Botón para refrescar desde datos guardados (tras cargar TN)
+        if st.session_state.get("_costos_needs_refresh"):
+            st.session_state.costos_df_editor = _build_costos_df()
+            del st.session_state["_costos_needs_refresh"]
+
+        if st.session_state.costos_df_editor.empty:
             st.info("Cargá productos desde TN con el botón de arriba.")
         else:
-            rows_costos = []
-            for prod in sorted(all_prods):
-                prod_data = costos.get(prod, {})
-                if isinstance(prod_data, dict):
-                    fob_saved = float(prod_data.get("fob_usd", 0.0) or 0.0)
-                    peso_saved = float(prod_data.get("peso_kg", 0.0) or 0.0)
-                else:
-                    fob_saved = 0.0
-                    peso_saved = 0.0
-
-                peso_tn = productos_map.get(prod)
-                peso_default_fob = FOB_DEFAULTS.get(prod, {}).get("peso_kg", 0.0)
-                peso_final = float(peso_tn or peso_saved or peso_default_fob)
-
-                fob_default = FOB_DEFAULTS.get(prod, {}).get("fob_usd", 0.0)
-                fob_valor = fob_saved if fob_saved > 0 else float(fob_default)
-
-                costo_import = round(peso_final * costo_kg_usd, 2)
-                costo_total_usd = round(fob_valor + costo_import, 2)
-                costo_total_ars = round(costo_total_usd * tc_consolas)
-
-                rows_costos.append({
-                    "Producto": prod,
-                    "Peso (kg)": peso_final,
-                    "FOB (USD)": fob_valor,
-                    "Import (USD)": costo_import,
-                    "Total (USD)": costo_total_usd,
-                    "Total (ARS)": costo_total_ars,
-                })
-
-            df_costos_edit = pd.DataFrame(rows_costos)
-
-            orden_col = st.selectbox(
-                "Ordenar por", df_costos_edit.columns.tolist(),
-                index=0, key="orden_costos",
-            )
-            orden_asc = st.checkbox("Ascendente", value=True, key="orden_asc")
-            df_costos_edit = df_costos_edit.sort_values(orden_col, ascending=orden_asc)
-
             st.markdown("**Editá FOB y peso directamente. Usá ➕ abajo de la tabla para agregar productos nuevos:**")
-            # Solo columnas editables en el editor
-            df_editable = df_costos_edit[["Producto", "Peso (kg)", "FOB (USD)"]].copy()
             edited_df = st.data_editor(
-                df_editable,
+                st.session_state.costos_df_editor,
                 column_config={
                     "Producto": st.column_config.TextColumn("Producto"),
                     "Peso (kg)": st.column_config.NumberColumn("Peso (kg)", min_value=0.0, step=0.01, format="%.3f"),
@@ -1948,11 +1931,15 @@ if st.session_state.df_tn is not None:
                 key="costos_editor",
             )
 
+            # Sincronizar ediciones al session_state para que no se pierdan
             if edited_df is not None:
                 edited_df = edited_df.fillna({"Producto": "", "Peso (kg)": 0.0, "FOB (USD)": 0.0})
-                edited_df["Import (USD)"] = (edited_df["Peso (kg)"] * costo_kg_usd).round(2)
-                edited_df["Total (USD)"] = (edited_df["FOB (USD)"] + edited_df["Import (USD)"]).round(2)
-                edited_df["Total (ARS)"] = (edited_df["Total (USD)"] * tc_consolas).round(0).astype(int)
+                st.session_state.costos_df_editor = edited_df.copy()
+
+            # Calcular columnas derivadas para resumen y guardado
+            edited_df["Import (USD)"] = (edited_df["Peso (kg)"] * costo_kg_usd).round(2)
+            edited_df["Total (USD)"] = (edited_df["FOB (USD)"] + edited_df["Import (USD)"]).round(2)
+            edited_df["Total (ARS)"] = (edited_df["Total (USD)"] * tc_consolas).round(0).astype(int)
 
             st.divider()
             if st.button("💾 Guardar costos de consolas", use_container_width=True, type="primary"):
