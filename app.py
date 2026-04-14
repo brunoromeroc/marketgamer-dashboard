@@ -2879,21 +2879,46 @@ if st.session_state.df_tn is not None:
                     df_fuzzy["Producto"].str.contains(buscar, case=False, na=False)
                 ]
 
-            # Filtro por stock de TiendaNube
+            # Filtro por stock de TiendaNube — carga automática con cache 5 min
             if solo_stock:
-                _stock_dict = st.session_state.get("stock_planner", {})
+                with st.spinner("Consultando stock en Tienda Nube…"):
+                    _stock_dict = get_stock_for_planner()
+
                 if _stock_dict:
                     from difflib import SequenceMatcher as _SM
+
+                    # Pre-normalizar nombres de TN una sola vez
+                    _tn_norms = {
+                        re.sub(r'[^a-z0-9]', '', tn.lower()): (tn, qty)
+                        for tn, qty in _stock_dict.items()
+                    }
+
                     def _has_stock(pname):
-                        for tn_name, qty in _stock_dict.items():
-                            if qty and int(qty) > 0:
-                                ratio = _SM(None, _normalizar(pname), _normalizar(tn_name)).ratio()
-                                if ratio >= 0.72:
-                                    return True
+                        # Normalizar nombre del catálogo (sin variante de storage)
+                        cleaned = re.sub(r'\s*\d+\+\d+\s*gb.*', '', pname, flags=re.IGNORECASE).strip()
+                        cat_norm = re.sub(r'[^a-z0-9]', '', cleaned.lower())
+                        # También probar con marca prefijada
+                        brand = _get_brand(pname)
+                        cat_norm_branded = re.sub(r'[^a-z0-9]', '', (brand + cleaned).lower()) if brand != "—" else cat_norm
+
+                        for tn_norm, (tn_name, qty) in _tn_norms.items():
+                            # "En stock" = None (ilimitado) o cantidad > 0
+                            if qty is not None and qty == 0:
+                                continue
+                            # 1. Substring: "rg35xxh" dentro de "anbernicrg35xxh"
+                            if cat_norm and (cat_norm in tn_norm or tn_norm in cat_norm):
+                                return True
+                            # 2. Substring con marca prefijada
+                            if cat_norm_branded and cat_norm_branded in tn_norm:
+                                return True
+                            # 3. Fuzzy fallback
+                            if _SM(None, cat_norm, tn_norm).ratio() >= 0.82:
+                                return True
                         return False
+
                     df_fuzzy = df_fuzzy[df_fuzzy["Producto"].apply(_has_stock)]
                 else:
-                    st.caption("⚠️ Cargá el stock primero en la sección **Planificador** (botón 'Cargar stock desde Tienda Nube').")
+                    st.caption("⚠️ No se pudo obtener el stock de Tienda Nube.")
 
             if df_fuzzy.empty:
                 st.info("No se encontraron productos con ese filtro.")
