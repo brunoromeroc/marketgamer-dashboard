@@ -2354,7 +2354,9 @@ if st.session_state.df_tn is not None:
                     comision = pr["Comisión PN ($)"]
                     envio = pr["Envío ($)"]
 
+                    _fob_usd = get_fob_usd(prod, _costos_gs_mr)
                     costo_total_usd = get_costo_total_usd(prod, _costos_gs_mr)
+                    _import_usd = round(costo_total_usd - _fob_usd, 2) if costo_total_usd > _fob_usd else 0.0
                     costo_total_ars = costo_total_usd * _tc_mr
                     costo_iva = round(precio * (iva_mr / 100), 0)
                     costo_full = round(costo_total_ars + packaging_mr + costo_iva, 0)
@@ -2369,7 +2371,9 @@ if st.session_state.df_tn is not None:
                         "Precio ($)": round(precio, 0),
                         "Comisión PN ($)": round(comision, 0),
                         "Costo PN (%)": round(comision / precio * 100, 2) if precio > 0 else 0,
-                        "Costo prod ($)": round(costo_total_ars, 0),
+                        "FOB (USD)": round(_fob_usd, 2),
+                        "Import (USD)": round(_import_usd, 2),
+                        "← Costo prod ($)": round(costo_total_ars, 0),
                         "Packaging ($)": packaging_mr,
                         f"IVA ({iva_mr}%)": costo_iva,
                         "Envío ($)": round(envio, 0),
@@ -2389,7 +2393,9 @@ if st.session_state.df_tn is not None:
                         Ventas=("Precio ($)", "count"),
                         Precio_prom=("Precio ($)", "mean"),
                         Comision_prom=("Comisión PN ($)", "mean"),
-                        Costo_prom=("Costo prod ($)", "mean"),
+                        FOB_prom=("FOB (USD)", "mean"),
+                        Import_prom=("Import (USD)", "mean"),
+                        Costo_prom=("← Costo prod ($)", "mean"),
                         Packaging_prom=("Packaging ($)", "mean"),
                         IVA_prom=(col_iva_mr, "mean"),
                         Envio_prom=("Envío ($)", "mean"),
@@ -2398,7 +2404,8 @@ if st.session_state.df_tn is not None:
                     ).reset_index()
                     df_avg.columns = [
                         "Producto", "Ventas", "Precio prom ($)", "Comisión prom ($)",
-                        "Costo prod ($)", "Packaging ($)", col_iva_mr, "Envío ($)",
+                        "FOB (USD)", "Import (USD)", "← Costo prod ($)",
+                        "Packaging ($)", col_iva_mr, "Envío ($)",
                         "Margen prom ($)", "Margen (%)",
                     ]
                     df_avg = df_avg.sort_values("Margen (%)", ascending=False)
@@ -2423,7 +2430,9 @@ if st.session_state.df_tn is not None:
                         df_avg.style.format({
                             "Precio prom ($)": "${:,.0f}",
                             "Comisión prom ($)": "${:,.0f}",
-                            "Costo prod ($)": "${:,.0f}",
+                            "FOB (USD)": "${:,.2f}",
+                            "Import (USD)": "${:,.2f}",
+                            "← Costo prod ($)": "${:,.0f}",
                             "Packaging ($)": "${:,.0f}",
                             col_iva_mr: "${:,.0f}",
                             "Envío ($)": "${:,.0f}",
