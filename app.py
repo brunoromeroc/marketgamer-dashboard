@@ -658,23 +658,26 @@ def get_fob_usd(nombre_prod, costos_gs=None):
             return fob
     return 0.0
 
-def get_costo_total_usd(nombre_prod, costos_gs=None):
-    """Retorna costo total USD (FOB + import) desde costos guardados.
-    Usa 3 niveles de matching: exacto, parcial (key in prod), reverso (prod in key)."""
+def _match_costo_entry(nombre_prod, costos_gs=None):
+    """Encuentra la MEJOR entrada de costos y devuelve (fob_usd, import_usd, total_usd).
+    Garantiza que FOB, import y total vienen de la MISMA entrada."""
     nombre_norm = _normalizar(nombre_prod)
     if not nombre_norm:
-        return 0.0
+        return (0.0, 0.0, 0.0)
     ckg_default = float(costos_gs.get("_costo_kg_usd", 65.0) or 65.0) if costos_gs else 65.0
 
-    def _calc(v, ckg):
-        if isinstance(v, dict):
-            ct = float(v.get("costo_total_usd", 0) or 0)
-            if ct > 0:
-                return ct
-            fob = float(v.get("fob_usd", 0) or 0)
-            peso = float(v.get("peso_kg", 0) or 0)
-            return fob + peso * ckg
-        return 0.0
+    def _extract(v, ckg):
+        if not isinstance(v, dict):
+            return (0.0, 0.0, 0.0)
+        fob = float(v.get("fob_usd", 0) or 0)
+        peso = float(v.get("peso_kg", 0) or 0)
+        imp = float(v.get("costo_import_usd", 0) or 0)
+        ct = float(v.get("costo_total_usd", 0) or 0)
+        if imp <= 0:
+            imp = round(peso * ckg, 2)
+        if ct <= 0:
+            ct = fob + imp
+        return (fob, imp, ct)
 
     # Construir candidatos: (norm_basico, norm_compacto, data_dict, costo_kg)
     candidatos = []
@@ -688,53 +691,59 @@ def get_costo_total_usd(nombre_prod, costos_gs=None):
 
     nombre_compact = _norm_compact(nombre_prod)
 
-    # Tier 1: match exacto (normalización básica)
-    for k_norm, k_compact, v, ckg in candidatos:
-        if k_norm == nombre_norm:
-            r = _calc(v, ckg)
-            if r > 0:
-                return r
-    # Tier 2: match exacto compacto (sin colores/GB/RAM — cruza variantes)
-    # ej: "Anbernic RG 477 V 12+256" ↔ "ANBERNIC RG 477 V (12GB RAM + 256GB Almacenamiento)"
-    for k_norm, k_compact, v, ckg in candidatos:
-        if k_compact and k_compact == nombre_compact:
-            r = _calc(v, ckg)
-            if r > 0:
-                return r
-    # Tier 3: key contenido en nombre del producto (normalización básica)
-    best, best_len = 0.0, 0
-    for k_norm, k_compact, v, ckg in candidatos:
-        if k_norm in nombre_norm and len(k_norm) > best_len:
-            r = _calc(v, ckg)
-            if r > 0:
-                best, best_len = r, len(k_norm)
-    if best > 0:
-        return best
-    # Tier 4: key compacto contenido en nombre compacto (el más largo gana)
-    best, best_len = 0.0, 0
-    for k_norm, k_compact, v, ckg in candidatos:
-        if k_compact and k_compact in nombre_compact and len(k_compact) > best_len:
-            r = _calc(v, ckg)
-            if r > 0:
-                best, best_len = r, len(k_compact)
-    if best > 0:
-        return best
-    # Tier 5: nombre compacto contenido en key compacto (reverso)
-    best, best_len = 0.0, 0
-    for k_norm, k_compact, v, ckg in candidatos:
-        if k_compact and nombre_compact in k_compact and len(nombre_compact) > best_len:
-            r = _calc(v, ckg)
-            if r > 0:
-                best, best_len = r, len(nombre_compact)
-    if best > 0:
-        return best
-    # Tier 6: nombre del producto contenido en key (normalización básica)
-    for k_norm, k_compact, v, ckg in candidatos:
-        if nombre_norm in k_norm:
-            r = _calc(v, ckg)
-            if r > 0:
-                return r
-    return 0.0
+    def _try_tiers():
+        # Tier 1: match exacto
+        for k_norm, k_compact, v, ckg in candidatos:
+            if k_norm == nombre_norm:
+                r = _extract(v, ckg)
+                if r[2] > 0:
+                    return r
+        # Tier 2: match compacto exacto
+        for k_norm, k_compact, v, ckg in candidatos:
+            if k_compact and k_compact == nombre_compact:
+                r = _extract(v, ckg)
+                if r[2] > 0:
+                    return r
+        # Tier 3: key en nombre (básico, el más largo gana)
+        best, best_len = None, 0
+        for k_norm, k_compact, v, ckg in candidatos:
+            if k_norm in nombre_norm and len(k_norm) > best_len:
+                r = _extract(v, ckg)
+                if r[2] > 0:
+                    best, best_len = r, len(k_norm)
+        if best:
+            return best
+        # Tier 4: key compacto en nombre compacto (el más largo gana)
+        best, best_len = None, 0
+        for k_norm, k_compact, v, ckg in candidatos:
+            if k_compact and k_compact in nombre_compact and len(k_compact) > best_len:
+                r = _extract(v, ckg)
+                if r[2] > 0:
+                    best, best_len = r, len(k_compact)
+        if best:
+            return best
+        # Tier 5: nombre compacto en key compacto (reverso, el más largo gana)
+        best, best_len = None, 0
+        for k_norm, k_compact, v, ckg in candidatos:
+            if k_compact and nombre_compact in k_compact and len(nombre_compact) > best_len:
+                r = _extract(v, ckg)
+                if r[2] > 0:
+                    best, best_len = r, len(nombre_compact)
+        if best:
+            return best
+        # Tier 6: nombre en key (básico)
+        for k_norm, k_compact, v, ckg in candidatos:
+            if nombre_norm in k_norm:
+                r = _extract(v, ckg)
+                if r[2] > 0:
+                    return r
+        return None
+
+    return _try_tiers() or (0.0, 0.0, 0.0)
+
+def get_costo_total_usd(nombre_prod, costos_gs=None):
+    """Retorna costo total USD (FOB + import)."""
+    return _match_costo_entry(nombre_prod, costos_gs)[2]
 
 def calcular_costo_orden_ars(productos_str, cantidad, tipo_cambio_ars, costos_gs=None):
     prods = [p.strip() for p in str(productos_str).split(" / ") if p.strip()]
@@ -2385,9 +2394,7 @@ if st.session_state.df_tn is not None:
                     comision = pr["Comisión PN ($)"]
                     envio = pr["Envío ($)"]
 
-                    _fob_usd = get_fob_usd(prod, _costos_gs_mr)
-                    costo_total_usd = get_costo_total_usd(prod, _costos_gs_mr)
-                    _import_usd = round(costo_total_usd - _fob_usd, 2) if costo_total_usd > _fob_usd else 0.0
+                    _fob_usd, _import_usd, costo_total_usd = _match_costo_entry(prod, _costos_gs_mr)
                     costo_total_ars = costo_total_usd * _tc_mr
                     costo_iva = round(precio * (iva_mr / 100), 0)
                     costo_full = round(costo_total_ars + packaging_mr + costo_iva, 0)
