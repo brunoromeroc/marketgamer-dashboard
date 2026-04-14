@@ -38,33 +38,75 @@ def _normalizar(s):
     s = re.sub(r'([a-z\d])\s+([a-z\d])', r'\1\2', s)
     return s
 
-# ── Brand catalog (fuente: catalogo_market_gamer.csv) ─────────────────────────
+# ── Brand catalog (fuente: catalogo_market_gamer.csv + modelos TN) ─────────────
 BRAND_CATALOG = {
-    # Anbernic
+    # ── Anbernic (bare model keys) ──────────────────────────────────────────────
     "rgnano":"Anbernic","rg28xx":"Anbernic","rg34xx":"Anbernic","rg34xxsp":"Anbernic",
-    "rg35xx2024":"Anbernic","rg35xxplus":"Anbernic","rg35xxh":"Anbernic",
-    "rg35xxsp":"Anbernic","rg35xxpro":"Anbernic","rg40xxh":"Anbernic",
-    "rg40xxv":"Anbernic","rgcubexx":"Anbernic","rg353p":"Anbernic",
-    "rg353v":"Anbernic","rg353vs":"Anbernic","rg353m":"Anbernic","rg353ps":"Anbernic",
+    "rg35xx":"Anbernic","rg35xx2024":"Anbernic","rg35xxplus":"Anbernic",
+    "rg35xxh":"Anbernic","rg35xxsp":"Anbernic","rg35xxpro":"Anbernic",
+    "rg40xxh":"Anbernic","rg40xxv":"Anbernic",
+    "rgcube":"Anbernic","rgcubexx":"Anbernic",
+    "rg351p":"Anbernic","rg353p":"Anbernic","rg353v":"Anbernic",
+    "rg353vs":"Anbernic","rg353m":"Anbernic","rg353ps":"Anbernic",
     "rgarcd":"Anbernic","rgarcs":"Anbernic","rg503":"Anbernic",
     "rg405m":"Anbernic","rg405v":"Anbernic","rg505":"Anbernic",
-    "rgds":"Anbernic","rg556":"Anbernic","rgcube":"Anbernic",
-    "rg406v":"Anbernic","rg406h":"Anbernic","rgslide":"Anbernic",
-    "rg476h":"Anbernic","rg557":"Anbernic","rg477m":"Anbernic","rg477v":"Anbernic",
+    "rgds":"Anbernic","rgp01":"Anbernic","rgg01":"Anbernic",
+    "rg556":"Anbernic","rg557":"Anbernic",
+    "rg406v":"Anbernic","rg406h":"Anbernic",
+    "rgslide":"Anbernic","rg476h":"Anbernic",
+    "rg477m":"Anbernic","rg477v":"Anbernic",
     "rgvita":"Anbernic","rgvitapro":"Anbernic",
-    "rgp01":"Anbernic","rgg01":"Anbernic","win600":"Anbernic","k101plus":"Anbernic",
-    # Powkiddy
+    "win600":"Anbernic","k101plus":"Anbernic",
+    # ── Anbernic (con prefijo de marca — para TN y proveedores que lo incluyen) ─
+    "anbernicrgnano":"Anbernic","anbernicrg28xx":"Anbernic",
+    "anbernicrg34xx":"Anbernic","anbernicrg34xxsp":"Anbernic",
+    "anbernicrg35xx":"Anbernic","anbernicrg35xx2024":"Anbernic",
+    "anbernicrg35xxplus":"Anbernic","anbernicrg35xxh":"Anbernic",
+    "anbernicrg35xxsp":"Anbernic","anbernicrg35xxpro":"Anbernic",
+    "anbernicrg40xxh":"Anbernic","anbernicrg40xxv":"Anbernic",
+    "anbernicrgcube":"Anbernic","anbernicrgcubexx":"Anbernic",
+    "anbernicrg351p":"Anbernic","anbernicrg353p":"Anbernic",
+    "anbernicrg353v":"Anbernic","anbernicrg353vs":"Anbernic",
+    "anbernicrg353m":"Anbernic","anbernicrg353ps":"Anbernic",
+    "anbernicrgarcd":"Anbernic","anbernicrgarcs":"Anbernic","anbernicrg503":"Anbernic",
+    "anbernicrg405m":"Anbernic","anbernicrg405v":"Anbernic","anbernicrg505":"Anbernic",
+    "anbernicrgds":"Anbernic","anbernicrgp01":"Anbernic",
+    "anbernicrg556":"Anbernic","anbernicrg557":"Anbernic",
+    "anbernicrg406v":"Anbernic","anbernicrg406h":"Anbernic",
+    "anbernicrgslide":"Anbernic","anbernicrg476h":"Anbernic",
+    "anbernicrg477m":"Anbernic","anbernicrg477v":"Anbernic",
+    "anbernicrgvita":"Anbernic","anbernicrgvitapro":"Anbernic",
+    # ── Powkiddy (bare) ─────────────────────────────────────────────────────────
     "rgb10x":"Powkiddy","rgb20s":"Powkiddy","rgb20pro":"Powkiddy",
-    "rgb20sx":"Powkiddy","rgb30":"Powkiddy","rgb10max3":"Powkiddy",
-    "rgb10max3pro":"Powkiddy","v10":"Powkiddy","v20":"Powkiddy",
-    "v90s":"Powkiddy","x28":"Powkiddy","x35h":"Powkiddy","x55":"Powkiddy","x35s":"Powkiddy",
-    # Miyoo
-    "miyoominiv3":"Miyoo","miyoominiplus":"Miyoo","miniplus":"Miyoo",
-    "miyoominiflip":"Miyoo","miyooflipv2":"Miyoo","miyoominiv4":"Miyoo","miyooa30":"Miyoo",
-    # Trimui
-    "trimuimodels":"Trimui","trimuismart":"Trimui","trimuismartpro":"Trimui",
-    "trimuibrick":"Trimui","trimuibrickhammer":"Trimui","trimuismartpros":"Trimui",
-    # Retroid
+    "rgb20sx":"Powkiddy","rgb30":"Powkiddy",
+    "rgb10max3":"Powkiddy","rgb10max3pro":"Powkiddy",
+    "v10":"Powkiddy","v20":"Powkiddy","v90":"Powkiddy","v90s":"Powkiddy",
+    "x28":"Powkiddy","x35h":"Powkiddy","x35s":"Powkiddy",
+    "x51":"Powkiddy","x55":"Powkiddy","x70":"Powkiddy","x39pro":"Powkiddy",
+    "q20mini":"Powkiddy","q90":"Powkiddy",
+    # ── Powkiddy (con prefijo) ───────────────────────────────────────────────────
+    "powkiddyrgb10x":"Powkiddy","powkiddyrgb20s":"Powkiddy","powkiddyrgb20pro":"Powkiddy",
+    "powkiddyrgb20sx":"Powkiddy","powkiddyrgb30":"Powkiddy",
+    "powkiddyrgb10max3":"Powkiddy","powkiddyrgb10max3pro":"Powkiddy",
+    "powkiddyv10":"Powkiddy","powkiddyv20":"Powkiddy",
+    "powkiddyv90":"Powkiddy","powkiddyv90s":"Powkiddy",
+    "powkiddyx28":"Powkiddy","powkiddyx35h":"Powkiddy","powkiddyx35s":"Powkiddy",
+    "powkiddyx51":"Powkiddy","powkiddyx55":"Powkiddy","powkiddyx70":"Powkiddy",
+    "powkiddyx39pro":"Powkiddy","powkiddyq20mini":"Powkiddy","powkiddyq90":"Powkiddy",
+    # ── Miyoo (bare) ────────────────────────────────────────────────────────────
+    "miyoominiv3":"Miyoo","miyoominiv4":"Miyoo",
+    "miyoominiplus":"Miyoo","miniplus":"Miyoo",
+    "miyoominiflip":"Miyoo","miniflip":"Miyoo",
+    "miyooflipv2":"Miyoo","flipv2":"Miyoo",
+    "miyooa30":"Miyoo",
+    # ── Trimui (siempre con prefijo — "brick" solo es demasiado genérico) ────────
+    "trimuimodels":"Trimui","trimuismart":"Trimui",
+    "trimuismartpro":"Trimui","trimuismartpros":"Trimui",
+    "trimuibrick":"Trimui","trimuibrickhammer":"Trimui",
+    # ── Retroid (bare + con prefijo) ─────────────────────────────────────────────
+    "pocket4":"Retroid","pocket4pro":"Retroid","pocket5":"Retroid",
+    "pocket6":"Retroid","pocketg2":"Retroid","pocketminiv2":"Retroid",
+    "pocketclassic":"Retroid","pocketflip2":"Retroid","flip2":"Retroid",
     "retroidpocket4":"Retroid","retroidpocket4pro":"Retroid","retroidpocket5":"Retroid",
     "retroidpocket6":"Retroid","retroidpocketg2":"Retroid","retroidpocketminiv2":"Retroid",
     "retroidpocketclassic":"Retroid","retroidpocketflip2":"Retroid",
