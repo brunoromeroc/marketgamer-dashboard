@@ -2378,7 +2378,31 @@ if st.session_state.df_tn is not None:
     # TAB 10: PROVEEDORES
     # ══════════════════════════════════════════════════════════════════════════
     with tab10:
-        st.subheader("🏭 Proveedores — Catálogos, Comparación y Compras")
+        st.markdown("""
+        <style>
+        /* ── Market Gamer · Proveedores ───────────────────────────────── */
+        .prov-page-header{display:flex;align-items:baseline;gap:14px;padding-bottom:20px;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:8px}
+        .prov-page-title{font-size:22px;font-weight:700;color:#e2e8f0;letter-spacing:-.3px;margin:0}
+        .prov-stat-pill{font-size:11px;font-weight:600;color:#6b7280;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);padding:3px 10px;border-radius:20px}
+        .prov-section{font-size:10px;font-weight:700;color:#4b5563;letter-spacing:1.2px;text-transform:uppercase;padding:20px 0 10px;border-bottom:1px solid rgba(255,255,255,0.05);margin-bottom:14px}
+        .sup-contact{font-size:12px;color:#6b7280;display:flex;gap:16px;margin-bottom:14px;flex-wrap:wrap}
+        .sup-contact span{display:flex;align-items:center;gap:5px}
+        .cat-tbl{width:100%;border-collapse:collapse;margin-bottom:16px}
+        .cat-tbl th{font-size:10px;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.7px;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,0.07);text-align:left}
+        .cat-tbl th.r{text-align:right}
+        .cat-tbl td{font-size:13px;color:#94a3b8;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.03)}
+        .cat-tbl td.pn{color:#e2e8f0;font-weight:500}
+        .cat-tbl td.pr{text-align:right;font-family:ui-monospace,monospace;font-size:14px;color:#cbd5e1;font-weight:600}
+        .cat-tbl tr:hover td{background:rgba(255,255,255,0.02)}
+        .brand-tag{display:inline-block;font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,0.07);color:#94a3b8}
+        .brand-anbernic{background:rgba(96,165,250,0.12);color:#60a5fa}
+        .brand-powkiddy{background:rgba(251,191,36,0.12);color:#fbbf24}
+        .brand-trimui{background:rgba(74,222,128,0.12);color:#4ade80}
+        .comp-banner{background:rgba(74,222,128,0.05);border:1px solid rgba(74,222,128,0.15);border-radius:8px;padding:14px 18px;margin:8px 0 16px;display:flex;align-items:center;gap:12px}
+        .comp-banner-title{font-size:15px;font-weight:700;color:#e2e8f0}
+        .comp-banner-sub{font-size:12px;color:#6b7280;margin-top:2px}
+        </style>
+        """, unsafe_allow_html=True)
 
         # ── Cargar datos guardados ──
         if "proveedores_data" not in st.session_state:
@@ -2409,11 +2433,21 @@ if st.session_state.df_tn is not None:
         prov_data = st.session_state.proveedores_data
         suppliers = prov_data.get("suppliers", {})
 
+        _n_sups = len(suppliers)
+        _n_prods = sum(len(s.get("productos", {})) for s in suppliers.values())
+        st.markdown(
+            f'<div class="prov-page-header">'
+            f'<span class="prov-page-title">Proveedores</span>'
+            f'<span class="prov-stat-pill">{_n_sups} activos</span>'
+            f'<span class="prov-stat-pill">{_n_prods} productos</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
         # ════════════════════════════════════════════════════════════════════
         # SECCIÓN 1: CATÁLOGOS
         # ════════════════════════════════════════════════════════════════════
-        st.subheader("📁 Catálogos")
-        st.caption("Cada proveedor muestra sus productos y la fecha de la última lista. Subí una nueva lista para reemplazar el catálogo y ver qué cambió.")
+        st.markdown('<div class="prov-section">Catálogos</div>', unsafe_allow_html=True)
 
         def _parse_uploaded_to_products(uploaded_file) -> dict:
             """Parsea un archivo subido (CSV/Excel/PDF/PPTX) y devuelve dict de productos."""
@@ -2635,18 +2669,46 @@ if st.session_state.df_tn is not None:
             updated = sup_data.get("updated_at", "") or "Sin fecha"
             prod_count = len(sup_data.get("productos", {}))
 
-            with st.expander(f"**{sup_name}** — {prod_count} productos · Última lista: {updated}"):
-                st.caption(f"📞 {sup_data.get('contacto', '—')} | 🌐 {sup_data.get('web', '—')}")
+            with st.expander(f"**{sup_name}** — {prod_count} productos · {updated}"):
+                contacto = sup_data.get("contacto", "—")
+                web = sup_data.get("web", "—")
+                st.markdown(
+                    f'<div class="sup-contact">'
+                    f'<span>📞 {contacto}</span>'
+                    f'<span>🌐 {web}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
                 if sup_data.get("productos"):
-                    df_cat = pd.DataFrame([
-                        {"Producto": n, "FOB (USD)": float(info.get("precio_usd", 0)),
-                         "Marca": info.get("marca", "—"), "Storage": info.get("storage", "—")}
-                        for n, info in sup_data["productos"].items()
-                    ]).sort_values("FOB (USD)")
-                    st.dataframe(
-                        df_cat.style.format({"FOB (USD)": "${:.1f}"}),
-                        use_container_width=True, hide_index=True,
+                    _BRAND_CSS = {"Anbernic": "brand-anbernic", "Powkiddy": "brand-powkiddy", "Trimui": "brand-trimui"}
+                    productos_sorted = sorted(
+                        sup_data["productos"].items(),
+                        key=lambda x: float(x[1].get("precio_usd", 0)),
+                    )
+                    rows_html = ""
+                    for _pname, _pinfo in productos_sorted:
+                        _precio = float(_pinfo.get("precio_usd", 0))
+                        _marca = _pinfo.get("marca", "—")
+                        _storage = _pinfo.get("storage", "—")
+                        _bcss = _BRAND_CSS.get(_marca, "")
+                        _marca_html = f'<span class="brand-tag {_bcss}">{_marca}</span>' if _marca != "—" else '<span style="color:#374151">—</span>'
+                        rows_html += (
+                            f"<tr>"
+                            f'<td class="pn">{_pname}</td>'
+                            f"<td>{_marca_html}</td>"
+                            f"<td>{_storage}</td>"
+                            f'<td class="pr">${_precio:.1f}</td>'
+                            f"</tr>"
+                        )
+                    st.markdown(
+                        f'<table class="cat-tbl">'
+                        f"<thead><tr>"
+                        f"<th>Producto</th><th>Marca</th><th>Storage</th><th class='r'>FOB (USD)</th>"
+                        f"</tr></thead>"
+                        f"<tbody>{rows_html}</tbody>"
+                        f"</table>",
+                        unsafe_allow_html=True,
                     )
 
                 st.markdown("**Actualizar catálogo** — reemplaza la lista anterior completa")
@@ -2734,9 +2796,16 @@ if st.session_state.df_tn is not None:
         # ════════════════════════════════════════════════════════════════════
         # SECCIÓN 2: COMPARADOR
         # ════════════════════════════════════════════════════════════════════
-        st.divider()
-        st.subheader("⚖️ Comparador de precios")
-        st.caption("Todos los productos de todos los proveedores en una tabla. Verde = precio más barato.")
+        st.markdown('<div class="prov-section">Comparador de precios</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="comp-banner">'
+            '<div>'
+            '<div class="comp-banner-title">⚖️ Comparador de precios</div>'
+            '<div class="comp-banner-sub">Todos los catálogos en una tabla. Verde = más barato entre proveedores.</div>'
+            '</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
         @st.fragment
         def _render_comparador(suppliers_snap):
