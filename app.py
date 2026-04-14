@@ -645,7 +645,14 @@ def get_fob_usd(nombre_prod, costos_gs=None):
             best, best_len = fob, len(k_compact)
     if best > 0:
         return best
-    # Tier 5: nombre en key
+    # Tier 5: nombre compacto en key compacto (reverso — ej: "rg35xxsp" in "rg35xxsp64")
+    best, best_len = 0.0, 0
+    for k_norm, k_compact, fob in candidatos:
+        if k_compact and nombre_compact in k_compact and len(nombre_compact) > best_len:
+            best, best_len = fob, len(nombre_compact)
+    if best > 0:
+        return best
+    # Tier 6: nombre en key (normalización básica)
     for k_norm, k_compact, fob in candidatos:
         if nombre_norm in k_norm:
             return fob
@@ -712,7 +719,16 @@ def get_costo_total_usd(nombre_prod, costos_gs=None):
                 best, best_len = r, len(k_compact)
     if best > 0:
         return best
-    # Tier 5: nombre del producto contenido en key
+    # Tier 5: nombre compacto contenido en key compacto (reverso)
+    best, best_len = 0.0, 0
+    for k_norm, k_compact, v, ckg in candidatos:
+        if k_compact and nombre_compact in k_compact and len(nombre_compact) > best_len:
+            r = _calc(v, ckg)
+            if r > 0:
+                best, best_len = r, len(nombre_compact)
+    if best > 0:
+        return best
+    # Tier 6: nombre del producto contenido en key (normalización básica)
     for k_norm, k_compact, v, ckg in candidatos:
         if nombre_norm in k_norm:
             r = _calc(v, ckg)
