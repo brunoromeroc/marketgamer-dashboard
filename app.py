@@ -2865,8 +2865,8 @@ if st.session_state.df_tn is not None:
                 placeholder="ej: RG35, Trimui, 477…"
             )
             solo_stock = _col_stock.checkbox(
-                "📦 Solo en stock", key="comp_solo_stock",
-                help="Filtra solo los modelos que tenés en TiendaNube con stock > 0"
+                "🏪 Solo mis productos", key="comp_solo_stock",
+                help="Muestra solo los productos que ya tenés en TiendaNube (con o sin stock)"
             )
             df_fuzzy = fuzzy_group_products(suppliers_snap)
 
@@ -2902,9 +2902,7 @@ if st.session_state.df_tn is not None:
                         cat_norm_branded = re.sub(r'[^a-z0-9]', '', (brand + cleaned).lower()) if brand != "—" else cat_norm
 
                         for tn_norm, (tn_name, qty) in _tn_norms.items():
-                            # "En stock" = None (ilimitado) o cantidad > 0
-                            if qty is not None and qty == 0:
-                                continue
+                            # Mostrar todos los productos de TN (con o sin stock)
                             # 1. Substring: "rg35xxh" dentro de "anbernicrg35xxh"
                             if cat_norm and (cat_norm in tn_norm or tn_norm in cat_norm):
                                 return True
@@ -2918,7 +2916,7 @@ if st.session_state.df_tn is not None:
 
                     df_fuzzy = df_fuzzy[df_fuzzy["Producto"].apply(_has_stock)]
                 else:
-                    st.caption("⚠️ No se pudo obtener el stock de Tienda Nube.")
+                    st.caption("⚠️ No se pudo conectar con Tienda Nube.")
 
             if df_fuzzy.empty:
                 st.info("No se encontraron productos con ese filtro.")
