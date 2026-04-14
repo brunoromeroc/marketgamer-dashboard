@@ -614,6 +614,7 @@ def get_fob_usd(nombre_prod, costos_gs=None):
     nombre_norm = _normalizar(nombre_prod)
     if not nombre_norm:
         return 0.0
+    nombre_compact = _norm_compact(nombre_prod)
     candidatos = []
     if costos_gs:
         for k, v in costos_gs.items():
@@ -622,16 +623,30 @@ def get_fob_usd(nombre_prod, costos_gs=None):
             if isinstance(v, dict):
                 fob = float(v.get("fob_usd", 0) or 0)
                 if fob > 0:
-                    candidatos.append((_normalizar(k), fob))
+                    candidatos.append((_normalizar(k), _norm_compact(k), fob))
     for k, v in FOB_DEFAULTS.items():
-        candidatos.append((_normalizar(k), float(v.get("fob_usd", 0) or 0)))
-    for k_norm, fob in candidatos:
+        candidatos.append((_normalizar(k), _norm_compact(k), float(v.get("fob_usd", 0) or 0)))
+    # Tier 1: match exacto
+    for k_norm, k_compact, fob in candidatos:
         if k_norm == nombre_norm:
             return fob
-    for k_norm, fob in candidatos:
+    # Tier 2: match compacto exacto (sin colores/GB/RAM)
+    for k_norm, k_compact, fob in candidatos:
+        if k_compact and k_compact == nombre_compact:
+            return fob
+    # Tier 3: key en nombre
+    for k_norm, k_compact, fob in candidatos:
         if k_norm in nombre_norm:
             return fob
-    for k_norm, fob in candidatos:
+    # Tier 4: key compacto en nombre compacto (el más largo gana)
+    best, best_len = 0.0, 0
+    for k_norm, k_compact, fob in candidatos:
+        if k_compact and k_compact in nombre_compact and len(k_compact) > best_len:
+            best, best_len = fob, len(k_compact)
+    if best > 0:
+        return best
+    # Tier 5: nombre en key
+    for k_norm, k_compact, fob in candidatos:
         if nombre_norm in k_norm:
             return fob
     return 0.0
