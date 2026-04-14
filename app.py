@@ -2880,7 +2880,7 @@ if st.session_state.df_tn is not None:
                     df_fuzzy["Producto"].str.contains(buscar, case=False, na=False)
                 ]
 
-            # Filtro "Solo mis productos" — parte desde TN y agrega precios de proveedor
+            # Filtro "Solo mis productos" — construye la tabla DESDE TN hacia proveedores
             if solo_stock:
                 with st.spinner("Consultando TiendaNube…"):
                     _stock_dict = get_stock_for_planner()
@@ -2889,62 +2889,68 @@ if st.session_state.df_tn is not None:
                     _EXCLUIR   = ("estuche", "funda", "case", "protector", "cable", "adaptador")
                     _MARCAS_TN = ("anbernic", "powkiddy", "miyoo", "trimui", "retroid")
 
-                    # Solo consolas de TN (sin accesorios)
-                    _tn_consolas = {
-                        tn_name: qty
-                        for tn_name, qty in _stock_dict.items()
+                    # Lista de consolas en TN (sin accesorios)
+                    _tn_consolas = sorted([
+                        tn_name for tn_name in _stock_dict
                         if any(m in tn_name.lower() for m in _MARCAS_TN)
                         and not any(tn_name.lower().startswith(e) for e in _EXCLUIR)
-                    }
-                    # Lookup: norm → nombre original de TN
-                    _tn_norm_map = {
-                        re.sub(r'[^a-z0-9]', '', tn.lower()): tn
-                        for tn in _tn_consolas
-                    }
-                    _tn_norms = list(_tn_norm_map.keys())
+                    ])
 
-                    def _supplier_norm(pname):
-                        """Normaliza nombre del proveedor quitando spec de storage."""
-                        cleaned = re.sub(r'\s*\d+\+\d+\s*gb.*', '', pname, flags=re.IGNORECASE).strip()
-                        return re.sub(r'[^a-z0-9]', '', cleaned.lower())
-
-                    def _find_tn_match(pname):
-                        """Devuelve el nombre TN que matchea pname, o None."""
-                        cat = _supplier_norm(pname)
-                        if not cat:
-                            return None
-                        for tn in _tn_norms:
-                            if cat in tn or tn in cat:
-                                return _tn_norm_map[tn]
-                        return None
-
-                    # Paso 1: marcar qué productos del catálogo de proveedor tienen match en TN
-                    _matched_tn = set()
-                    _prov_matched = []
-                    for pname in df_fuzzy["Producto"].tolist():
-                        m = _find_tn_match(pname)
-                        if m:
-                            _matched_tn.add(m)
-                            _prov_matched.append(pname)
-
-                    df_matched = df_fuzzy[df_fuzzy["Producto"].isin(_prov_matched)]
-
-                    # Paso 2: productos de TN sin proveedor → filas nuevas con precios vacíos
                     _sup_cols = [c for c in df_fuzzy.columns if c != "Producto"]
-                    _extra = [
-                        {"Producto": tn_name, **{c: None for c in _sup_cols}}
-                        for tn_name in _tn_consolas
-                        if tn_name not in _matched_tn
-                    ]
-                    if _extra:
-                        df_extra = pd.DataFrame(_extra)
-                        df_fuzzy = pd.concat([df_matched, df_extra], ignore_index=True).sort_values("Producto").reset_index(drop=True)
-                    else:
-                        df_fuzzy = df_matched.sort_values("Producto").reset_index(drop=True)
 
-                    # Aplicar búsqueda de texto también a los nuevos
+                    # Pre-calcular normas y dicts de filas del catálogo de proveedores
+                    _sup_items = []
+                    for _, _row in df_fuzzy.iterrows():
+                        _pname = _row["Producto"]
+                        _cl = re.sub(r'\s*\d+\+\d+\s*gb.*', '', _pname, flags=re.IGNORECASE).strip()
+                        _cat = re.sub(r'[^a-z0-9]', '', _cl.lower())
+                        _sup_items.append((_cat, dict(_row)))
+
+                    def _cat_variants(cat):
+                        """Genera variantes del norm para manejar prefijos como 'rg'."""
+                        variants = [cat]
+                        # "rgslide" → también probar "slide" (por si TN dice "Anbernic SLIDE")
+                        if cat.startswith("rg") and len(cat) > 4:
+                            variants.append(cat[2:])
+                        return variants
+
+                    def _best_match(tn_norm):
+                        """Busca el proveedor que mejor matchea el nombre TN.
+                        Solo acepta cat IN tn_norm (no al revés) para evitar
+                        que 'Trimui Brick Hammer' matchee con 'Trimui Brick'.
+                        Prefiere match más específico (cat más largo)."""
+                        best_row, best_len = None, 0
+                        for _cat, _row in _sup_items:
+                            if not _cat:
+                                continue
+                            for _v in _cat_variants(_cat):
+                                if _v and _v in tn_norm and len(_v) > best_len:
+                                    best_len = len(_v)
+                                    best_row = _row
+                        return best_row
+
+                    # Construir una fila por cada consola de TN
+                    _new_rows = []
+                    for _tn_name in _tn_consolas:
+                        _tn_norm = re.sub(r'[^a-z0-9]', '', _tn_name.lower())
+                        _match = _best_match(_tn_norm)
+                        if _match:
+                            _new_rows.append({
+                                "Producto": _tn_name,
+                                **{c: _match.get(c) for c in _sup_cols}
+                            })
+                        else:
+                            _new_rows.append({
+                                "Producto": _tn_name,
+                                **{c: None for c in _sup_cols}
+                            })
+
+                    df_fuzzy = pd.DataFrame(_new_rows).reset_index(drop=True)
+
                     if buscar:
-                        df_fuzzy = df_fuzzy[df_fuzzy["Producto"].str.contains(buscar, case=False, na=False)]
+                        df_fuzzy = df_fuzzy[
+                            df_fuzzy["Producto"].str.contains(buscar, case=False, na=False)
+                        ]
                 else:
                     st.caption("⚠️ No se pudo conectar con Tienda Nube.")
 
