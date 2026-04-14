@@ -694,18 +694,29 @@ def _match_costo_entry(nombre_prod, costos_gs=None):
     nombre_compact = _norm_compact(nombre_prod)
 
     def _try_tiers():
+        # Recorrer todos los tiers. Si un tier matchea con FOB>0, retornar.
+        # Si matchea con FOB=0, guardar como fallback y seguir buscando.
+        _fallback = None
+
+        def _consider(r):
+            nonlocal _fallback
+            if r and r[2] > 0:
+                if r[0] > 0:       # tiene FOB → retorno inmediato
+                    return r
+                if not _fallback:   # FOB=0, guardar como fallback
+                    _fallback = r
+            return None
+
         # Tier 1: match exacto
         for k_norm, k_compact, v, ckg in candidatos:
             if k_norm == nombre_norm:
-                r = _extract(v, ckg)
-                if r[2] > 0:
-                    return r
+                hit = _consider(_extract(v, ckg))
+                if hit: return hit
         # Tier 2: match compacto exacto
         for k_norm, k_compact, v, ckg in candidatos:
             if k_compact and k_compact == nombre_compact:
-                r = _extract(v, ckg)
-                if r[2] > 0:
-                    return r
+                hit = _consider(_extract(v, ckg))
+                if hit: return hit
         # Tier 3: key en nombre (básico, el más largo gana)
         best, best_len = None, 0
         for k_norm, k_compact, v, ckg in candidatos:
@@ -714,7 +725,8 @@ def _match_costo_entry(nombre_prod, costos_gs=None):
                 if r[2] > 0:
                     best, best_len = r, len(k_norm)
         if best:
-            return best
+            hit = _consider(best)
+            if hit: return hit
         # Tier 4: key compacto en nombre compacto (el más largo gana)
         best, best_len = None, 0
         for k_norm, k_compact, v, ckg in candidatos:
@@ -723,23 +735,25 @@ def _match_costo_entry(nombre_prod, costos_gs=None):
                 if r[2] > 0:
                     best, best_len = r, len(k_compact)
         if best:
-            return best
+            hit = _consider(best)
+            if hit: return hit
         # Tier 5: nombre compacto en key compacto (reverso, el más largo gana)
         best, best_len = None, 0
         for k_norm, k_compact, v, ckg in candidatos:
             if k_compact and nombre_compact in k_compact and len(nombre_compact) > best_len:
                 r = _extract(v, ckg)
                 if r[2] > 0:
-                    best, best_len = r, len(nombre_compact)
+                    best, best_len = r, len(k_compact)
         if best:
-            return best
+            hit = _consider(best)
+            if hit: return hit
         # Tier 6: nombre en key (básico)
         for k_norm, k_compact, v, ckg in candidatos:
             if nombre_norm in k_norm:
-                r = _extract(v, ckg)
-                if r[2] > 0:
-                    return r
-        return None
+                hit = _consider(_extract(v, ckg))
+                if hit: return hit
+
+        return _fallback  # FOB=0 fallback (mejor que nada)
 
     return _try_tiers() or (0.0, 0.0, 0.0)
 
