@@ -2538,22 +2538,29 @@ if st.session_state.df_tn is not None:
                                         val = float(col3.replace("$", "").replace(",", "").strip())
                                         if 1 < val < 5000:
                                             storage = col4.strip() if col4.strip() else "—"
-                                            # Extraer variante RAM+Storage del texto de specs.
-                                            # Formato 1: "8g+128g, 12g+256g" → tomar el último par
-                                            # Formato 2: "12GB LPDDR4X,256G UFS" → RAM y storage por separado
+                                            # Agregar sufijo de variante SOLO cuando corresponde:
+                                            # 1. El spec lista múltiples configs: "8g+128g, 12g+256g" → 2 pares
+                                            # 2. Modelos conocidos multi-variante con spec en formato separado
                                             import re as _re2
+                                            # Modelos Anbernic que tienen 2 variantes de RAM+storage
+                                            KNOWN_MULTI_VARIANT = {"RG477M", "RG 477M"}
                                             spec_lower = col1.lower()
+                                            model_key = _re2.sub(r'\s+', '', current_model).upper()
                                             pairs = _re2.findall(r'(\d+)\s*gb?\s*\+\s*(\d+)\s*gb?', spec_lower)
-                                            if pairs:
-                                                ram, stor = pairs[-1]  # último = mayor spec
+                                            if len(pairs) > 1:
+                                                # Múltiples variantes explícitas en el spec → tomar la mayor
+                                                ram, stor = pairs[-1]
                                                 product_name = f"{current_model} {ram}+{stor}GB"
-                                            else:
+                                            elif current_model in KNOWN_MULTI_VARIANT or model_key in {_re2.sub(r'\s+', '', m).upper() for m in KNOWN_MULTI_VARIANT}:
+                                                # Modelo multi-variante con spec en formato "12GB...256G"
                                                 ram_m = _re2.search(r'(\d+)\s*gb\b', spec_lower)
-                                                stor_m = _re2.search(r'\b(\d{3})\s*g\b', spec_lower)
+                                                stor_m = _re2.search(r'\b(\d{2,3})\s*g\b', spec_lower)
                                                 if ram_m and stor_m:
                                                     product_name = f"{current_model} {ram_m.group(1)}+{stor_m.group(1)}GB"
                                                 else:
                                                     product_name = current_model
+                                            else:
+                                                product_name = current_model
                                             raw_rows.append({
                                                 "Producto": product_name,
                                                 "FOB (USD)": val,
