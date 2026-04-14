@@ -1161,7 +1161,7 @@ if st.session_state.df_tn is not None:
             st.info("No hay órdenes en este período.")
         else:
             _dolar_det = dolar_blue or 1200
-            _costos_gs = gs_read("CostosConsolas") or {}
+            _costos_gs = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
             df_det = df_tn.copy()
 
             df_det["Costo Productos ($)"] = df_det.apply(
@@ -1365,7 +1365,7 @@ if st.session_state.df_tn is not None:
                     tasa = tasas_custom.get(tasa_key, 0.0414)
                 return round(total * tasa, 2)
 
-            _costos_gs_sf = gs_read("CostosConsolas") or {}
+            _costos_gs_sf = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
             df_calc = df_tn.copy()
             df_calc["Comision PN ($)"] = df_calc.apply(comision_custom, axis=1)
             df_calc["Neto cobrado ($)"] = df_calc["Total ($)"] - df_calc["Comision PN ($)"]
@@ -2124,7 +2124,7 @@ if st.session_state.df_tn is not None:
             "Incluye tabla de rentabilidad por cantidad de cuotas."
         )
 
-        _costos_gs_mt = gs_read("CostosConsolas") or {}
+        _costos_gs_mt = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
         _tc_mt = int(dolar_blue) if dolar_blue else 1200
 
         if df_tn.empty:
@@ -2400,7 +2400,7 @@ if st.session_state.df_tn is not None:
         if df_tn.empty:
             st.info("Buscá primero para ver los datos.")
         else:
-            _costos_gs_mr = gs_read("CostosConsolas") or {}
+            _costos_gs_mr = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
             _tc_mr = int(dolar_blue) if dolar_blue else 1200
             orders_raw_mr = st.session_state.orders_raw
 
@@ -3194,7 +3194,7 @@ if st.session_state.df_tn is not None:
             # Comparación vs CostosConsolas
             st.divider()
             st.subheader("📊 vs costos cargados en el dashboard")
-            _costos_gs_prov = gs_read("CostosConsolas") or {}
+            _costos_gs_prov = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
             if _costos_gs_prov:
                 rows_comp = []
                 for _, prod_row in df_fuzzy.iterrows():
@@ -3400,7 +3400,7 @@ if st.session_state.df_tn is not None:
                 _dias_p = max((fecha_hasta - fecha_desde).days + 1, 1)
                 _tc = int(dolar_blue) if dolar_blue else 1200
                 _gastos_gs = gs_read("GastosFijos") or {}
-                _costos_gs = gs_read("CostosConsolas") or {}
+                _costos_gs = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
 
                 lines.append(f"=== MARKET GAMER — ANÁLISIS FINANCIERO ===")
                 lines.append(f"Período: {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')} ({_dias_p} días)")
