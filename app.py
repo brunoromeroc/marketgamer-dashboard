@@ -38,6 +38,45 @@ def _normalizar(s):
     s = re.sub(r'([a-z\d])\s+([a-z\d])', r'\1\2', s)
     return s
 
+# ── Brand catalog (fuente: catalogo_market_gamer.csv) ─────────────────────────
+BRAND_CATALOG = {
+    # Anbernic
+    "rgnano":"Anbernic","rg28xx":"Anbernic","rg34xx":"Anbernic","rg34xxsp":"Anbernic",
+    "rg35xx2024":"Anbernic","rg35xxplus":"Anbernic","rg35xxh":"Anbernic",
+    "rg35xxsp":"Anbernic","rg35xxpro":"Anbernic","rg40xxh":"Anbernic",
+    "rg40xxv":"Anbernic","rgcubexx":"Anbernic","rg353p":"Anbernic",
+    "rg353v":"Anbernic","rg353vs":"Anbernic","rg353m":"Anbernic","rg353ps":"Anbernic",
+    "rgarcd":"Anbernic","rgarcs":"Anbernic","rg503":"Anbernic",
+    "rg405m":"Anbernic","rg405v":"Anbernic","rg505":"Anbernic",
+    "rgds":"Anbernic","rg556":"Anbernic","rgcube":"Anbernic",
+    "rg406v":"Anbernic","rg406h":"Anbernic","rgslide":"Anbernic",
+    "rg476h":"Anbernic","rg557":"Anbernic","rg477m":"Anbernic","rg477v":"Anbernic",
+    "rgvita":"Anbernic","rgvitapro":"Anbernic",
+    "rgp01":"Anbernic","rgg01":"Anbernic","win600":"Anbernic","k101plus":"Anbernic",
+    # Powkiddy
+    "rgb10x":"Powkiddy","rgb20s":"Powkiddy","rgb20pro":"Powkiddy",
+    "rgb20sx":"Powkiddy","rgb30":"Powkiddy","rgb10max3":"Powkiddy",
+    "rgb10max3pro":"Powkiddy","v10":"Powkiddy","v20":"Powkiddy",
+    "v90s":"Powkiddy","x28":"Powkiddy","x35h":"Powkiddy","x55":"Powkiddy","x35s":"Powkiddy",
+    # Miyoo
+    "miyoominiv3":"Miyoo","miyoominiplus":"Miyoo","miniplus":"Miyoo",
+    "miyoominiflip":"Miyoo","miyooflipv2":"Miyoo","miyoominiv4":"Miyoo","miyooa30":"Miyoo",
+    # Trimui
+    "trimuimodels":"Trimui","trimuismart":"Trimui","trimuismartpro":"Trimui",
+    "trimuibrick":"Trimui","trimuibrickhammer":"Trimui","trimuismartpros":"Trimui",
+    # Retroid
+    "retroidpocket4":"Retroid","retroidpocket4pro":"Retroid","retroidpocket5":"Retroid",
+    "retroidpocket6":"Retroid","retroidpocketg2":"Retroid","retroidpocketminiv2":"Retroid",
+    "retroidpocketclassic":"Retroid","retroidpocketflip2":"Retroid",
+    "retroidflip2":"Retroid","retroidg2":"Retroid",
+}
+
+def _get_brand(product_name: str) -> str:
+    """Detecta la marca de un producto por nombre normalizado."""
+    cleaned = re.sub(r'\s*\d+\+\d+\s*gb.*', '', product_name, flags=re.IGNORECASE).strip()
+    norm = re.sub(r'[^a-z0-9]', '', cleaned.lower())
+    return BRAND_CATALOG.get(norm, "—")
+
 # ── Proveedores helpers ────────────────────────────────────────────────────────
 from datetime import date as _date
 
@@ -2398,6 +2437,8 @@ if st.session_state.df_tn is not None:
         .brand-anbernic{background:rgba(96,165,250,0.12);color:#60a5fa}
         .brand-powkiddy{background:rgba(251,191,36,0.12);color:#fbbf24}
         .brand-trimui{background:rgba(74,222,128,0.12);color:#4ade80}
+        .brand-miyoo{background:rgba(192,132,252,0.12);color:#c084fc}
+        .brand-retroid{background:rgba(251,146,60,0.12);color:#fb923c}
         .comp-banner{background:rgba(74,222,128,0.05);border:1px solid rgba(74,222,128,0.15);border-radius:8px;padding:14px 18px;margin:8px 0 16px;display:flex;align-items:center;gap:12px}
         .comp-banner-title{font-size:15px;font-weight:700;color:#e2e8f0}
         .comp-banner-sub{font-size:12px;color:#6b7280;margin-top:2px}
@@ -2681,7 +2722,10 @@ if st.session_state.df_tn is not None:
                 )
 
                 if sup_data.get("productos"):
-                    _BRAND_CSS = {"Anbernic": "brand-anbernic", "Powkiddy": "brand-powkiddy", "Trimui": "brand-trimui"}
+                    _BRAND_CSS = {
+                        "Anbernic": "brand-anbernic", "Powkiddy": "brand-powkiddy",
+                        "Trimui": "brand-trimui", "Miyoo": "brand-miyoo", "Retroid": "brand-retroid",
+                    }
                     productos_sorted = sorted(
                         sup_data["productos"].items(),
                         key=lambda x: float(x[1].get("precio_usd", 0)),
@@ -2690,6 +2734,8 @@ if st.session_state.df_tn is not None:
                     for _pname, _pinfo in productos_sorted:
                         _precio = float(_pinfo.get("precio_usd", 0))
                         _marca = _pinfo.get("marca", "—")
+                        if _marca == "—":
+                            _marca = _get_brand(_pname)
                         _storage = _pinfo.get("storage", "—")
                         _bcss = _BRAND_CSS.get(_marca, "")
                         _marca_html = f'<span class="brand-tag {_bcss}">{_marca}</span>' if _marca != "—" else '<span style="color:#374151">—</span>'
@@ -2854,13 +2900,27 @@ if st.session_state.df_tn is not None:
             td.cheap-cell{background:rgba(20,50,20,.55);border-radius:6px;}
             </style>
             """
-            th_prod = '<th>Producto</th>'
+            _BRAND_CSS_MAP = {
+                "Anbernic": "brand-anbernic", "Powkiddy": "brand-powkiddy",
+                "Trimui": "brand-trimui", "Miyoo": "brand-miyoo", "Retroid": "brand-retroid",
+            }
+            th_prod = '<th>Producto</th><th>Marca</th>'
             th_sups = "".join(f'<th class="pc">{c}</th>' for c in sup_cols)
             rows_html = []
             for _, row in df_fuzzy.iterrows():
                 prices = {c: row[c] for c in sup_cols if pd.notna(row[c]) and row[c] > 0}
                 cheapest = min(prices, key=prices.get) if len(prices) > 0 else None
-                tds = f'<td><span class="pname">{row["Producto"]}</span></td>'
+                brand = _get_brand(row["Producto"])
+                bcss = _BRAND_CSS_MAP.get(brand, "")
+                brand_html = (
+                    f'<span class="brand-tag {bcss}">{brand}</span>'
+                    if brand != "—"
+                    else '<span style="color:#374151;font-size:12px">—</span>'
+                )
+                tds = (
+                    f'<td><span class="pname">{row["Producto"]}</span></td>'
+                    f"<td>{brand_html}</td>"
+                )
                 for c in sup_cols:
                     v = row[c]
                     if pd.notna(v) and v > 0:
