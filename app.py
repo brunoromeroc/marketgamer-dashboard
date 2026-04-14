@@ -1917,6 +1917,7 @@ if st.session_state.df_tn is not None:
             )
 
             if edited_df is not None:
+                edited_df = edited_df.fillna({"Peso (kg)": 0.0, "FOB (USD)": 0.0, "Import (USD)": 0.0, "Total (USD)": 0.0, "Total (ARS)": 0})
                 edited_df["Import (USD)"] = (edited_df["Peso (kg)"] * costo_kg_usd).round(2)
                 edited_df["Total (USD)"] = (edited_df["FOB (USD)"] + edited_df["Import (USD)"]).round(2)
                 edited_df["Total (ARS)"] = (edited_df["Total (USD)"] * tc_consolas).round(0).astype(int)
