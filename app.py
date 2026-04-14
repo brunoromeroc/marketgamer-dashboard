@@ -2859,9 +2859,14 @@ if st.session_state.df_tn is not None:
                 st.info("Cargá al menos un proveedor para ver la comparación.")
                 return
 
-            buscar = st.text_input(
+            _col_search, _col_stock = st.columns([3, 1])
+            buscar = _col_search.text_input(
                 "🔍 Buscar producto", key="search_comparador",
                 placeholder="ej: RG35, Trimui, 477…"
+            )
+            solo_stock = _col_stock.checkbox(
+                "📦 Solo en stock", key="comp_solo_stock",
+                help="Filtra solo los modelos que tenés en TiendaNube con stock > 0"
             )
             df_fuzzy = fuzzy_group_products(suppliers_snap)
 
@@ -2873,6 +2878,22 @@ if st.session_state.df_tn is not None:
                 df_fuzzy = df_fuzzy[
                     df_fuzzy["Producto"].str.contains(buscar, case=False, na=False)
                 ]
+
+            # Filtro por stock de TiendaNube
+            if solo_stock:
+                _stock_dict = st.session_state.get("stock_planner", {})
+                if _stock_dict:
+                    from difflib import SequenceMatcher as _SM
+                    def _has_stock(pname):
+                        for tn_name, qty in _stock_dict.items():
+                            if qty and int(qty) > 0:
+                                ratio = _SM(None, _normalizar(pname), _normalizar(tn_name)).ratio()
+                                if ratio >= 0.72:
+                                    return True
+                        return False
+                    df_fuzzy = df_fuzzy[df_fuzzy["Producto"].apply(_has_stock)]
+                else:
+                    st.caption("⚠️ Cargá el stock primero en la sección **Planificador** (botón 'Cargar stock desde Tienda Nube').")
 
             if df_fuzzy.empty:
                 st.info("No se encontraron productos con ese filtro.")
@@ -2904,7 +2925,7 @@ if st.session_state.df_tn is not None:
                 "Anbernic": "brand-anbernic", "Powkiddy": "brand-powkiddy",
                 "Trimui": "brand-trimui", "Miyoo": "brand-miyoo", "Retroid": "brand-retroid",
             }
-            th_prod = '<th>Producto</th><th>Marca</th>'
+            th_prod = '<th>Producto</th>'
             th_sups = "".join(f'<th class="pc">{c}</th>' for c in sup_cols)
             rows_html = []
             for _, row in df_fuzzy.iterrows():
@@ -2912,15 +2933,14 @@ if st.session_state.df_tn is not None:
                 cheapest = min(prices, key=prices.get) if len(prices) > 0 else None
                 brand = _get_brand(row["Producto"])
                 bcss = _BRAND_CSS_MAP.get(brand, "")
-                brand_html = (
-                    f'<span class="brand-tag {bcss}">{brand}</span>'
-                    if brand != "—"
-                    else '<span style="color:#374151;font-size:12px">—</span>'
-                )
-                tds = (
-                    f'<td><span class="pname">{row["Producto"]}</span></td>'
-                    f"<td>{brand_html}</td>"
-                )
+                pname = row["Producto"]
+                # Prefijar marca si no está ya en el nombre (evita "Trimui Trimui Brick")
+                if brand != "—" and not pname.lower().startswith(brand.lower()):
+                    brand_span = f'<span class="brand-tag {bcss}" style="margin-right:7px">{brand}</span>'
+                    display_name = f'{brand_span}{pname}'
+                else:
+                    display_name = pname
+                tds = f'<td><span class="pname">{display_name}</span></td>'
                 for c in sup_cols:
                     v = row[c]
                     if pd.notna(v) and v > 0:
