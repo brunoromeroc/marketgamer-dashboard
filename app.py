@@ -2884,27 +2884,22 @@ if st.session_state.df_tn is not None:
                 with st.spinner("Consultando stock en Tienda Nube…"):
                     _stock_dict = get_stock_for_planner()
 
-                # ── DEBUG TEMPORAL ──────────────────────────────────────────
-                with st.expander("🔍 Debug TN (temporal)", expanded=False):
-                    st.write(f"Productos en TN: **{len(_stock_dict)}**")
-                    _debug_norms = {re.sub(r'[^a-z0-9]', '', k.lower()): k for k in _stock_dict}
-                    _test_names = ["RG40XXH", "RG40XXV", "RG35XXH", "RG477V"]
-                    for _tn in _test_names:
-                        _cn = re.sub(r'[^a-z0-9]', '', _tn.lower())
-                        _hits = [v for k, v in _debug_norms.items() if _cn in k or k in _cn]
-                        st.write(f"`{_tn}` → `{_cn}` → matches: {_hits}")
-                    st.write("Primeros 10 nombres TN:")
-                    for _k, _v in list(_stock_dict.items())[:10]:
-                        st.write(f"  `{repr(_k)}` → stock={_v}")
-                # ── FIN DEBUG ───────────────────────────────────────────────
-
                 if _stock_dict:
                     from difflib import SequenceMatcher as _SM
+
+                    # Excluir accesorios (estuches, fundas, etc.) del matching
+                    # para evitar falsos positivos: una consola no debe matchear
+                    # solo porque existe su estuche en TN.
+                    _ACCESORIOS_EXCLUIR = ("estuche", "funda", "case", "protector")
+                    _stock_consolas = {
+                        tn: qty for tn, qty in _stock_dict.items()
+                        if not any(tn.lower().startswith(a) for a in _ACCESORIOS_EXCLUIR)
+                    }
 
                     # Pre-normalizar nombres de TN una sola vez
                     _tn_norms = {
                         re.sub(r'[^a-z0-9]', '', tn.lower()): (tn, qty)
-                        for tn, qty in _stock_dict.items()
+                        for tn, qty in _stock_consolas.items()
                     }
 
                     def _has_stock(pname):
