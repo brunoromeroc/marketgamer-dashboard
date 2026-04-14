@@ -17,6 +17,7 @@ TN_TOKEN = st.secrets["TN_TOKEN"]
 TN_STORE_ID = st.secrets["TN_STORE_ID"]
 SHEET_ID = st.secrets.get("SHEET_ID", "1wY2KjSC8SX-nMQD7J43xrdSY0SgG8fJeL9d5I_02DdE")
 GCP_CREDS = st.secrets.get("gcp_service_account", {})
+ANTHROPIC_KEY = st.secrets.get("ANTHROPIC_KEY", "")
 
 COLORES = ["#00C49F", "#009EE3", "#FFD700", "#FF5733", "#AA00FF", "#FF69B4"]
 
@@ -877,7 +878,7 @@ if buscar:
 dolar_blue = get_dolar_blue()
 
 if st.session_state.df_tn is not None:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
         "📊 Dashboard",
         "🔍 Detalle y ajustes",
         "💚 Salud Financiera",
@@ -888,6 +889,7 @@ if st.session_state.df_tn is not None:
         "📐 Margen teórico",
         "📈 Margen real",
         "🏭 Proveedores",
+        "🤖 Analista IA",
     ])
     df_tn = st.session_state.df_tn.copy()
     df_pagos = st.session_state.df_pagos.copy() if st.session_state.df_pagos is not None else pd.DataFrame()
@@ -3240,6 +3242,418 @@ if st.session_state.df_tn is not None:
         if st.button("💾 Guardar todos los datos de proveedores", use_container_width=True):
             ok = gs_write("Proveedores", st.session_state.proveedores_data)
             st.success("✅ Guardado en Google Sheets" if ok else "⚠️ Solo en sesión")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 11: ANALISTA IA
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab11:
+        if "analyst_messages" not in st.session_state:
+            st.session_state.analyst_messages = []
+
+        st.subheader("🤖 Analista Financiero IA")
+        st.caption(
+            "Preguntale lo que quieras sobre el negocio. "
+            "Usa los datos reales del período seleccionado."
+        )
+
+        if not ANTHROPIC_KEY:
+            st.error(
+                "⚠️ Falta la API key de Anthropic.\n\n"
+                "Agregá `ANTHROPIC_KEY = \"sk-ant-...\"` en `secrets.toml`."
+            )
+            st.info("💡 Obtené tu key en [console.anthropic.com](https://console.anthropic.com/)")
+        else:
+            # ── Construir contexto de datos ──
+            def _build_analyst_context():
+                lines = []
+                _dias_p = max((fecha_hasta - fecha_desde).days + 1, 1)
+                _tc = int(dolar_blue) if dolar_blue else 1200
+                _gastos_gs = gs_read("GastosFijos") or {}
+                _costos_gs = gs_read("CostosConsolas") or {}
+
+                lines.append(f"=== MARKET GAMER — ANÁLISIS FINANCIERO ===")
+                lines.append(f"Período: {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')} ({_dias_p} días)")
+                lines.append(f"Tipo de cambio: ${_tc:,} ARS/USD (dólar blue)")
+                lines.append("")
+
+                if df_tn.empty:
+                    lines.append("No hay órdenes cargadas en este período.")
+                    return "\n".join(lines)
+
+                _total_ordenes = len(df_tn)
+                _fact_bruta = df_tn["Total ($)"].sum()
+                _total_comision = df_tn["Comision PN ($)"].sum()
+                _neto = df_tn["Neto cobrado ($)"].sum()
+                _envios = df_tn["Envio costo ($)"].sum()
+                _ticket_prom = _fact_bruta / _total_ordenes if _total_ordenes > 0 else 0
+
+                lines.append("--- RESUMEN GENERAL ---")
+                lines.append(f"Órdenes: {_total_ordenes}")
+                lines.append(f"Facturación bruta: ${_fact_bruta:,.0f}")
+                if _fact_bruta > 0:
+                    lines.append(f"Comisiones PN: ${_total_comision:,.0f} ({_total_comision/_fact_bruta*100:.2f}%)")
+                lines.append(f"Neto cobrado: ${_neto:,.0f}")
+                lines.append(f"Costo envíos dueño: ${_envios:,.0f}")
+                lines.append(f"Ticket promedio: ${_ticket_prom:,.0f}")
+                lines.append(f"Órdenes/día: {_total_ordenes / _dias_p:.1f}")
+                lines.append(f"Facturación/día: ${_fact_bruta / _dias_p:,.0f}")
+                lines.append("")
+
+                # Ventas por producto
+                lines.append("--- VENTAS POR PRODUCTO ---")
+                _prod_stats = {}
+                for _, _row in df_tn.iterrows():
+                    _prods = [p.strip() for p in str(_row.get("Productos", "")).split(" / ") if p.strip()]
+                    _n = max(len(_prods), 1)
+                    for _p in _prods:
+                        if _p not in _prod_stats:
+                            _prod_stats[_p] = {"uds": 0, "rev": 0.0, "ords": 0}
+                        _prod_stats[_p]["uds"] += int(_row.get("Cantidad", 1) or 1)
+                        _prod_stats[_p]["rev"] += _row.get("Total ($)", 0) / _n
+                        _prod_stats[_p]["ords"] += 1
+
+                _orders_raw = st.session_state.orders_raw
+                _prod_rows = _build_product_rows_from_raw(_orders_raw) if _orders_raw else []
+                _margen_map = {}
+                if _prod_rows:
+                    _df_pr = pd.DataFrame(_prod_rows)
+                    for _pn, _grp in _df_pr.groupby("Producto"):
+                        _precio_p = _grp["Precio ($)"].mean()
+                        _costo_usd = get_costo_total_usd(_pn, _costos_gs)
+                        _costo_ars = _costo_usd * _tc
+                        _costo_full = _costo_ars + 2500 + (_precio_p * 0.105)
+                        _com_p = _grp["Comisión PN ($)"].mean()
+                        _env_p = _grp["Envío ($)"].mean()
+                        _margen_p = _precio_p - _costo_full - _com_p - _env_p
+                        _margen_pct = (_margen_p / _precio_p * 100) if _precio_p > 0 else 0
+                        _margen_map[_pn] = {
+                            "precio": _precio_p, "costo_usd": _costo_usd,
+                            "costo_full": _costo_full, "margen": _margen_p, "margen_pct": _margen_pct,
+                        }
+
+                lines.append(f"{'Producto':<45} {'Uds':>5} {'Revenue':>12} {'Margen%':>8} {'FOB$':>7}")
+                lines.append("-" * 82)
+                for _pn, _ps in sorted(_prod_stats.items(), key=lambda x: x[1]["rev"], reverse=True):
+                    _mi = _margen_map.get(_pn, {})
+                    _mpct = f"{_mi.get('margen_pct', 0):.1f}%" if _mi else "s/d"
+                    _fob = f"${_mi.get('costo_usd', 0):.0f}" if _mi.get('costo_usd') else "s/d"
+                    lines.append(f"{_pn:<45} {_ps['uds']:>5} ${_ps['rev']:>10,.0f} {_mpct:>8} {_fob:>7}")
+                lines.append("")
+
+                # Evolución diaria
+                lines.append("--- EVOLUCIÓN DIARIA ---")
+                _df_dia = df_tn.groupby("Fecha").agg(
+                    Ordenes=("Orden", "count"), Facturacion=("Total ($)", "sum"), Unidades=("Cantidad", "sum"),
+                ).reset_index().sort_values("Fecha")
+                for _, _r in _df_dia.iterrows():
+                    lines.append(f"{_r['Fecha']:<12} {int(_r['Ordenes']):>5} órd  ${_r['Facturacion']:>12,.0f}  {int(_r['Unidades']):>4} uds")
+                if len(_df_dia) >= 6:
+                    _1h = _df_dia.head(len(_df_dia) // 2)["Facturacion"].mean()
+                    _2h = _df_dia.tail(len(_df_dia) // 2)["Facturacion"].mean()
+                    if _2h > _1h * 1.1:
+                        lines.append(f"📈 TENDENCIA ALCISTA (+{(_2h/_1h - 1)*100:.0f}%)")
+                    elif _2h < _1h * 0.9:
+                        lines.append(f"📉 TENDENCIA BAJISTA ({(_2h/_1h - 1)*100:.0f}%)")
+                    else:
+                        lines.append("➡️ TENDENCIA ESTABLE")
+                lines.append("")
+
+                # Medios de pago
+                lines.append("--- MEDIOS DE PAGO ---")
+                _med = df_tn.groupby("Medio de Pago").agg(
+                    Ordenes=("Orden", "count"), Fact=("Total ($)", "sum"), Com=("Comision PN ($)", "sum"),
+                ).reset_index().sort_values("Fact", ascending=False)
+                for _, _r in _med.iterrows():
+                    _cp = (_r["Com"] / _r["Fact"] * 100) if _r["Fact"] > 0 else 0
+                    lines.append(f"{_r['Medio de Pago']:<25} {int(_r['Ordenes']):>5} órd  ${_r['Fact']:>12,.0f}  com {_cp:.2f}%")
+                lines.append("")
+
+                # Cuotas
+                lines.append("--- DISTRIBUCIÓN POR CUOTAS ---")
+                _cuotas = df_tn.groupby("Cuotas").agg(Ordenes=("Orden", "count"), Fact=("Total ($)", "sum")).reset_index()
+                for _, _r in _cuotas.iterrows():
+                    lines.append(f"  {int(_r['Cuotas'])} cuota(s): {int(_r['Ordenes'])} órdenes — ${_r['Fact']:,.0f}")
+                lines.append("")
+
+                # Gastos fijos
+                lines.append("--- GASTOS FIJOS MENSUALES ---")
+                _total_gf = 0
+                if _gastos_gs:
+                    for _k, _v in _gastos_gs.items():
+                        if isinstance(_v, (int, float)) and _v > 0:
+                            lines.append(f"  {_k}: ${_v:,.0f}")
+                            _total_gf += _v
+                    lines.append(f"  TOTAL mensual: ${_total_gf:,.0f}")
+                    lines.append(f"  Prorrateado ({_dias_p}d): ${round(_total_gf * _dias_p / 30):,.0f}")
+                lines.append("")
+
+                # Resultado financiero
+                lines.append("--- RESULTADO FINANCIERO ---")
+                _costo_prods = 0
+                for _pn, _ps in _prod_stats.items():
+                    _costo_prods += get_costo_total_usd(_pn, _costos_gs) * _tc * _ps["uds"]
+                _iva = _fact_bruta * 0.105
+                _gf_per = round(_total_gf * _dias_p / 30)
+                _margen_b = _neto - _costo_prods - _envios
+                _resultado = _margen_b - _iva - _gf_per
+
+                lines.append(f"  Facturación bruta:  ${_fact_bruta:>12,.0f}")
+                lines.append(f"  - Comisiones PN:    ${_total_comision:>12,.0f}")
+                lines.append(f"  = Neto cobrado:     ${_neto:>12,.0f}")
+                lines.append(f"  - Costo productos:  ${_costo_prods:>12,.0f}")
+                lines.append(f"  - Costo envíos:     ${_envios:>12,.0f}")
+                lines.append(f"  = Margen bruto:     ${_margen_b:>12,.0f}")
+                lines.append(f"  - IVA (10.5%):      ${_iva:>12,.0f}")
+                lines.append(f"  - Gastos fijos:     ${_gf_per:>12,.0f}")
+                lines.append(f"  = RESULTADO:        ${_resultado:>12,.0f} {'✅' if _resultado >= 0 else '🔴'}")
+                if _fact_bruta > 0:
+                    lines.append(f"  Margen neto/bruto:  {_resultado/_fact_bruta*100:.1f}%")
+                lines.append("")
+
+                # Stock
+                _stock_df = st.session_state.get("stock_tn")
+                if _stock_df is not None and not _stock_df.empty:
+                    lines.append("--- STOCK ACTUAL ---")
+                    _stock_sum = _stock_df.groupby("Producto").agg(
+                        Stock=("Stock", lambda x: sum(v for v in x if isinstance(v, (int, float)))),
+                    ).reset_index().sort_values("Stock")
+                    for _, _r in _stock_sum.iterrows():
+                        _pn = _r["Producto"]
+                        _st = int(_r["Stock"])
+                        _vel = _prod_stats.get(_pn, {}).get("uds", 0) / _dias_p
+                        _dr = int(_st / _vel) if _vel > 0 else 999
+                        _alert = " ⚠️" if _dr <= 14 else ""
+                        lines.append(f"{_pn:<45} stock:{_st:>4}  vel:{_vel:.2f}/día  {_dr}d{_alert}")
+                    lines.append("")
+
+                # Costos cargados
+                if _costos_gs:
+                    lines.append("--- COSTOS DE CONSOLAS ---")
+                    _ckg = float(_costos_gs.get("_costo_kg_usd", 65.0) or 65.0)
+                    for _k, _v in sorted(_costos_gs.items()):
+                        if _k.startswith("_") or not isinstance(_v, dict):
+                            continue
+                        _fob = float(_v.get("fob_usd", 0) or 0)
+                        _tot = float(_v.get("costo_total_usd", 0) or 0)
+                        if _tot == 0 and _fob > 0:
+                            _tot = _fob + float(_v.get("peso_kg", 0) or 0) * _ckg
+                        if _fob > 0:
+                            lines.append(f"{_k:<40} FOB ${_fob:.0f}  Total ${_tot:.0f}  ARS ${_tot*_tc:,.0f}")
+                    lines.append("")
+
+                # Top clientes
+                lines.append("--- TOP 10 CLIENTES ---")
+                _top_cli = df_tn.groupby("Cliente").agg(
+                    Ords=("Orden", "count"), Fact=("Total ($)", "sum"),
+                ).reset_index().sort_values("Fact", ascending=False).head(10)
+                for _, _r in _top_cli.iterrows():
+                    lines.append(f"  {_r['Cliente']}: {int(_r['Ords'])} ord — ${_r['Fact']:,.0f}")
+                lines.append("")
+
+                # Días de la semana
+                lines.append("--- VENTAS POR DÍA DE SEMANA ---")
+                try:
+                    _dfw = df_tn.copy()
+                    _dfw["DOW"] = pd.to_datetime(_dfw["Fecha"]).dt.day_name()
+                    _labels = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles",
+                               "Thursday": "Jueves", "Friday": "Viernes", "Saturday": "Sábado", "Sunday": "Domingo"}
+                    _dow = _dfw.groupby("DOW").agg(Ords=("Orden", "count"), Fact=("Total ($)", "sum")).reset_index()
+                    _dow["DOW"] = pd.Categorical(_dow["DOW"], categories=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"], ordered=True)
+                    for _, _r in _dow.sort_values("DOW").iterrows():
+                        lines.append(f"  {_labels.get(_r['DOW'], _r['DOW'])}: {int(_r['Ords'])} órd — ${_r['Fact']:,.0f}")
+                except Exception:
+                    pass
+
+                return "\n".join(lines)
+
+            # ── Llamar a Claude API ──
+            def _call_analyst(question, history=None):
+                context = _build_analyst_context()
+                system_prompt = f"""Sos el analista financiero de Market Gamer, un e-commerce argentino de consolas retro portátiles (Anbernic, Powkiddy, Trimui, Miyoo).
+
+Tu trabajo es analizar los datos del negocio y dar insights accionables. Respondé en español argentino, directo y sin relleno.
+
+REGLAS:
+- Basate EXCLUSIVAMENTE en los datos proporcionados. No inventes números.
+- Formato argentino para montos ($XXX.XXX).
+- Detectá problemas y oportunidades con recomendaciones concretas.
+- Si no hay datos suficientes, decilo.
+- Priorizá insights accionables sobre descripciones obvias.
+- Emojis para alertas: 🔴 problema, 🟡 atención, 🟢 bien, 💡 oportunidad.
+- Si piden análisis general: performance, productos estrella, alertas, medios de pago, 3 recomendaciones.
+
+DATOS DEL NEGOCIO:
+{context}"""
+
+                messages = []
+                if history:
+                    for msg in history:
+                        messages.append({"role": msg["role"], "content": msg["content"]})
+                messages.append({"role": "user", "content": question})
+
+                try:
+                    response = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "Content-Type": "application/json",
+                            "x-api-key": ANTHROPIC_KEY,
+                            "anthropic-version": "2023-06-01",
+                        },
+                        json={
+                            "model": "claude-sonnet-4-20250514",
+                            "max_tokens": 4096,
+                            "system": system_prompt,
+                            "messages": messages,
+                        },
+                        timeout=60,
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        return data["content"][0]["text"]
+                    elif response.status_code == 401:
+                        return "🔴 API key inválida. Revisá ANTHROPIC_KEY en secrets."
+                    elif response.status_code == 429:
+                        return "🟡 Rate limit. Esperá unos segundos."
+                    else:
+                        return f"🔴 Error ({response.status_code}): {response.text[:200]}"
+                except requests.exceptions.Timeout:
+                    return "🟡 Timeout. Probá con algo más específico."
+                except Exception as e:
+                    return f"🔴 Error de conexión: {str(e)}"
+
+            # ── Preguntas rápidas predefinidas ──
+            PREGUNTAS_RAPIDAS = {
+                "📊 Resumen ejecutivo": (
+                    "Haceme un resumen ejecutivo completo del período. Incluí: "
+                    "1) Performance general (facturación, tendencia, ticket promedio), "
+                    "2) Top 5 productos por revenue y por margen, "
+                    "3) Alertas críticas (stock, márgenes negativos, productos que no se venden), "
+                    "4) Análisis de medios de pago y su impacto en rentabilidad, "
+                    "5) 3 recomendaciones priorizadas con impacto estimado."
+                ),
+                "🏆 Productos estrella": (
+                    "Clasificá los productos en: ESTRELLAS (alto volumen + alto margen), "
+                    "VACAS (alto volumen + bajo margen), OPORTUNIDADES (bajo volumen + alto margen), "
+                    "PERROS (bajo volumen + bajo margen). Para cada uno, qué acción tomar."
+                ),
+                "💳 Impacto cuotas": (
+                    "Analizá cómo los medios de pago impactan en rentabilidad: "
+                    "% en cuotas vs débito, margen perdido por cuotas, productos con margen negativo en cuotas, "
+                    "y si conviene incentivar transferencia/débito con descuento."
+                ),
+                "📦 Riesgo stock": (
+                    "Analizá riesgo de stock: qué se agota primero, sobrestock, "
+                    "qué pedir urgente con cantidades para 30 días."
+                ),
+                "📈 Tendencia": (
+                    "Analizá tendencias: ventas subiendo/bajando, mejores días de semana, "
+                    "productos ganando/perdiendo tracción, proyección mensual, "
+                    "órdenes/día necesarias para cubrir gastos fijos."
+                ),
+                "💰 Punto equilibrio": (
+                    "Calculá punto de equilibrio: facturación mínima mensual, "
+                    "unidades necesarias, órdenes/día mínimas, "
+                    "y si estoy arriba o abajo en este período."
+                ),
+                "🔍 Márgenes": (
+                    "Diagnóstico de márgenes: margen promedio ponderado, productos con margen <10%, "
+                    "desglose top 5 (precio/costo/comisión/IVA/envío/margen), "
+                    "dónde se escapa la plata, impacto de subir precios 5-10%."
+                ),
+            }
+
+            # ── Preview de datos ──
+            with st.expander("📋 Ver datos que recibe el analista", expanded=False):
+                _ctx_preview = _build_analyst_context()
+                st.text(_ctx_preview)
+                st.caption(f"📏 {len(_ctx_preview)} caracteres · ~{len(_ctx_preview)//4} tokens")
+
+            # ── Botones de análisis rápido ──
+            st.markdown("### ⚡ Análisis rápidos")
+
+            _cols1 = st.columns(4)
+            _cols2 = st.columns(4)
+            _all_cols = _cols1 + _cols2
+            _items = list(PREGUNTAS_RAPIDAS.items())
+
+            for _i, (_label, _question) in enumerate(_items):
+                if _i < len(_all_cols):
+                    with _all_cols[_i]:
+                        if st.button(_label, key=f"quick_{_i}", use_container_width=True):
+                            st.session_state.analyst_messages.append(
+                                {"role": "user", "content": _question}
+                            )
+                            with st.spinner("🤖 Analizando..."):
+                                _resp = _call_analyst(
+                                    _question,
+                                    st.session_state.analyst_messages[:-1],
+                                )
+                            st.session_state.analyst_messages.append(
+                                {"role": "assistant", "content": _resp}
+                            )
+                            st.rerun()
+
+            st.divider()
+
+            # ── Chat ──
+            st.markdown("### 💬 Conversación")
+
+            if not st.session_state.analyst_messages:
+                st.info(
+                    "👆 Usá un análisis rápido o escribí tu pregunta abajo.\n\n"
+                    "**Ejemplos:** *¿Cuál es mi producto más rentable?* · "
+                    "*¿Cuánto me cuesta Pago Nube en promedio?* · "
+                    "*¿Qué consola debería dejar de vender?* · "
+                    "*Si subo precios 10%, ¿cómo cambia el resultado?*"
+                )
+
+            for _msg in st.session_state.analyst_messages:
+                with st.chat_message(_msg["role"], avatar="🧑‍💼" if _msg["role"] == "user" else "🤖"):
+                    st.markdown(_msg["content"])
+
+            _user_input = st.chat_input("Preguntale al analista...")
+
+            if _user_input:
+                st.session_state.analyst_messages.append(
+                    {"role": "user", "content": _user_input}
+                )
+                with st.chat_message("user", avatar="🧑‍💼"):
+                    st.markdown(_user_input)
+                with st.chat_message("assistant", avatar="🤖"):
+                    with st.spinner("🤖 Analizando datos..."):
+                        _resp = _call_analyst(
+                            _user_input,
+                            st.session_state.analyst_messages[:-1],
+                        )
+                    st.markdown(_resp)
+                st.session_state.analyst_messages.append(
+                    {"role": "assistant", "content": _resp}
+                )
+
+            # ── Controles ──
+            st.divider()
+            _cc1, _cc2, _cc3 = st.columns(3)
+            with _cc1:
+                if st.button("🗑️ Limpiar conversación", use_container_width=True):
+                    st.session_state.analyst_messages = []
+                    st.rerun()
+            with _cc2:
+                if st.session_state.analyst_messages:
+                    _chat_txt = "\n\n".join(
+                        f"{'👤 Bruno' if m['role'] == 'user' else '🤖 Analista'}: {m['content']}"
+                        for m in st.session_state.analyst_messages
+                    )
+                    st.download_button(
+                        "⬇️ Exportar conversación",
+                        _chat_txt.encode("utf-8"),
+                        f"analisis_mg_{fecha_desde}_{fecha_hasta}.txt",
+                        "text/plain",
+                        use_container_width=True,
+                    )
+            with _cc3:
+                if st.button("🔄 Refrescar datos", use_container_width=True):
+                    st.session_state.analyst_context = ""
+                    st.rerun()
 
 else:
     st.info("👈 Seleccioná el período en el panel izquierdo y hacé clic en Buscar.")
