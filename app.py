@@ -2874,56 +2874,77 @@ if st.session_state.df_tn is not None:
                 st.info("No hay productos cargados en los catálogos.")
                 return
 
-            if buscar:
+            # Buscar solo cuando no hay filtro TN (si hay filtro TN, se aplica al final)
+            if buscar and not solo_stock:
                 df_fuzzy = df_fuzzy[
                     df_fuzzy["Producto"].str.contains(buscar, case=False, na=False)
                 ]
 
-            # Filtro por stock de TiendaNube — carga automática con cache 5 min
+            # Filtro "Solo mis productos" — parte desde TN y agrega precios de proveedor
             if solo_stock:
-                with st.spinner("Consultando stock en Tienda Nube…"):
+                with st.spinner("Consultando TiendaNube…"):
                     _stock_dict = get_stock_for_planner()
 
                 if _stock_dict:
-                    from difflib import SequenceMatcher as _SM
+                    _EXCLUIR   = ("estuche", "funda", "case", "protector", "cable", "adaptador")
+                    _MARCAS_TN = ("anbernic", "powkiddy", "miyoo", "trimui", "retroid")
 
-                    # Excluir accesorios (estuches, fundas, etc.) del matching
-                    # para evitar falsos positivos: una consola no debe matchear
-                    # solo porque existe su estuche en TN.
-                    _ACCESORIOS_EXCLUIR = ("estuche", "funda", "case", "protector")
-                    _stock_consolas = {
-                        tn: qty for tn, qty in _stock_dict.items()
-                        if not any(tn.lower().startswith(a) for a in _ACCESORIOS_EXCLUIR)
+                    # Solo consolas de TN (sin accesorios)
+                    _tn_consolas = {
+                        tn_name: qty
+                        for tn_name, qty in _stock_dict.items()
+                        if any(m in tn_name.lower() for m in _MARCAS_TN)
+                        and not any(tn_name.lower().startswith(e) for e in _EXCLUIR)
                     }
-
-                    # Pre-normalizar nombres de TN una sola vez
-                    _tn_norms = {
-                        re.sub(r'[^a-z0-9]', '', tn.lower()): (tn, qty)
-                        for tn, qty in _stock_consolas.items()
+                    # Lookup: norm → nombre original de TN
+                    _tn_norm_map = {
+                        re.sub(r'[^a-z0-9]', '', tn.lower()): tn
+                        for tn in _tn_consolas
                     }
+                    _tn_norms = list(_tn_norm_map.keys())
 
-                    def _has_stock(pname):
-                        # Normalizar nombre del catálogo (sin variante de storage)
+                    def _supplier_norm(pname):
+                        """Normaliza nombre del proveedor quitando spec de storage."""
                         cleaned = re.sub(r'\s*\d+\+\d+\s*gb.*', '', pname, flags=re.IGNORECASE).strip()
-                        cat_norm = re.sub(r'[^a-z0-9]', '', cleaned.lower())
-                        # También probar con marca prefijada
-                        brand = _get_brand(pname)
-                        cat_norm_branded = re.sub(r'[^a-z0-9]', '', (brand + cleaned).lower()) if brand != "—" else cat_norm
+                        return re.sub(r'[^a-z0-9]', '', cleaned.lower())
 
-                        for tn_norm, (tn_name, qty) in _tn_norms.items():
-                            # Mostrar todos los productos de TN (con o sin stock)
-                            # 1. Substring: "rg35xxh" dentro de "anbernicrg35xxh"
-                            if cat_norm and (cat_norm in tn_norm or tn_norm in cat_norm):
-                                return True
-                            # 2. Substring con marca prefijada
-                            if cat_norm_branded and cat_norm_branded in tn_norm:
-                                return True
-                            # 3. Fuzzy fallback
-                            if _SM(None, cat_norm, tn_norm).ratio() >= 0.82:
-                                return True
-                        return False
+                    def _find_tn_match(pname):
+                        """Devuelve el nombre TN que matchea pname, o None."""
+                        cat = _supplier_norm(pname)
+                        if not cat:
+                            return None
+                        for tn in _tn_norms:
+                            if cat in tn or tn in cat:
+                                return _tn_norm_map[tn]
+                        return None
 
-                    df_fuzzy = df_fuzzy[df_fuzzy["Producto"].apply(_has_stock)]
+                    # Paso 1: marcar qué productos del catálogo de proveedor tienen match en TN
+                    _matched_tn = set()
+                    _prov_matched = []
+                    for pname in df_fuzzy["Producto"].tolist():
+                        m = _find_tn_match(pname)
+                        if m:
+                            _matched_tn.add(m)
+                            _prov_matched.append(pname)
+
+                    df_matched = df_fuzzy[df_fuzzy["Producto"].isin(_prov_matched)]
+
+                    # Paso 2: productos de TN sin proveedor → filas nuevas con precios vacíos
+                    _sup_cols = [c for c in df_fuzzy.columns if c != "Producto"]
+                    _extra = [
+                        {"Producto": tn_name, **{c: None for c in _sup_cols}}
+                        for tn_name in _tn_consolas
+                        if tn_name not in _matched_tn
+                    ]
+                    if _extra:
+                        df_extra = pd.DataFrame(_extra)
+                        df_fuzzy = pd.concat([df_matched, df_extra], ignore_index=True).sort_values("Producto").reset_index(drop=True)
+                    else:
+                        df_fuzzy = df_matched.sort_values("Producto").reset_index(drop=True)
+
+                    # Aplicar búsqueda de texto también a los nuevos
+                    if buscar:
+                        df_fuzzy = df_fuzzy[df_fuzzy["Producto"].str.contains(buscar, case=False, na=False)]
                 else:
                     st.caption("⚠️ No se pudo conectar con Tienda Nube.")
 
