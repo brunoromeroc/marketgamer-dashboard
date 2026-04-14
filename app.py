@@ -2421,45 +2421,111 @@ if st.session_state.df_tn is not None:
             elif ext.endswith(".pdf"):
                 try:
                     import pdfplumber
-                    # Formato PDF de Anne (Qbuy): cada producto ocupa 2 filas en la tabla:
-                    #   Fila header: [model_name, "Speicification", "Color", "Price(USD)", ""]
-                    #   Fila data:   [""/None,    specs_text,       colores, precio,       storage]
-                    # El nombre del modelo está en col 0 de la fila header.
-                    # El precio está en col 3 de la fila data siguiente.
-                    current_model = None
-                    SPEC_KEYWORDS = {"speicification", "specification", "price(usd)", "color"}
                     with pdfplumber.open(uploaded_file) as pdf:
+                        all_tables = []
                         for page in pdf.pages:
-                            tables = page.extract_tables()
-                            for table in tables:
-                                for row in table:
-                                    if not row:
-                                        continue
-                                    cells = [str(c).strip() if c else "" for c in row]
-                                    col0 = cells[0] if cells else ""
-                                    col1 = cells[1].lower() if len(cells) > 1 else ""
-                                    col3 = cells[3] if len(cells) > 3 else ""
-                                    col4 = cells[4] if len(cells) > 4 else ""
+                            all_tables.extend(page.extract_tables())
 
-                                    # Fila header: col0 tiene el nombre del modelo (tomar solo la primera línea)
-                                    if col0 and any(kw in col1 for kw in SPEC_KEYWORDS):
-                                        current_model = col0.split("\n")[0].strip()
-                                        continue
+                    # Auto-detectar formato: Anbernic (EXW SZ) vs Anne/Qbuy (Price(USD))
+                    def _detect_pdf_format(tables):
+                        for table in tables:
+                            for row in table:
+                                if not row:
+                                    continue
+                                cells = [str(c).strip().lower() if c else "" for c in row]
+                                row_text = " ".join(cells)
+                                if "exw" in row_text:
+                                    return "anbernic"
+                                if "price(usd)" in row_text or "speicification" in row_text or "specification" in row_text:
+                                    return "anne"
+                        return "anne"  # default
 
-                                    # Fila data: col0 vacío, col3 tiene el precio
-                                    if current_model and not col0:
-                                        try:
-                                            val = float(col3.replace("$", "").replace(",", "").strip())
-                                            if 1 < val < 5000:
-                                                storage = col4.strip() if col4.strip() else "—"
-                                                raw_rows.append({
-                                                    "Producto": current_model,
-                                                    "FOB (USD)": val,
-                                                    "Marca": "—", "Pantalla": "—", "CPU": "—", "Storage": storage,
-                                                })
-                                                current_model = None  # consumido, esperar el próximo header
-                                        except ValueError:
-                                            pass
+                    pdf_format = _detect_pdf_format(all_tables)
+
+                    if pdf_format == "anbernic":
+                        # Formato Anbernic: header solo en página 1, resto son filas de datos directas
+                        # ITEM | Specification | Pictures | OEM (MOQ) | MOQ (pcs) | EXW SZ | Quotation Mode | Package
+                        import re as _re
+                        item_col, price_col = 0, 5  # defaults confirmados por el header de pag 1
+                        # Buscar header para confirmar índices de columnas
+                        for table in all_tables:
+                            for row in table:
+                                if not row:
+                                    continue
+                                cells_lower = [str(c).strip().lower() if c else "" for c in row]
+                                if any("exw" in c for c in cells_lower):
+                                    for i, c in enumerate(cells_lower):
+                                        if c == "item":
+                                            item_col = i
+                                        if "exw" in c:
+                                            price_col = i
+                                    break
+                            else:
+                                continue
+                            break
+
+                        SKIP_VALUES = {"item", ""}
+                        for table in all_tables:
+                            for row in table:
+                                if not row:
+                                    continue
+                                cells = [str(c).strip() if c else "" for c in row]
+                                model = cells[item_col] if item_col < len(cells) else ""
+                                price_raw = cells[price_col] if price_col < len(cells) else ""
+                                if not model or not price_raw:
+                                    continue
+                                model_clean = model.split("\n")[0].strip()
+                                if model_clean.lower() in SKIP_VALUES:
+                                    continue
+                                # Extraer precio: "US$29.00", "$234.00", "8+128GB: US$201.00"
+                                m = _re.search(r'(?:US)?\$\s*([\d,]+\.?\d*)', price_raw)
+                                if not m:
+                                    continue
+                                try:
+                                    val = float(m.group(1).replace(",", ""))
+                                    if 1 < val < 5000:
+                                        raw_rows.append({
+                                            "Producto": model_clean,
+                                            "FOB (USD)": val,
+                                            "Marca": "Anbernic", "Pantalla": "—", "CPU": "—", "Storage": "—",
+                                        })
+                                except ValueError:
+                                    pass
+
+                    else:
+                        # Formato Anne (Qbuy): cada producto ocupa 2 filas en la tabla:
+                        #   Fila header: [model_name, "Speicification", "Color", "Price(USD)", ""]
+                        #   Fila data:   [""/None,    specs_text,       colores, precio,       storage]
+                        current_model = None
+                        SPEC_KEYWORDS = {"speicification", "specification", "price(usd)", "color"}
+                        for table in all_tables:
+                            for row in table:
+                                if not row:
+                                    continue
+                                cells = [str(c).strip() if c else "" for c in row]
+                                col0 = cells[0] if cells else ""
+                                col1 = cells[1].lower() if len(cells) > 1 else ""
+                                col3 = cells[3] if len(cells) > 3 else ""
+                                col4 = cells[4] if len(cells) > 4 else ""
+
+                                if col0 and any(kw in col1 for kw in SPEC_KEYWORDS):
+                                    current_model = col0.split("\n")[0].strip()
+                                    continue
+
+                                if current_model and not col0:
+                                    try:
+                                        val = float(col3.replace("$", "").replace(",", "").strip())
+                                        if 1 < val < 5000:
+                                            storage = col4.strip() if col4.strip() else "—"
+                                            raw_rows.append({
+                                                "Producto": current_model,
+                                                "FOB (USD)": val,
+                                                "Marca": "—", "Pantalla": "—", "CPU": "—", "Storage": storage,
+                                            })
+                                            current_model = None
+                                    except ValueError:
+                                        pass
+
                 except ImportError:
                     st.warning("⚠️ `pdfplumber` no instalado. Usá CSV/Excel en su lugar.")
                     return {}
