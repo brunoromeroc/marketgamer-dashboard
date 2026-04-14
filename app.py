@@ -3660,7 +3660,7 @@ DATOS DEL NEGOCIO:
                             "anthropic-version": "2023-06-01",
                         },
                         json={
-                            "model": "claude-3-5-sonnet-20241022",
+                            "model": "claude-sonnet-4-6-20250217",
                             "max_tokens": 4096,
                             "system": system_prompt,
                             "messages": messages,
