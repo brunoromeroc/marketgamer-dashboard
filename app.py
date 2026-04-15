@@ -10,8 +10,7 @@ import re
 import urllib.parse
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Dashboard Market Gamer", layout="wide")
-st.title("🎮 Dashboard de Ventas - Market Gamer")
+st.set_page_config(page_title="Dashboard Market Gamer", layout="wide", page_icon="🎮")
 
 TN_TOKEN = st.secrets["TN_TOKEN"]
 TN_STORE_ID = st.secrets["TN_STORE_ID"]
@@ -954,10 +953,10 @@ SECCIONES = [
 ]
 
 with st.sidebar:
+    st.markdown("#### Market Gamer")
     seccion = st.radio("Navegación", SECCIONES, index=0, label_visibility="collapsed")
     st.divider()
-    st.header("📅 Período")
-    periodo = st.radio("Seleccionar período", ["Este mes", "Mes anterior", "Esta semana", "Personalizado"], index=0)
+    periodo = st.radio("Período", ["Este mes", "Mes anterior", "Esta semana", "Personalizado"], index=0)
     hoy = date.today()
     if periodo == "Este mes":
         fecha_desde = hoy.replace(day=1)
@@ -974,8 +973,8 @@ with st.sidebar:
         fecha_hasta = st.date_input("Hasta", value=hoy)
 
     if periodo != "Personalizado":
-        st.info(f"📆 {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
-    buscar = st.button("🔍 Buscar", use_container_width=True)
+        st.caption(f"{fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
+    buscar = st.button("Actualizar datos", use_container_width=True)
 
 # ── Búsqueda ───────────────────────────────────────────────────────────────────
 if buscar:
@@ -1112,36 +1111,40 @@ if st.session_state.df_tn is not None:
     # TAB 1: DASHBOARD
     # ══════════════════════════════════════════════════════════════════════════
     if seccion == "📊 Dashboard":
-        st.subheader("🛍️ Tienda Nube")
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
+            # ── Helper: truncar nombres largos de productos para gráficos ──
+            def _truncar(nombre, max_len=35):
+                return nombre if len(nombre) <= max_len else nombre[:max_len].rstrip() + "…"
+
             # ── Costo ponderado de comisión PN ──
             total_facturado = df_tn["Total ($)"].sum()
             total_comision = df_tn["Comision PN ($)"].sum()
+            neto_cobrado = df_tn["Neto cobrado ($)"].sum()
+            margen_total = df_tn["Margen ($)"].sum()
             costo_ponderado_pn = round(total_comision / total_facturado * 100, 2) if total_facturado > 0 else 0
 
-            k1, k2, k3, k4, k5, k6 = st.columns(6)
+            # ── KPIs: 3 + 3 ──
+            k1, k2, k3 = st.columns(3)
             k1.metric("Ordenes", len(df_tn))
-            k2.metric("Facturación bruta", fmt(total_facturado))
-            k3.metric("Comisión PN", fmt(total_comision))
-            k4.metric("Neto cobrado", fmt(df_tn["Neto cobrado ($)"].sum()))
+            k2.metric("Facturación", fmt(total_facturado))
+            k3.metric("Neto cobrado", fmt(neto_cobrado))
+
+            k4, k5, k6 = st.columns(3)
+            k4.metric("Comisión PN", fmt(total_comision))
             k5.metric(
                 "Margen total",
-                fmt(df_tn["Margen ($)"].sum()),
-                help="⚠️ Usa el campo 'cost' de TN (puede estar en 0). Para margen real usá la solapa Salud Financiera.",
+                fmt(margen_total),
+                help="Neto cobrado - Costo (campo cost de TN) - Envío. Si no cargaste costos en TN, el margen aparece inflado. Usá Salud Financiera para margen real con FOB.",
             )
             k6.metric(
-                "Costo PN ponderado",
+                "Costo PN",
                 f"{costo_ponderado_pn:.2f}%",
                 help="Comisión total PN / Facturación bruta. Promedio real ponderado por monto.",
             )
 
-            st.caption(
-                "ℹ️ **Margen total**: se calcula como Neto cobrado − Costo productos (campo `cost` de TN) − Envío. "
-                "Si no cargaste costos en TN, el margen aparece inflado. "
-                "Usá la solapa **💚 Salud Financiera** para el margen real con costos FOB."
-            )
+            st.markdown("")  # spacing
 
             # ── Ventas por día (LÍNEA) + Top 10 por unidades ──
             col_a, col_b = st.columns(2)
@@ -1153,12 +1156,16 @@ if st.session_state.df_tn is not None:
                     markers=True,
                     color_discrete_sequence=["#009EE3"],
                 )
-                fig_dia.update_layout(yaxis_tickformat="$,.0f")
+                fig_dia.update_layout(
+                    yaxis_tickformat="$,.0f",
+                    margin=dict(l=0, r=16, t=40, b=0),
+                    title_font_size=14,
+                )
                 fig_dia.update_traces(
                     line=dict(width=3),
-                    marker=dict(size=8),
+                    marker=dict(size=7),
                     fill="tozeroy",
-                    fillcolor="rgba(0, 158, 227, 0.1)",
+                    fillcolor="rgba(0, 158, 227, 0.08)",
                 )
                 st.plotly_chart(fig_dia, use_container_width=True)
 
@@ -1172,23 +1179,28 @@ if st.session_state.df_tn is not None:
                 if top_prods:
                     df_tp = pd.DataFrame(list(top_prods.items()), columns=["Producto", "Unidades"])
                     df_tp = df_tp.sort_values("Unidades", ascending=False).head(10)
+                    df_tp["Label"] = df_tp["Producto"].apply(_truncar)
                     fig_tp = px.bar(
-                        df_tp, x="Unidades", y="Producto", orientation="h",
+                        df_tp, x="Unidades", y="Label", orientation="h",
                         title="Top 10 productos (unidades)",
                         color="Unidades",
                         color_continuous_scale=["#00C49F", "#009EE3"],
                         text="Unidades",
+                        custom_data=["Producto"],
                     )
                     fig_tp.update_layout(
-                        yaxis={"categoryorder": "total ascending"},
+                        yaxis={"categoryorder": "total ascending", "title": ""},
                         coloraxis_showscale=False,
-                        margin=dict(l=10, r=10),
+                        margin=dict(l=0, r=40, t=40, b=0),
+                        title_font_size=14,
                     )
-                    fig_tp.update_traces(textposition="outside", textfont_size=13)
+                    fig_tp.update_traces(
+                        textposition="outside", textfont_size=12,
+                        hovertemplate="<b>%{customdata[0]}</b><br>%{x} unidades<extra></extra>",
+                    )
                     st.plotly_chart(fig_tp, use_container_width=True)
 
-            # ── Top 10 por facturación + Pie comisiones ──
-            st.divider()
+            # ── Top 10 por facturación + Donut comisiones ──
             col_rev1, col_rev2 = st.columns(2)
             with col_rev1:
                 top_revenue = {}
@@ -1201,24 +1213,30 @@ if st.session_state.df_tn is not None:
                     df_rev = pd.DataFrame(list(top_revenue.items()), columns=["Producto", "Monto ($)"])
                     df_rev["Monto ($)"] = df_rev["Monto ($)"].round(0)
                     df_rev = df_rev.sort_values("Monto ($)", ascending=False).head(10)
+                    df_rev["Label"] = df_rev["Producto"].apply(_truncar)
                     fig_rev = px.bar(
-                        df_rev, x="Monto ($)", y="Producto", orientation="h",
-                        title="Top 10 productos (facturación $)",
+                        df_rev, x="Monto ($)", y="Label", orientation="h",
+                        title="Top 10 productos (facturación)",
                         color="Monto ($)",
                         color_continuous_scale=["#FFD700", "#FF5733"],
                         text="Monto ($)",
+                        custom_data=["Producto"],
                     )
                     fig_rev.update_layout(
-                        yaxis={"categoryorder": "total ascending"},
+                        yaxis={"categoryorder": "total ascending", "title": ""},
                         xaxis_tickformat="$,.0f",
                         coloraxis_showscale=False,
-                        margin=dict(l=10, r=10),
+                        margin=dict(l=0, r=40, t=40, b=0),
+                        title_font_size=14,
                     )
-                    fig_rev.update_traces(texttemplate="$%{x:,.0f}", textposition="outside", textfont_size=13)
+                    fig_rev.update_traces(
+                        texttemplate="$%{x:,.0f}", textposition="outside", textfont_size=12,
+                        hovertemplate="<b>%{customdata[0]}</b><br>$%{x:,.0f}<extra></extra>",
+                    )
                     st.plotly_chart(fig_rev, use_container_width=True)
 
             with col_rev2:
-                # ── Pie chart comisiones por medio de pago ──
+                # ── Donut comisiones por medio de pago ──
                 comis_medio = df_tn.groupby("Medio de Pago").agg(
                     Ordenes=("Orden", "count"),
                     Facturacion=("Total ($)", "sum"),
@@ -1230,19 +1248,23 @@ if st.session_state.df_tn is not None:
                     comis_medio, names="Medio de Pago", values="Comision",
                     title="Comisiones PN por medio de pago",
                     color_discrete_sequence=COLORES,
-                    hole=0.35,
+                    hole=0.4,
                 )
                 fig_pie_com.update_traces(
-                    textinfo="label+value+percent",
-                    texttemplate="<b>%{label}</b><br>$%{value:,.0f}<br>(%{percent})",
-                    textfont_size=12,
-                    pull=[0.03] * len(comis_medio),
+                    textinfo="percent",
+                    textfont_size=11,
+                    hovertemplate="<b>%{label}</b><br>$%{value:,.0f} (%{percent})<extra></extra>",
+                    pull=[0.02] * len(comis_medio),
                 )
-                fig_pie_com.update_layout(showlegend=False)
+                fig_pie_com.update_layout(
+                    showlegend=True,
+                    legend=dict(font_size=11, orientation="h", y=-0.15, x=0.5, xanchor="center"),
+                    margin=dict(l=0, r=0, t=40, b=40),
+                    title_font_size=14,
+                )
                 st.plotly_chart(fig_pie_com, use_container_width=True)
 
-            # ── Transacciones por medio de pago ──
-            st.divider()
+            # ── Transacciones por medio de pago + Tabla comisiones ──
             col_tx1, col_tx2 = st.columns(2)
             with col_tx1:
                 tx_medio = df_tn.groupby("Medio de Pago")["Orden"].count().reset_index()
@@ -1252,18 +1274,20 @@ if st.session_state.df_tn is not None:
                     title="Transacciones por medio de pago",
                     color_discrete_sequence=["#009EE3"], text="Transacciones")
                 fig_tx.update_traces(textposition="outside")
+                fig_tx.update_layout(
+                    margin=dict(l=0, r=16, t=40, b=0),
+                    title_font_size=14,
+                )
                 st.plotly_chart(fig_tx, use_container_width=True)
 
             with col_tx2:
-                # Tabla resumen comisiones
                 comis_fmt = comis_medio.copy()
                 comis_fmt["Facturacion"] = comis_fmt["Facturacion"].apply(fmt)
                 comis_fmt["Comision"] = comis_fmt["Comision"].apply(fmt)
                 comis_fmt["Costo %"] = comis_fmt["Costo %"].apply(fmt_pct)
-                comis_fmt.columns = ["Medio de Pago", "Órdenes", "Facturación", "Comisión PN", "Costo %"]
-                st.markdown("**Detalle comisiones por medio de pago**")
+                comis_fmt.columns = ["Medio de Pago", "Ordenes", "Facturación", "Comisión PN", "Costo %"]
+                st.markdown(f"**Detalle comisiones** — Costo PN ponderado: **{costo_ponderado_pn:.2f}%**")
                 st.dataframe(comis_fmt, use_container_width=True, hide_index=True)
-                st.caption(f"📊 **Costo ponderado total PN: {costo_ponderado_pn:.2f}%** (comisión real promedio sobre facturación)")
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 2: DETALLE Y AJUSTES
