@@ -939,7 +939,23 @@ if "tipo_cambio_sf" not in st.session_state:
     st.session_state.tipo_cambio_sf = None
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
+SECCIONES = [
+    "📊 Dashboard",
+    "🔍 Detalle y ajustes",
+    "💚 Salud Financiera",
+    "📦 Stock",
+    "🔥 Velocidad de ventas",
+    "🏗️ Gastos fijos",
+    "💻 Costos de consolas",
+    "📐 Margen teórico",
+    "📈 Margen real",
+    "🏭 Proveedores",
+    "🤖 Analista IA",
+]
+
 with st.sidebar:
+    seccion = st.radio("Navegación", SECCIONES, index=0, label_visibility="collapsed")
+    st.divider()
     st.header("📅 Período")
     periodo = st.radio("Seleccionar período", ["Este mes", "Mes anterior", "Esta semana", "Personalizado"], index=0)
     hoy = date.today()
@@ -989,30 +1005,113 @@ if buscar:
     st.session_state.ordenes_efectivo = set()
     st.session_state.ids_venta_local = set()
 
-# ── TABS ───────────────────────────────────────────────────────────────────────
+# ── Auto-carga del mes actual en primera visita ──────────────────────────────
+if st.session_state.df_tn is None:
+    with st.spinner("Cargando datos del mes actual..."):
+        orders = get_tn_orders(fecha_desde, fecha_hasta)
+        if orders:
+            orders_filtrados = []
+            for o in orders:
+                try:
+                    dt = pd.to_datetime(o.get("created_at", ""))
+                    if dt.tzinfo:
+                        dt = dt.tz_convert(None)
+                    if fecha_desde <= dt.date() <= fecha_hasta:
+                        orders_filtrados.append(o)
+                except Exception:
+                    orders_filtrados.append(o)
+            orders = orders_filtrados
+            st.session_state.df_tn = procesar_orders(orders)
+            st.session_state.orders_raw = orders
+        else:
+            st.session_state.df_tn = pd.DataFrame()
+            st.session_state.orders_raw = []
+
+        pagos = get_tn_pagos(fecha_desde, fecha_hasta)
+        st.session_state.df_pagos = procesar_pagos_pn(pagos) if pagos else pd.DataFrame()
+        st.session_state.ordenes_efectivo = set()
+        st.session_state.ids_venta_local = set()
+
+# ── Contenido principal ───────────────────────────────────────────────────────
 dolar_blue = get_dolar_blue()
 
 if st.session_state.df_tn is not None:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
-        "📊 Dashboard",
-        "🔍 Detalle y ajustes",
-        "💚 Salud Financiera",
-        "📦 Stock",
-        "🔥 Velocidad de ventas",
-        "🏗️ Gastos fijos",
-        "💻 Costos de consolas",
-        "📐 Margen teórico",
-        "📈 Margen real",
-        "🏭 Proveedores",
-        "🤖 Analista IA",
-    ])
+    # ── Helper: Extraer precios individuales por producto desde órdenes raw ──
+    def _build_product_rows_from_raw(orders_raw):
+        """
+        Extrae precio individual de cada producto desde la API de TN.
+        Cada producto en la orden tiene su propio 'price', así que no
+        dividimos el total de la orden entre productos.
+        """
+        product_rows = []
+        for o in orders_raw:
+            pd_raw = o.get("payment_details", {})
+            gateway = str(o.get("gateway", "")).lower()
+            metodo = gateway
+            cuotas = 1
+            if isinstance(pd_raw, dict):
+                metodo = pd_raw.get("method", gateway)
+                cuotas = int(pd_raw.get("installments", 1) or 1)
+
+            if metodo == "credit_card":
+                label_medio = "Credito contado" if cuotas == 1 else f"Credito {cuotas} cuotas"
+            elif metodo == "debit_card":
+                label_medio = "Debito"
+            elif any(x in str(metodo).lower() for x in ["transfer", "wire"]):
+                label_medio = "Transferencia"
+            elif "account_money" in str(metodo).lower():
+                label_medio = "Dinero en cuenta"
+            else:
+                label_medio = str(metodo).replace("_", " ").title() if metodo else str(gateway)
+
+            try:
+                fecha = pd.to_datetime(o.get("created_at", "")).strftime("%Y-%m-%d")
+            except Exception:
+                fecha = ""
+
+            order_total = float(o.get("total", 0))
+            n_products = len(o.get("products", []))
+            costo_envio = float(o.get("shipping_cost_owner", 0) or 0)
+            tasa = tasa_pago_nube(metodo, cuotas)
+
+            for p in o.get("products", []):
+                nombre = _extraer_nombre_producto(p.get("name", ""))
+                precio_unit = float(p.get("price", 0) or 0)
+                qty = int(p.get("quantity", 1) or 1)
+
+                # Si el precio individual es 0, fallback a dividir total
+                if precio_unit <= 0 and n_products > 0:
+                    precio_unit = order_total / n_products
+
+                # Comisión proporcional al precio del producto respecto al total
+                if order_total > 0:
+                    peso_en_orden = (precio_unit * qty) / order_total
+                else:
+                    peso_en_orden = 1.0 / max(n_products, 1)
+                comision_unit = round(order_total * tasa * peso_en_orden / qty, 2)
+                envio_unit = round(costo_envio * peso_en_orden / qty, 2)
+
+                for _ in range(qty):
+                    product_rows.append({
+                        "Producto": nombre,
+                        "Precio ($)": round(precio_unit, 0),
+                        "Medio de Pago": label_medio,
+                        "Cuotas": cuotas,
+                        "Comisión PN ($)": round(comision_unit, 0),
+                        "Tasa PN (%)": round(tasa * 100, 2),
+                        "Envío ($)": round(envio_unit, 0),
+                        "Fecha": fecha,
+                        "Orden Total ($)": order_total,
+                    })
+        return product_rows
+
     df_tn = st.session_state.df_tn.copy()
     df_pagos = st.session_state.df_pagos.copy() if st.session_state.df_pagos is not None else pd.DataFrame()
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 1: DASHBOARD
     # ══════════════════════════════════════════════════════════════════════════
-    with tab1:
+    if seccion == "📊 Dashboard":
         st.subheader("🛍️ Tienda Nube")
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
@@ -1169,7 +1268,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 2: DETALLE Y AJUSTES
     # ══════════════════════════════════════════════════════════════════════════
-    with tab2:
+    elif seccion == "🔍 Detalle y ajustes":
         st.subheader("🛍️ Detalle de órdenes — Tienda Nube")
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
@@ -1306,7 +1405,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 3: SALUD FINANCIERA
     # ══════════════════════════════════════════════════════════════════════════
-    with tab3:
+    elif seccion == "💚 Salud Financiera":
         st.subheader("💚 Salud Financiera del Período")
 
         # ── Configuración con form para evitar rerun al cambiar valores ──
@@ -1558,7 +1657,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 4: STOCK
     # ══════════════════════════════════════════════════════════════════════════
-    with tab4:
+    elif seccion == "📦 Stock":
         st.subheader("📦 Stock — Tienda Nube")
 
         @st.fragment
@@ -1635,7 +1734,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 5: VELOCIDAD DE VENTAS
     # ══════════════════════════════════════════════════════════════════════════
-    with tab5:
+    elif seccion == "🔥 Velocidad de ventas":
         st.subheader("🔥 Velocidad de ventas y planificación de restock")
         if df_tn.empty:
             st.info("Buscá primero para ver los datos.")
@@ -1784,7 +1883,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 6: GASTOS FIJOS
     # ══════════════════════════════════════════════════════════════════════════
-    with tab6:
+    elif seccion == "🏗️ Gastos fijos":
         st.subheader("🏗️ Gastos fijos mensuales")
         st.caption("Los datos quedan guardados en Google Sheets.")
 
@@ -1867,7 +1966,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 7: COSTOS DE CONSOLAS
     # ══════════════════════════════════════════════════════════════════════════
-    with tab7:
+    elif seccion == "💻 Costos de consolas":
         st.subheader("💻 Costos de consolas")
         st.caption("FOB + importación. Los productos de TN se agregan sin sobreescribir datos existentes.")
 
@@ -2057,80 +2156,9 @@ if st.session_state.df_tn is not None:
             )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # HELPER: Extraer precios individuales por producto desde órdenes raw
-    # ══════════════════════════════════════════════════════════════════════════
-    def _build_product_rows_from_raw(orders_raw):
-        """
-        Extrae precio individual de cada producto desde la API de TN.
-        Cada producto en la orden tiene su propio 'price', así que no
-        dividimos el total de la orden entre productos.
-        """
-        product_rows = []
-        for o in orders_raw:
-            pd_raw = o.get("payment_details", {})
-            gateway = str(o.get("gateway", "")).lower()
-            metodo = gateway
-            cuotas = 1
-            if isinstance(pd_raw, dict):
-                metodo = pd_raw.get("method", gateway)
-                cuotas = int(pd_raw.get("installments", 1) or 1)
-
-            if metodo == "credit_card":
-                label_medio = "Credito contado" if cuotas == 1 else f"Credito {cuotas} cuotas"
-            elif metodo == "debit_card":
-                label_medio = "Debito"
-            elif any(x in str(metodo).lower() for x in ["transfer", "wire"]):
-                label_medio = "Transferencia"
-            elif "account_money" in str(metodo).lower():
-                label_medio = "Dinero en cuenta"
-            else:
-                label_medio = str(metodo).replace("_", " ").title() if metodo else str(gateway)
-
-            try:
-                fecha = pd.to_datetime(o.get("created_at", "")).strftime("%Y-%m-%d")
-            except Exception:
-                fecha = ""
-
-            order_total = float(o.get("total", 0))
-            n_products = len(o.get("products", []))
-            costo_envio = float(o.get("shipping_cost_owner", 0) or 0)
-            tasa = tasa_pago_nube(metodo, cuotas)
-
-            for p in o.get("products", []):
-                nombre = _extraer_nombre_producto(p.get("name", ""))
-                precio_unit = float(p.get("price", 0) or 0)
-                qty = int(p.get("quantity", 1) or 1)
-
-                # Si el precio individual es 0, fallback a dividir total
-                if precio_unit <= 0 and n_products > 0:
-                    precio_unit = order_total / n_products
-
-                # Comisión proporcional al precio del producto respecto al total
-                if order_total > 0:
-                    peso_en_orden = (precio_unit * qty) / order_total
-                else:
-                    peso_en_orden = 1.0 / max(n_products, 1)
-                comision_unit = round(order_total * tasa * peso_en_orden / qty, 2)
-                envio_unit = round(costo_envio * peso_en_orden / qty, 2)
-
-                for _ in range(qty):
-                    product_rows.append({
-                        "Producto": nombre,
-                        "Precio ($)": round(precio_unit, 0),
-                        "Medio de Pago": label_medio,
-                        "Cuotas": cuotas,
-                        "Comisión PN ($)": round(comision_unit, 0),
-                        "Tasa PN (%)": round(tasa * 100, 2),
-                        "Envío ($)": round(envio_unit, 0),
-                        "Fecha": fecha,
-                        "Orden Total ($)": order_total,
-                    })
-        return product_rows
-
-    # ══════════════════════════════════════════════════════════════════════════
     # TAB 8: MARGEN TEÓRICO POR CONSOLA
     # ══════════════════════════════════════════════════════════════════════════
-    with tab8:
+    elif seccion == "📐 Margen teórico":
         st.subheader("📐 Margen teórico por consola")
         st.caption(
             "Margen estimado usando el **precio individual** de cada producto (no el total de la orden), "
@@ -2404,7 +2432,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 9: MARGEN REAL POR CONSOLA
     # ══════════════════════════════════════════════════════════════════════════
-    with tab9:
+    elif seccion == "📈 Margen real":
         st.subheader("📈 Margen real por consola y medio de pago")
         st.caption(
             "Margen real calculado orden por orden usando el **precio individual** de cada producto. "
@@ -2620,7 +2648,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 10: PROVEEDORES
     # ══════════════════════════════════════════════════════════════════════════
-    with tab10:
+    elif seccion == "🏭 Proveedores":
         st.markdown("""
         <style>
         /* ── Market Gamer · Proveedores ───────────────────────────────── */
@@ -3406,7 +3434,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 11: ANALISTA IA
     # ══════════════════════════════════════════════════════════════════════════
-    with tab11:
+    elif seccion == "🤖 Analista IA":
         if "analyst_messages" not in st.session_state:
             st.session_state.analyst_messages = []
 
@@ -3816,4 +3844,4 @@ DATOS DEL NEGOCIO:
                     st.rerun()
 
 else:
-    st.info("👈 Seleccioná el período en el panel izquierdo y hacé clic en Buscar.")
+    st.info("⏳ Cargando datos...")
