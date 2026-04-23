@@ -2110,13 +2110,49 @@ if st.session_state.df_tn is not None:
         if st.session_state.costos_df_editor.empty:
             st.info("Cargá productos desde TN con el botón de arriba.")
         else:
-            st.markdown("**Editá FOB y peso. Usá ➕ para agregar y ☑️ + 🗑️ (o tecla Delete) para eliminar filas:**")
+            # ── Controles de vista ──
+            ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 1])
+            with ctrl1:
+                orden_col = st.selectbox(
+                    "Ordenar por",
+                    ["Producto (A→Z)", "FOB (menor primero)", "FOB (mayor primero)", "Peso (menor primero)"],
+                    key="costos_orden",
+                )
+            with ctrl2:
+                solo_sin_precio = st.toggle("Solo sin precio (FOB = 0)", value=False, key="costos_filtro_sin_precio")
+
+            # ── Preparar DF para el editor ──
+            df_edit_base = st.session_state.costos_df_editor.copy()
+            if solo_sin_precio:
+                df_edit_base = df_edit_base[df_edit_base["FOB (USD)"] == 0].copy()
+
+            orden_map = {
+                "Producto (A→Z)": ("Producto", True),
+                "FOB (menor primero)": ("FOB (USD)", True),
+                "FOB (mayor primero)": ("FOB (USD)", False),
+                "Peso (menor primero)": ("Peso (kg)", True),
+            }
+            sort_col, sort_asc = orden_map[orden_col]
+            df_edit_base = df_edit_base.sort_values(sort_col, ascending=sort_asc).reset_index(drop=True)
+
+            # Agregar columnas calculadas como vista previa (read-only en el editor)
+            df_edit_base["Import (USD)"] = (df_edit_base["Peso (kg)"] * costo_kg_usd).round(2)
+            df_edit_base["Total (USD)"] = (df_edit_base["FOB (USD)"] + df_edit_base["Import (USD)"]).round(2)
+            df_edit_base["Total (ARS)"] = (df_edit_base["Total (USD)"] * tc_consolas).round(0)
+
+            n_sin_precio = (st.session_state.costos_df_editor["FOB (USD)"] == 0).sum()
+            if n_sin_precio > 0:
+                st.caption(f"⚠️ {n_sin_precio} producto(s) sin FOB cargado — usá el filtro para encontrarlos.")
+
             edited_df = st.data_editor(
-                st.session_state.costos_df_editor,
+                df_edit_base,
                 column_config={
-                    "Producto": st.column_config.TextColumn("Producto"),
+                    "Producto": st.column_config.TextColumn("Producto", width="large"),
                     "Peso (kg)": st.column_config.NumberColumn("Peso (kg)", min_value=0.0, step=0.01, format="%.3f"),
                     "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.5, format="$%.2f"),
+                    "Import (USD)": st.column_config.NumberColumn("Import (USD)", disabled=True, format="$%.2f"),
+                    "Total (USD)": st.column_config.NumberColumn("Total (USD)", disabled=True, format="$%.2f"),
+                    "Total (ARS)": st.column_config.NumberColumn("Total (ARS)", disabled=True, format="$%.0f"),
                 },
                 hide_index=True,
                 use_container_width=True,
@@ -2124,24 +2160,18 @@ if st.session_state.df_tn is not None:
                 key="costos_editor",
             )
 
-            # NO tocar st.session_state.costos_df_editor acá — el widget
-            # gestiona sus edits internamente via key="costos_editor".
-            # Sobreescribirlo causa conflicto y resetea el editor.
+            # NO sobreescribir costos_df_editor acá — el widget gestiona sus edits
+            # internamente via key="costos_editor". Sobreescribirlo resetea el editor.
             if edited_df is not None:
                 edited_df = edited_df.fillna({"Producto": "", "Peso (kg)": 0.0, "FOB (USD)": 0.0})
+                edited_df["Import (USD)"] = (edited_df["Peso (kg)"] * costo_kg_usd).round(2)
+                edited_df["Total (USD)"] = (edited_df["FOB (USD)"] + edited_df["Import (USD)"]).round(2)
+                edited_df["Total (ARS)"] = (edited_df["Total (USD)"] * tc_consolas).round(0)
 
-            # Calcular columnas derivadas para resumen y guardado
-            edited_df["Import (USD)"] = (edited_df["Peso (kg)"] * costo_kg_usd).round(2)
-            edited_df["Total (USD)"] = (edited_df["FOB (USD)"] + edited_df["Import (USD)"]).round(2)
-            edited_df["Total (ARS)"] = (edited_df["Total (USD)"] * tc_consolas).round(0).astype(int)
-
-            st.divider()
             if st.button("💾 Guardar costos de consolas", use_container_width=True, type="primary"):
-                # MERGE: partir de los costos existentes, actualizar con lo editado
                 nuevos_costos = {k: v for k, v in st.session_state.costos_consolas.items()}
                 nuevos_costos["_costo_kg_usd"] = costo_kg_usd
 
-                # Productos que estaban en el editor original (para detectar eliminados)
                 _orig_prods = set(st.session_state.costos_df_editor["Producto"].tolist())
                 _editor_prods = set()
 
@@ -2157,27 +2187,16 @@ if st.session_state.df_tn is not None:
                         "costo_total_usd": float(row["Total (USD)"]),
                     }
 
-                # Eliminar solo los que el usuario borró explícitamente del editor
+                # Eliminar solo los que el usuario borró explícitamente
                 for p in _orig_prods - _editor_prods:
                     nuevos_costos.pop(p, None)
 
                 st.session_state.costos_consolas = nuevos_costos
-                # Actualizar el DF base del editor con los datos limpios (sin eliminados/vacíos)
                 _clean = edited_df[edited_df["Producto"].str.strip().astype(bool)][["Producto", "Peso (kg)", "FOB (USD)"]].copy()
                 st.session_state.costos_df_editor = _clean.reset_index(drop=True)
                 ok = gs_write("CostosConsolas", nuevos_costos)
                 st.success("✅ Guardado en Google Sheets" if ok else "⚠️ Solo en sesión")
                 st.rerun()
-
-            st.divider()
-            st.subheader("📊 Resumen de costos")
-            st.dataframe(
-                edited_df.style.format({
-                    "FOB (USD)": "${:,.2f}", "Import (USD)": "${:,.2f}",
-                    "Total (USD)": "${:,.2f}", "Total (ARS)": "${:,.0f}", "Peso (kg)": "{:.3f}",
-                }),
-                use_container_width=True, hide_index=True,
-            )
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 8: MARGEN TEÓRICO POR CONSOLA
