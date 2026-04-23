@@ -2111,29 +2111,29 @@ if st.session_state.df_tn is not None:
             st.info("Cargá productos desde TN con el botón de arriba.")
         else:
             # ── Controles de vista ──
-            ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 1])
+            n_sin_precio = (st.session_state.costos_df_editor["FOB (USD)"] == 0).sum()
+            ctrl1, ctrl2 = st.columns([3, 1])
             with ctrl1:
-                orden_col = st.selectbox(
-                    "Ordenar por",
-                    ["Producto (A→Z)", "FOB (menor primero)", "FOB (mayor primero)", "Peso (menor primero)"],
-                    key="costos_orden",
+                busqueda = st.text_input(
+                    "Buscar producto",
+                    placeholder="ej: anbernic rg ds",
+                    key="costos_busqueda",
+                    label_visibility="collapsed",
                 )
             with ctrl2:
-                solo_sin_precio = st.toggle("Solo sin precio (FOB = 0)", value=False, key="costos_filtro_sin_precio")
+                solo_sin_precio = st.toggle(
+                    f"Sin precio ({n_sin_precio})",
+                    value=False,
+                    key="costos_filtro_sin_precio",
+                )
 
             # ── Preparar DF para el editor ──
-            df_edit_base = st.session_state.costos_df_editor.copy()
+            df_edit_base = st.session_state.costos_df_editor.copy().sort_values("Producto").reset_index(drop=True)
+            if busqueda.strip():
+                mask = df_edit_base["Producto"].str.contains(busqueda.strip(), case=False, na=False)
+                df_edit_base = df_edit_base[mask].copy()
             if solo_sin_precio:
                 df_edit_base = df_edit_base[df_edit_base["FOB (USD)"] == 0].copy()
-
-            orden_map = {
-                "Producto (A→Z)": ("Producto", True),
-                "FOB (menor primero)": ("FOB (USD)", True),
-                "FOB (mayor primero)": ("FOB (USD)", False),
-                "Peso (menor primero)": ("Peso (kg)", True),
-            }
-            sort_col, sort_asc = orden_map[orden_col]
-            df_edit_base = df_edit_base.sort_values(sort_col, ascending=sort_asc).reset_index(drop=True)
 
             # Agregar columnas calculadas como vista previa (read-only en el editor)
             df_edit_base["Import (USD)"] = (df_edit_base["Peso (kg)"] * costo_kg_usd).round(2)
@@ -2172,7 +2172,8 @@ if st.session_state.df_tn is not None:
                 nuevos_costos = {k: v for k, v in st.session_state.costos_consolas.items()}
                 nuevos_costos["_costo_kg_usd"] = costo_kg_usd
 
-                _orig_prods = set(st.session_state.costos_df_editor["Producto"].tolist())
+                # Productos visibles en el editor (puede ser un subconjunto si hay filtro)
+                _prods_visibles = set(df_edit_base["Producto"].tolist())
                 _editor_prods = set()
 
                 for _, row in edited_df.iterrows():
@@ -2187,13 +2188,19 @@ if st.session_state.df_tn is not None:
                         "costo_total_usd": float(row["Total (USD)"]),
                     }
 
-                # Eliminar solo los que el usuario borró explícitamente
-                for p in _orig_prods - _editor_prods:
+                # Solo eliminar productos que estaban visibles y el usuario borró explícitamente
+                # Los productos ocultos por búsqueda/filtro NO se tocan
+                for p in _prods_visibles - _editor_prods:
                     nuevos_costos.pop(p, None)
 
                 st.session_state.costos_consolas = nuevos_costos
-                _clean = edited_df[edited_df["Producto"].str.strip().astype(bool)][["Producto", "Peso (kg)", "FOB (USD)"]].copy()
-                st.session_state.costos_df_editor = _clean.reset_index(drop=True)
+                # Reconstruir base del editor con todos los datos (sin filtro)
+                _full = pd.DataFrame([
+                    {"Producto": name, "Peso (kg)": float(v.get("peso_kg", 0)), "FOB (USD)": float(v.get("fob_usd", 0))}
+                    for name, v in nuevos_costos.items()
+                    if not str(name).startswith("_") and isinstance(v, dict)
+                ]).sort_values("Producto").reset_index(drop=True)
+                st.session_state.costos_df_editor = _full
                 ok = gs_write("CostosConsolas", nuevos_costos)
                 st.success("✅ Guardado en Google Sheets" if ok else "⚠️ Solo en sesión")
                 st.rerun()
