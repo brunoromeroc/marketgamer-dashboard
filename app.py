@@ -2312,12 +2312,13 @@ if st.session_state.df_tn is not None:
 
             df_mt = pd.DataFrame(rows_mt).sort_values("Margen (%)", ascending=False)
 
-            # ── Filtro por marca ──
+            # ── Filtro por marca (pills clickeables) ──
             marcas_disponibles = sorted(df_mt["Marca"].unique().tolist())
-            marcas_sel = st.multiselect(
-                "Filtrar por marca",
+            marcas_sel = st.pills(
+                "Marca",
                 options=marcas_disponibles,
                 default=marcas_disponibles,
+                selection_mode="multi",
                 key="filtro_marcas_mt",
             )
             if marcas_sel:
