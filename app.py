@@ -2184,272 +2184,334 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     elif seccion == "📐 Margen teórico":
         st.subheader("📐 Margen teórico por consola")
-        st.caption(
-            "Margen estimado usando el **precio individual** de cada producto (no el total de la orden), "
-            "costo total (FOB + import + packaging + IVA), comisión PN y envío. "
-            "Incluye tabla de rentabilidad por cantidad de cuotas."
-        )
 
         _costos_gs_mt = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
         _tc_mt = int(dolar_blue) if dolar_blue else 1200
 
-        if df_tn.empty:
-            st.info("Buscá primero para ver los datos.")
+        # ── Configuración de costos adicionales (colapsado por default) ──
+        with st.expander("⚙️ Costos adicionales", expanded=False):
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                iva_mt = cc1.number_input("IVA (%)", value=10.5, step=0.5, key="iva_mt")
+            with cc2:
+                packaging_ars = cc2.number_input("Packaging por unidad ($)", value=2500, step=500, key="pkg_mt")
+            with cc3:
+                cc3.metric("Dólar blue", f"${_tc_mt:,.0f}")
+
+        # ── Cargar catálogo completo de TN (todos los productos publicados) ──
+        @st.cache_data(ttl=300, show_spinner=False)
+        def _get_catalogo_tn():
+            prods = get_tn_products()
+            catalogo = {}
+            for p in prods:
+                nombre_raw = p.get("name", {})
+                nombre = nombre_raw.get("es", "") if isinstance(nombre_raw, dict) else str(nombre_raw)
+                nombre = _extraer_nombre_producto(nombre)
+                variantes = p.get("variants", [])
+                if variantes:
+                    # Precio de la primera variante activa
+                    precio = float(variantes[0].get("price", 0) or 0)
+                else:
+                    precio = 0.0
+                if nombre and precio > 0:
+                    catalogo[nombre] = precio
+            return catalogo
+
+        catalogo_tn = _get_catalogo_tn()
+
+        # ── Combinar productos de órdenes + catálogo TN ──
+        orders_raw = st.session_state.orders_raw
+        product_rows = _build_product_rows_from_raw(orders_raw)
+        df_prod_raw = pd.DataFrame(product_rows) if product_rows else pd.DataFrame()
+
+        # Precios de órdenes (promedio real vendido)
+        if not df_prod_raw.empty:
+            precios_ordenes = df_prod_raw.groupby("Producto").agg(
+                Precio_prom=("Precio ($)", "mean"),
+                Unidades=("Precio ($)", "count"),
+            ).reset_index()
+            precios_dict = dict(zip(precios_ordenes["Producto"], precios_ordenes["Precio_prom"]))
+            unidades_dict = dict(zip(precios_ordenes["Producto"], precios_ordenes["Unidades"]))
         else:
-            orders_raw = st.session_state.orders_raw
+            precios_dict = {}
+            unidades_dict = {}
 
-            # ── Configuración de costos adicionales ──
-            with st.expander("⚙️ Costos adicionales", expanded=True):
-                cc1, cc2, cc3 = st.columns(3)
-                with cc1:
-                    iva_mt = cc1.number_input("🧾 IVA (%)", value=10.5, step=0.5, key="iva_mt")
-                with cc2:
-                    packaging_ars = cc2.number_input("📦 Packaging por unidad ($)", value=2500, step=500, key="pkg_mt")
-                with cc3:
-                    cc3.metric("Dólar blue", f"${_tc_mt:,.0f}")
+        # Combinar: empezamos con catálogo TN, completamos con datos de órdenes
+        todos_productos = {}
+        for nombre, precio_tn in catalogo_tn.items():
+            todos_productos[nombre] = {
+                "precio": precios_dict.get(nombre, precio_tn),
+                "unidades": unidades_dict.get(nombre, 0),
+                "fuente": "vendido" if nombre in precios_dict else "catálogo",
+            }
+        # Agregar los de órdenes que no están en catálogo
+        for nombre, precio in precios_dict.items():
+            if nombre not in todos_productos:
+                todos_productos[nombre] = {
+                    "precio": precio,
+                    "unidades": unidades_dict.get(nombre, 0),
+                    "fuente": "vendido",
+                }
 
-            # ── Extraer precios individuales desde raw orders ──
-            product_rows = _build_product_rows_from_raw(orders_raw)
-            if not product_rows:
-                st.info("No hay datos de productos.")
-            else:
-                df_prod_raw = pd.DataFrame(product_rows)
+        if not todos_productos:
+            st.info("No hay productos disponibles. Verificá que TN esté conectado.")
+        else:
+            # ── Inferir marca de cada producto ──
+            def _inferir_marca(nombre):
+                nc = _norm_compact(nombre)
+                for key, marca in BRAND_CATALOG.items():
+                    if key in nc:
+                        return marca
+                return "Otra"
 
-                # Precio promedio real por producto (precio individual, no total/n)
-                precios_prod = df_prod_raw.groupby("Producto").agg(
-                    Precio_prom=("Precio ($)", "mean"),
-                    Unidades=("Precio ($)", "count"),
-                ).reset_index()
-
-                # Envío promedio del período
+            # ── Métricas del período ──
+            if not df_tn.empty:
                 envio_prom = df_tn["Envio costo ($)"].mean()
-
-                # Tasa ponderada
                 total_fact = df_tn["Total ($)"].sum()
                 total_com = df_tn["Comision PN ($)"].sum()
                 tasa_ponderada = total_com / total_fact if total_fact > 0 else 0.0415
+            else:
+                envio_prom = 5000.0
+                tasa_ponderada = 0.0415
 
-                # ── Tabla principal de margen teórico ──
-                rows_mt = []
-                for _, prow in precios_prod.iterrows():
-                    prod = prow["Producto"]
-                    precio_prom = prow["Precio_prom"]
-                    unidades = int(prow["Unidades"])
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Tasa PN ponderada", f"{tasa_ponderada*100:.2f}%")
+            m2.metric("Envío promedio", fmt(envio_prom))
+            m3.metric("Packaging/u", fmt(packaging_ars))
+            m4.metric("IVA", f"{iva_mt}%")
 
-                    costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
-                    costo_total_ars = costo_total_usd * _tc_mt
-                    costo_iva = round(precio_prom * (iva_mt / 100), 0)
-                    costo_full = round(costo_total_ars + packaging_ars + costo_iva, 0)
+            # ── Construir tabla completa ──
+            rows_mt = []
+            for prod, datos in todos_productos.items():
+                precio_prom = datos["precio"]
+                unidades = datos["unidades"]
+                fuente = datos["fuente"]
+                marca = _inferir_marca(prod)
 
-                    comision_est = round(precio_prom * tasa_ponderada, 0)
-                    margen_teorico = round(precio_prom - costo_full - comision_est - envio_prom, 0)
-                    margen_pct = round(margen_teorico / precio_prom * 100, 1) if precio_prom > 0 else 0
+                costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
+                costo_total_ars = costo_total_usd * _tc_mt
+                costo_iva = round(precio_prom * (iva_mt / 100), 0)
+                costo_full = round(costo_total_ars + packaging_ars + costo_iva, 0)
+                comision_est = round(precio_prom * tasa_ponderada, 0)
+                margen_teorico = round(precio_prom - costo_full - comision_est - envio_prom, 0)
+                margen_pct = round(margen_teorico / precio_prom * 100, 1) if precio_prom > 0 else 0
 
-                    rows_mt.append({
-                        "Producto": prod,
-                        "Precio prom ($)": round(precio_prom, 0),
-                        "Costo prod ($)": round(costo_total_ars, 0),
-                        "Packaging ($)": packaging_ars,
-                        f"IVA ({iva_mt}%)": costo_iva,
-                        "Costo full ($)": costo_full,
-                        f"Comisión PN ({tasa_ponderada*100:.1f}%)": comision_est,
-                        "Envío prom ($)": round(envio_prom, 0),
-                        "Margen ($)": margen_teorico,
-                        "Margen (%)": margen_pct,
-                        "Uds": unidades,
+                rows_mt.append({
+                    "Marca": marca,
+                    "Producto": prod,
+                    "Precio ($)": round(precio_prom, 0),
+                    "Costo prod ($)": round(costo_total_ars, 0),
+                    "Costo full ($)": costo_full,
+                    "Comisión PN ($)": comision_est,
+                    "Envío ($)": round(envio_prom, 0),
+                    "Margen ($)": margen_teorico,
+                    "Margen (%)": margen_pct,
+                    "Uds vendidas": unidades,
+                    "_fuente": fuente,
+                })
+
+            df_mt = pd.DataFrame(rows_mt).sort_values("Margen (%)", ascending=False)
+
+            # ── Filtro por marca ──
+            marcas_disponibles = sorted(df_mt["Marca"].unique().tolist())
+            marcas_sel = st.multiselect(
+                "Filtrar por marca",
+                options=marcas_disponibles,
+                default=marcas_disponibles,
+                key="filtro_marcas_mt",
+            )
+            if marcas_sel:
+                df_mt = df_mt[df_mt["Marca"].isin(marcas_sel)]
+
+            st.caption(
+                f"Mostrando **{len(df_mt)}** productos "
+                f"({df_mt[df_mt['_fuente']=='vendido'].shape[0]} vendidos en el período, "
+                f"{df_mt[df_mt['_fuente']=='catálogo'].shape[0]} solo en catálogo TN). "
+                "Precio de catálogo TN para productos no vendidos en el período."
+            )
+
+            # ── Tabla principal ──
+            df_display = df_mt.drop(columns=["_fuente"]).copy()
+
+            def _color_row_margen(row):
+                v = row["Margen (%)"]
+                if v >= 20:
+                    color = "background-color: #1e4620; color: #4ade80"
+                elif v >= 10:
+                    color = "background-color: #3a3000; color: #fbbf24"
+                elif v >= 0:
+                    color = "background-color: #2a1a00; color: #fb923c"
+                else:
+                    color = "background-color: #3a0f0f; color: #f87171"
+                return [color if c == "Margen (%)" else "" for c in row.index]
+
+            st.dataframe(
+                df_display.style
+                    .format({
+                        "Precio ($)": "${:,.0f}",
+                        "Costo prod ($)": "${:,.0f}",
+                        "Costo full ($)": "${:,.0f}",
+                        "Comisión PN ($)": "${:,.0f}",
+                        "Envío ($)": "${:,.0f}",
+                        "Margen ($)": "${:,.0f}",
+                        "Margen (%)": "{:.1f}%",
                     })
+                    .apply(_color_row_margen, axis=1),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Marca": st.column_config.TextColumn("Marca", width="small"),
+                    "Producto": st.column_config.TextColumn("Producto", width="large"),
+                    "Uds vendidas": st.column_config.NumberColumn("Uds", width="small"),
+                    "Margen (%)": st.column_config.TextColumn("Margen %", width="small"),
+                },
+            )
 
-                df_mt = pd.DataFrame(rows_mt).sort_values("Margen (%)", ascending=False)
+            # ══════════════════════════════════════════════════════════════
+            # TABLA DE RENTABILIDAD POR CUOTAS
+            # ══════════════════════════════════════════════════════════════
+            st.subheader("💳 Rentabilidad por cantidad de cuotas")
+            st.caption("Cómo cambia el margen según la forma de pago del cliente.")
 
-                # Métricas
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Tasa PN ponderada", f"{tasa_ponderada*100:.2f}%")
-                m2.metric("Envío promedio", fmt(envio_prom))
-                m3.metric("Packaging/u", fmt(packaging_ars))
-                m4.metric(f"IVA", f"{iva_mt}%")
+            cuotas_config = {
+                "Débito/Trans": 0.0415,
+                "1 cuota": 0.0415,
+                "3 cuotas": 0.1420,
+                "6 cuotas": 0.2370,
+                "12 cuotas": 0.4324,
+            }
 
-                # Gráfico
-                df_mt_chart = df_mt.sort_values("Margen (%)", ascending=True).tail(20)
-                fig_mt = px.bar(
-                    df_mt_chart, x="Margen (%)", y="Producto", orientation="h",
-                    title="Margen teórico por consola (%)",
-                    color="Margen (%)",
-                    color_continuous_scale=["#FF5733", "#FFD700", "#00C49F"],
-                    text="Margen (%)",
-                )
-                fig_mt.update_layout(
-                    yaxis={"categoryorder": "total ascending"},
-                    coloraxis_showscale=False,
-                )
-                fig_mt.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-                st.plotly_chart(fig_mt, use_container_width=True)
+            with st.expander("⚙️ Ajustar tasas por cuota", expanded=False):
+                tc_cols = st.columns(len(cuotas_config))
+                cuotas_ajustadas = {}
+                for i, (label, default) in enumerate(cuotas_config.items()):
+                    with tc_cols[i]:
+                        cuotas_ajustadas[label] = st.number_input(
+                            f"{label} (%)", value=round(default * 100, 2),
+                            step=0.1, key=f"cuota_mt_{label}",
+                        ) / 100
 
-                # Tabla principal
-                st.divider()
-                col_com_mt = f"Comisión PN ({tasa_ponderada*100:.1f}%)"
-                col_iva_mt = f"IVA ({iva_mt}%)"
-                st.dataframe(
-                    df_mt.style
-                        .format({
-                            "Precio prom ($)": "${:,.0f}",
-                            "Costo prod ($)": "${:,.0f}",
-                            "Packaging ($)": "${:,.0f}",
-                            col_iva_mt: "${:,.0f}",
-                            "Costo full ($)": "${:,.0f}",
-                            col_com_mt: "${:,.0f}",
-                            "Envío prom ($)": "${:,.0f}",
-                            "Margen ($)": "${:,.0f}",
-                            "Margen (%)": "{:.1f}%",
-                        })
-                        .map(lambda v: (
-                            "background-color: #1e4620; color: #00C49F" if isinstance(v, (int, float)) and v >= 20
-                            else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v >= 10
-                            else "background-color: #4a1010; color: #ff6b6b" if isinstance(v, (int, float))
-                            else ""
-                        ), subset=["Margen (%)"]),
-                    use_container_width=True, hide_index=True,
-                )
+            rows_cuotas = []
+            for prod, datos in todos_productos.items():
+                precio = datos["precio"]
+                if precio <= 0:
+                    continue
 
-                # ══════════════════════════════════════════════════════════════
-                # TABLA DE RENTABILIDAD POR CUOTAS
-                # ══════════════════════════════════════════════════════════════
-                st.divider()
-                st.subheader("💳 Rentabilidad por cantidad de cuotas")
-                st.caption(
-                    "Muestra cómo cambia el margen de cada consola según la cantidad de cuotas "
-                    "que elija el cliente. La comisión de PN varía según el plan de cuotas."
-                )
+                costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
+                costo_total_ars = costo_total_usd * _tc_mt
+                costo_iva = round(precio * (iva_mt / 100), 0)
+                costo_full = round(costo_total_ars + packaging_ars + costo_iva, 0)
 
-                # Tasas por cuota (usar las mismas que Salud Financiera si están cargadas)
-                cuotas_config = {
-                    "Débito/Trans": 0.0415,
-                    "1 cuota": 0.0415,
-                    "3 cuotas": 0.1420,
-                    "6 cuotas": 0.2370,
-                    "12 cuotas": 0.4324,
+                row_data = {
+                    "Producto": prod,
+                    "Precio ($)": round(precio, 0),
+                    "Costo full ($)": costo_full,
                 }
 
-                with st.expander("⚙️ Ajustar tasas por cuota", expanded=False):
-                    tc_cols = st.columns(len(cuotas_config))
-                    cuotas_ajustadas = {}
-                    for i, (label, default) in enumerate(cuotas_config.items()):
-                        with tc_cols[i]:
-                            cuotas_ajustadas[label] = st.number_input(
-                                f"{label} (%)", value=round(default * 100, 2),
-                                step=0.1, key=f"cuota_mt_{label}",
-                            ) / 100
+                for label, tasa in cuotas_ajustadas.items():
+                    comision = round(precio * tasa, 0)
+                    margen = round(precio - costo_full - comision - envio_prom, 0)
+                    margen_pct = round(margen / precio * 100, 1) if precio > 0 else 0
+                    row_data[f"M {label} ($)"] = margen
+                    row_data[f"M {label} (%)"] = margen_pct
 
-                rows_cuotas = []
-                for _, prow in precios_prod.iterrows():
-                    prod = prow["Producto"]
-                    precio = prow["Precio_prom"]
+                rows_cuotas.append(row_data)
 
-                    costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
-                    costo_total_ars = costo_total_usd * _tc_mt
-                    costo_iva = round(precio * (iva_mt / 100), 0)
-                    costo_full = round(costo_total_ars + packaging_ars + costo_iva, 0)
+            df_cuotas = pd.DataFrame(rows_cuotas).sort_values("Precio ($)", ascending=False)
 
-                    row_data = {
-                        "Producto": prod,
-                        "Precio ($)": round(precio, 0),
-                        "Costo full ($)": costo_full,
-                    }
+            # Aplicar filtro de marca a cuotas también
+            if marcas_sel:
+                df_cuotas_filt = df_cuotas[df_cuotas["Producto"].apply(
+                    lambda p: _inferir_marca(p) in marcas_sel
+                )]
+            else:
+                df_cuotas_filt = df_cuotas
 
-                    for label, tasa in cuotas_ajustadas.items():
-                        comision = round(precio * tasa, 0)
-                        margen = round(precio - costo_full - comision - envio_prom, 0)
-                        margen_pct = round(margen / precio * 100, 1) if precio > 0 else 0
-                        row_data[f"M {label} ($)"] = margen
-                        row_data[f"M {label} (%)"] = margen_pct
+            fmt_cuotas = {
+                "Precio ($)": "${:,.0f}",
+                "Costo full ($)": "${:,.0f}",
+            }
+            pct_cols = []
+            for label in cuotas_ajustadas.keys():
+                fmt_cuotas[f"M {label} ($)"] = "${:,.0f}"
+                fmt_cuotas[f"M {label} (%)"] = "{:.1f}%"
+                pct_cols.append(f"M {label} (%)")
 
-                    rows_cuotas.append(row_data)
+            def _color_margen_cuotas(v):
+                if isinstance(v, (int, float)):
+                    if v >= 20:
+                        return "background-color: #1e4620; color: #4ade80"
+                    elif v >= 10:
+                        return "background-color: #3a3000; color: #fbbf24"
+                    elif v >= 0:
+                        return "background-color: #2a1a00; color: #fb923c"
+                    else:
+                        return "background-color: #3a0f0f; color: #f87171"
+                return ""
 
-                df_cuotas = pd.DataFrame(rows_cuotas).sort_values("Precio ($)", ascending=False)
+            st.dataframe(
+                df_cuotas_filt.style
+                    .format(fmt_cuotas)
+                    .map(_color_margen_cuotas, subset=pct_cols),
+                use_container_width=True, hide_index=True,
+            )
 
-                # Formato para las columnas de margen
-                fmt_cuotas = {
-                    "Precio ($)": "${:,.0f}",
-                    "Costo full ($)": "${:,.0f}",
-                }
-                pct_cols = []
+            # Gráfico comparativo para un producto seleccionado
+            prod_sel_cuotas = st.selectbox(
+                "Ver detalle por cuotas de:",
+                df_cuotas_filt["Producto"].tolist(),
+                key="sel_cuotas_mt",
+            )
+            if prod_sel_cuotas:
+                row_sel = df_cuotas_filt[df_cuotas_filt["Producto"] == prod_sel_cuotas].iloc[0]
+                chart_data = []
                 for label in cuotas_ajustadas.keys():
-                    fmt_cuotas[f"M {label} ($)"] = "${:,.0f}"
-                    fmt_cuotas[f"M {label} (%)"] = "{:.1f}%"
-                    pct_cols.append(f"M {label} (%)")
+                    chart_data.append({
+                        "Cuotas": label,
+                        "Margen ($)": row_sel[f"M {label} ($)"],
+                        "Margen (%)": row_sel[f"M {label} (%)"],
+                        "Tasa PN (%)": round(cuotas_ajustadas[label] * 100, 2),
+                    })
+                df_chart_cuotas = pd.DataFrame(chart_data)
 
-                def _color_margen_cuotas(v):
-                    if isinstance(v, (int, float)):
-                        if v >= 20:
-                            return "background-color: #1e4620; color: #00C49F"
-                        elif v >= 10:
-                            return "background-color: #5a4a1a; color: #ffd700"
-                        elif v >= 0:
-                            return "background-color: #4a3a1a; color: #ffaa00"
-                        else:
-                            return "background-color: #4a1010; color: #ff6b6b"
-                    return ""
-
-                st.dataframe(
-                    df_cuotas.style
-                        .format(fmt_cuotas)
-                        .map(_color_margen_cuotas, subset=pct_cols),
-                    use_container_width=True, hide_index=True,
+                fig_cuotas = go.Figure()
+                colors_cuotas = [
+                    "#00C49F" if m >= 0 else "#FF5733"
+                    for m in df_chart_cuotas["Margen ($)"]
+                ]
+                fig_cuotas.add_trace(go.Bar(
+                    x=df_chart_cuotas["Cuotas"],
+                    y=df_chart_cuotas["Margen ($)"],
+                    name="Margen ($)",
+                    marker_color=colors_cuotas,
+                    text=df_chart_cuotas["Margen ($)"].apply(lambda x: f"${x:,.0f}"),
+                    textposition="outside",
+                ))
+                fig_cuotas.add_trace(go.Scatter(
+                    x=df_chart_cuotas["Cuotas"],
+                    y=df_chart_cuotas["Margen (%)"],
+                    name="Margen (%)",
+                    mode="lines+markers+text",
+                    line=dict(color="#009EE3", width=3),
+                    marker=dict(size=10),
+                    text=df_chart_cuotas["Margen (%)"].apply(lambda x: f"{x:.1f}%"),
+                    textposition="top center",
+                    yaxis="y2",
+                ))
+                fig_cuotas.update_layout(
+                    title=f"Margen por cuotas — {prod_sel_cuotas} (Precio: {fmt(row_sel['Precio ($)'])})",
+                    yaxis=dict(title="Margen ($)", tickformat="$,.0f"),
+                    yaxis2=dict(title="Margen (%)", overlaying="y", side="right", ticksuffix="%", showgrid=False),
+                    legend=dict(orientation="h", y=-0.15),
+                    hovermode="x unified",
                 )
+                st.plotly_chart(fig_cuotas, use_container_width=True)
 
-                # Gráfico comparativo para un producto seleccionado
-                st.divider()
-                prod_sel_cuotas = st.selectbox(
-                    "Ver detalle por cuotas de:",
-                    df_cuotas["Producto"].tolist(),
-                    key="sel_cuotas_mt",
-                )
-                if prod_sel_cuotas:
-                    row_sel = df_cuotas[df_cuotas["Producto"] == prod_sel_cuotas].iloc[0]
-                    chart_data = []
-                    for label in cuotas_ajustadas.keys():
-                        chart_data.append({
-                            "Cuotas": label,
-                            "Margen ($)": row_sel[f"M {label} ($)"],
-                            "Margen (%)": row_sel[f"M {label} (%)"],
-                            "Tasa PN (%)": round(cuotas_ajustadas[label] * 100, 2),
-                        })
-                    df_chart_cuotas = pd.DataFrame(chart_data)
-
-                    fig_cuotas = go.Figure()
-                    colors_cuotas = [
-                        "#00C49F" if m >= 0 else "#FF5733"
-                        for m in df_chart_cuotas["Margen ($)"]
-                    ]
-                    fig_cuotas.add_trace(go.Bar(
-                        x=df_chart_cuotas["Cuotas"],
-                        y=df_chart_cuotas["Margen ($)"],
-                        name="Margen ($)",
-                        marker_color=colors_cuotas,
-                        text=df_chart_cuotas["Margen ($)"].apply(lambda x: f"${x:,.0f}"),
-                        textposition="outside",
-                    ))
-                    fig_cuotas.add_trace(go.Scatter(
-                        x=df_chart_cuotas["Cuotas"],
-                        y=df_chart_cuotas["Margen (%)"],
-                        name="Margen (%)",
-                        mode="lines+markers+text",
-                        line=dict(color="#009EE3", width=3),
-                        marker=dict(size=10),
-                        text=df_chart_cuotas["Margen (%)"].apply(lambda x: f"{x:.1f}%"),
-                        textposition="top center",
-                        yaxis="y2",
-                    ))
-                    fig_cuotas.update_layout(
-                        title=f"Margen por cuotas — {prod_sel_cuotas} (Precio: {fmt(row_sel['Precio ($)'])})",
-                        yaxis=dict(title="Margen ($)", tickformat="$,.0f"),
-                        yaxis2=dict(title="Margen (%)", overlaying="y", side="right", ticksuffix="%", showgrid=False),
-                        legend=dict(orientation="h", y=-0.15),
-                        hovermode="x unified",
-                    )
-                    st.plotly_chart(fig_cuotas, use_container_width=True)
-
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
                 st.download_button("⬇️ Descargar margen teórico",
                     df_mt.to_csv(index=False).encode("utf-8"), "margen_teorico.csv", "text/csv")
+            with col_dl2:
                 st.download_button("⬇️ Descargar rentabilidad por cuotas",
                     df_cuotas.to_csv(index=False).encode("utf-8"), "rentabilidad_cuotas.csv", "text/csv")
 
@@ -2470,11 +2532,11 @@ if st.session_state.df_tn is not None:
             _tc_mr = int(dolar_blue) if dolar_blue else 1200
             orders_raw_mr = st.session_state.orders_raw
 
-            # Config costos adicionales (compartido con tab 8)
-            with st.expander("⚙️ Costos adicionales", expanded=True):
+            # Config costos adicionales
+            with st.expander("⚙️ Costos adicionales", expanded=False):
                 cr1, cr2 = st.columns(2)
-                iva_mr = cr1.number_input("🧾 IVA (%)", value=10.5, step=0.5, key="iva_mr")
-                packaging_mr = cr2.number_input("📦 Packaging/u ($)", value=2500, step=500, key="pkg_mr")
+                iva_mr = cr1.number_input("IVA (%)", value=10.5, step=0.5, key="iva_mr")
+                packaging_mr = cr2.number_input("Packaging/u ($)", value=2500, step=500, key="pkg_mr")
 
             # Extraer precios individuales desde raw orders
             product_rows_mr = _build_product_rows_from_raw(orders_raw_mr)
