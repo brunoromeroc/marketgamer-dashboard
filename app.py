@@ -2054,15 +2054,13 @@ if st.session_state.df_tn is not None:
         costos = st.session_state.costos_consolas.copy()
         productos_map = st.session_state.get("productos_tn_map", {})
 
-        st.divider()
-        col_imp1, col_imp2 = st.columns(2)
-        costo_kg_usd = col_imp1.number_input(
-            "📦 Costo importación (USD/kg)",
-            value=float(costos.get("_costo_kg_usd", 65.0)), step=0.5, key="ckg",
-        )
-        col_imp2.metric("Dólar blue", f"${tc_consolas:,.0f} ARS")
-
-        st.divider()
+        with st.expander(f"⚙️ Costos de referencia — importación ${costos.get('_costo_kg_usd', 65.0):.2f} USD/kg · dólar ${tc_consolas:,.0f} ARS", expanded=False):
+            col_imp1, col_imp2 = st.columns(2)
+            costo_kg_usd = col_imp1.number_input(
+                "Costo importación (USD/kg)",
+                value=float(costos.get("_costo_kg_usd", 65.0)), step=0.5, key="ckg",
+            )
+            col_imp2.metric("Dólar blue", f"${tc_consolas:,.0f} ARS")
 
         # ── Construir DF editable UNA sola vez en session_state ──
         def _build_costos_df():
@@ -2157,6 +2155,7 @@ if st.session_state.df_tn is not None:
                 hide_index=True,
                 use_container_width=True,
                 num_rows="dynamic",
+                height=600,
                 key="costos_editor",
             )
 
