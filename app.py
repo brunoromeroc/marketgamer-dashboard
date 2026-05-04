@@ -1423,68 +1423,93 @@ if st.session_state.df_tn is not None:
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
-            # ── Helper: truncar nombres largos de productos para gráficos ──
-            def _truncar(nombre, max_len=35):
+            # ── Helpers ──
+            def _truncar(nombre, max_len=32):
                 return nombre if len(nombre) <= max_len else nombre[:max_len].rstrip() + "…"
 
-            # ── Costo ponderado de comisión PN ──
+            def _fmt_compact(n):
+                n = float(n)
+                if abs(n) >= 1_000_000:
+                    return f"${n/1_000_000:.1f}M"
+                elif abs(n) >= 1_000:
+                    return f"${n/1_000:.0f}K"
+                return f"${n:.0f}"
+
+            _ACCESORIOS_KW = ("estuche", "funda", "micro sd", "microsd", "lectora", "cable", "joystick cap")
+
+            def _es_accesorio(nombre):
+                n = nombre.lower()
+                return any(kw in n for kw in _ACCESORIOS_KW)
+
+            # ── Métricas base ──
             total_facturado = df_tn["Total ($)"].sum()
-            total_comision = df_tn["Comision PN ($)"].sum()
-            neto_cobrado = df_tn["Neto cobrado ($)"].sum()
-            margen_total = df_tn["Margen ($)"].sum()
+            total_comision  = df_tn["Comision PN ($)"].sum()
+            neto_cobrado    = df_tn["Neto cobrado ($)"].sum()
+            ticket_prom     = total_facturado / len(df_tn) if len(df_tn) > 0 else 0
             costo_ponderado_pn = round(total_comision / total_facturado * 100, 2) if total_facturado > 0 else 0
 
-            # ── KPIs: 3 + 3 ──
+            # ── KPIs: 3 + 2 ──
             k1, k2, k3 = st.columns(3)
-            k1.metric("Ordenes", len(df_tn))
-            k2.metric("Facturación", fmt(total_facturado))
+            k1.metric("Órdenes", len(df_tn))
+            k2.metric("Facturación bruta", fmt(total_facturado))
             k3.metric("Neto cobrado", fmt(neto_cobrado))
 
-            k4, k5, k6 = st.columns(3)
-            k4.metric("Comisión PN", fmt(total_comision))
+            k4, k5 = st.columns(2)
+            # Comisión PN en rojo — usa HTML para color personalizado
+            k4.markdown(
+                f'<div style="padding:0.4rem 0 0.4rem 0.75rem;border-left:2px solid {MG_RED};">'
+                f'<div style="font-size:0.62rem;color:{MG_MUTED};text-transform:uppercase;'
+                f'letter-spacing:0.08em;font-family:\'Space Mono\',monospace;font-weight:600;'
+                f'margin-bottom:0.2rem;">Comisión PN</div>'
+                f'<div style="font-size:1.4rem;font-weight:700;color:{MG_RED};white-space:nowrap;">'
+                f'{fmt(total_comision)}</div></div>',
+                unsafe_allow_html=True,
+            )
             k5.metric(
-                "Margen total",
-                fmt(margen_total),
-                help="Neto cobrado - Costo (campo cost de TN) - Envío. Si no cargaste costos en TN, el margen aparece inflado. Usá Salud Financiera para margen real con FOB.",
-            )
-            k6.metric(
-                "Costo PN",
+                "Costo PN %",
                 f"{costo_ponderado_pn:.2f}%",
-                help="Comisión total PN / Facturación bruta. Promedio real ponderado por monto.",
+                help="Comisión PN / Facturación bruta. Cuánto te cobra Pago Nube de cada peso cobrado.",
             )
 
-            st.markdown("")  # spacing
+            st.markdown("")
 
-            # ── Ventas por día (LÍNEA) + Top 10 por unidades ──
+            # ── Ventas por día (BARRAS) + Top 10 por unidades ──
             col_a, col_b = st.columns(2)
             with col_a:
                 df_dia = df_tn.groupby("Fecha")["Total ($)"].sum().reset_index()
-                fig_dia = px.line(
+                df_dia["Fecha"] = pd.to_datetime(df_dia["Fecha"])
+                df_dia = df_dia.sort_values("Fecha")
+                fig_dia = px.bar(
                     df_dia, x="Fecha", y="Total ($)",
-                    title="Ventas por día",
-                    markers=True,
-                    color_discrete_sequence=["#009EE3"],
+                    title="Facturación diaria",
+                    color_discrete_sequence=[MG_RED],
                 )
                 fig_dia.update_layout(
                     yaxis_tickformat="$,.0f",
-                    margin=dict(l=0, r=16, t=40, b=0),
-                    title_font_size=14,
+                    xaxis_tickformat="%d %b",
+                    bargap=0.25,
+                    height=320,
                 )
                 fig_dia.update_traces(
-                    line=dict(width=3),
-                    marker=dict(size=7),
-                    fill="tozeroy",
-                    fillcolor="rgba(0, 158, 227, 0.08)",
+                    hovertemplate="%{x|%d/%m}<br>$%{y:,.0f}<extra></extra>",
                 )
                 st.plotly_chart(fig_dia, use_container_width=True)
 
             with col_b:
+                # Toggle para excluir accesorios
+                _excluir_acc = st.toggle(
+                    "Excluir accesorios (estuches, micros SD, etc.)",
+                    value=False,
+                    key="dash_excluir_acc",
+                )
                 top_prods = {}
                 for _, row in df_tn.iterrows():
                     for p in str(row.get("Productos", "")).split(" / "):
                         p = p.strip()
                         if p:
-                            top_prods[p] = top_prods.get(p, 0) + int(row.get("Cantidad", 1))
+                            if _excluir_acc and _es_accesorio(p):
+                                continue
+                            top_prods[p] = top_prods.get(p, 0) + 1
                 if top_prods:
                     df_tp = pd.DataFrame(list(top_prods.items()), columns=["Producto", "Unidades"])
                     df_tp = df_tp.sort_values("Unidades", ascending=False).head(10)
@@ -1493,24 +1518,24 @@ if st.session_state.df_tn is not None:
                         df_tp, x="Unidades", y="Label", orientation="h",
                         title="Top 10 productos (unidades)",
                         color="Unidades",
-                        color_continuous_scale=["#00C49F", "#009EE3"],
+                        color_continuous_scale=[[0, "#26272b"], [1, "#009EE3"]],
                         text="Unidades",
                         custom_data=["Producto"],
                     )
                     fig_tp.update_layout(
                         yaxis={"categoryorder": "total ascending", "title": ""},
                         coloraxis_showscale=False,
-                        margin=dict(l=0, r=40, t=40, b=0),
-                        title_font_size=14,
+                        height=320,
                     )
                     fig_tp.update_traces(
-                        textposition="outside", textfont_size=12,
+                        textposition="outside", textfont_size=11,
                         hovertemplate="<b>%{customdata[0]}</b><br>%{x} unidades<extra></extra>",
                     )
                     st.plotly_chart(fig_tp, use_container_width=True)
 
-            # ── Top 10 por facturación + Donut comisiones ──
+            # ── Top 10 facturación + Donut comisiones (Pareto) ──
             col_rev1, col_rev2 = st.columns(2)
+
             with col_rev1:
                 top_revenue = {}
                 for _, row in df_tn.iterrows():
@@ -1523,29 +1548,29 @@ if st.session_state.df_tn is not None:
                     df_rev["Monto ($)"] = df_rev["Monto ($)"].round(0)
                     df_rev = df_rev.sort_values("Monto ($)", ascending=False).head(10)
                     df_rev["Label"] = df_rev["Producto"].apply(_truncar)
+                    df_rev["Texto"] = df_rev["Monto ($)"].apply(_fmt_compact)
                     fig_rev = px.bar(
                         df_rev, x="Monto ($)", y="Label", orientation="h",
                         title="Top 10 productos (facturación)",
                         color="Monto ($)",
-                        color_continuous_scale=["#FFD700", "#FF5733"],
-                        text="Monto ($)",
+                        color_continuous_scale=[[0, "#26272b"], [1, MG_RED]],
+                        text="Texto",
                         custom_data=["Producto"],
                     )
                     fig_rev.update_layout(
                         yaxis={"categoryorder": "total ascending", "title": ""},
                         xaxis_tickformat="$,.0f",
                         coloraxis_showscale=False,
-                        margin=dict(l=0, r=40, t=40, b=0),
-                        title_font_size=14,
+                        height=380,
                     )
                     fig_rev.update_traces(
-                        texttemplate="$%{x:,.0f}", textposition="outside", textfont_size=12,
+                        textposition="inside", textfont_size=11, textfont_color=MG_TEXT,
                         hovertemplate="<b>%{customdata[0]}</b><br>$%{x:,.0f}<extra></extra>",
                     )
                     st.plotly_chart(fig_rev, use_container_width=True)
 
             with col_rev2:
-                # ── Donut comisiones por medio de pago ──
+                # ── Donut comisiones — Pareto top 3 ──
                 comis_medio = df_tn.groupby("Medio de Pago").agg(
                     Ordenes=("Orden", "count"),
                     Facturacion=("Total ($)", "sum"),
@@ -1553,50 +1578,53 @@ if st.session_state.df_tn is not None:
                 ).reset_index().sort_values("Comision", ascending=False)
                 comis_medio["Costo %"] = (comis_medio["Comision"] / comis_medio["Facturacion"] * 100).round(2)
 
+                # Pareto: top 3 + agrupar el resto en "Resto"
+                top3 = comis_medio.head(3).copy()
+                resto = comis_medio.iloc[3:]
+                if not resto.empty:
+                    resto_row = pd.DataFrame([{
+                        "Medio de Pago": "Resto",
+                        "Ordenes": resto["Ordenes"].sum(),
+                        "Facturacion": resto["Facturacion"].sum(),
+                        "Comision": resto["Comision"].sum(),
+                        "Costo %": 0,
+                    }])
+                    comis_donut = pd.concat([top3, resto_row], ignore_index=True)
+                else:
+                    comis_donut = top3.copy()
+
+                _pct_top3 = round(top3["Comision"].sum() / comis_medio["Comision"].sum() * 100, 0)
                 fig_pie_com = px.pie(
-                    comis_medio, names="Medio de Pago", values="Comision",
-                    title="Comisiones PN por medio de pago",
-                    color_discrete_sequence=COLORES,
-                    hole=0.4,
+                    comis_donut, names="Medio de Pago", values="Comision",
+                    title=f"Costo PN por método — top 3 = {_pct_top3:.0f}% del total",
+                    color_discrete_sequence=[MG_RED, "#009EE3", "#fbbf24", MG_DIM],
+                    hole=0.5,
                 )
                 fig_pie_com.update_traces(
-                    textinfo="percent",
+                    textinfo="label+percent",
                     textfont_size=11,
                     hovertemplate="<b>%{label}</b><br>$%{value:,.0f} (%{percent})<extra></extra>",
-                    pull=[0.02] * len(comis_medio),
                 )
                 fig_pie_com.update_layout(
-                    showlegend=True,
-                    legend=dict(font_size=11, orientation="h", y=-0.15, x=0.5, xanchor="center"),
-                    margin=dict(l=0, r=0, t=40, b=40),
-                    title_font_size=14,
+                    showlegend=False,
+                    height=380,
                 )
                 st.plotly_chart(fig_pie_com, use_container_width=True)
 
-            # ── Transacciones por medio de pago + Tabla comisiones ──
-            col_tx1, col_tx2 = st.columns(2)
-            with col_tx1:
-                tx_medio = df_tn.groupby("Medio de Pago")["Orden"].count().reset_index()
-                tx_medio.columns = ["Medio de Pago", "Transacciones"]
-                tx_medio = tx_medio.sort_values("Transacciones", ascending=False)
-                fig_tx = px.bar(tx_medio, x="Medio de Pago", y="Transacciones",
-                    title="Transacciones por medio de pago",
-                    color_discrete_sequence=["#009EE3"], text="Transacciones")
-                fig_tx.update_traces(textposition="outside")
-                fig_tx.update_layout(
-                    margin=dict(l=0, r=16, t=40, b=0),
-                    title_font_size=14,
-                )
-                st.plotly_chart(fig_tx, use_container_width=True)
-
-            with col_tx2:
-                comis_fmt = comis_medio.copy()
-                comis_fmt["Facturacion"] = comis_fmt["Facturacion"].apply(fmt)
-                comis_fmt["Comision"] = comis_fmt["Comision"].apply(fmt)
-                comis_fmt["Costo %"] = comis_fmt["Costo %"].apply(fmt_pct)
-                comis_fmt.columns = ["Medio de Pago", "Ordenes", "Facturación", "Comisión PN", "Costo %"]
-                st.markdown(f"**Detalle comisiones** — Costo PN ponderado: **{costo_ponderado_pn:.2f}%**")
-                st.dataframe(comis_fmt, use_container_width=True, hide_index=True)
+            # ── Tabla comisiones detalle ──
+            comis_fmt = comis_medio.copy()
+            comis_fmt["Facturacion"] = comis_fmt["Facturacion"].apply(fmt)
+            comis_fmt["Comision"] = comis_fmt["Comision"].apply(fmt)
+            comis_fmt["Costo %"] = comis_fmt["Costo %"].apply(fmt_pct)
+            comis_fmt.columns = ["Medio de Pago", "Órdenes", "Facturación", "Comisión PN", "Costo %"]
+            st.markdown(
+                f'<p style="font-size:0.72rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+                f'letter-spacing:0.06em;text-transform:uppercase;margin-bottom:0.4rem;">'
+                f'Detalle comisiones — costo PN ponderado: <span style="color:{MG_TEXT};font-weight:700;">'
+                f'{costo_ponderado_pn:.2f}%</span></p>',
+                unsafe_allow_html=True,
+            )
+            st.dataframe(comis_fmt, use_container_width=True, hide_index=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 2: DETALLE Y AJUSTES
