@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 from datetime import date, timedelta
 import time
 import json
@@ -18,7 +19,314 @@ SHEET_ID = st.secrets.get("SHEET_ID", "1wY2KjSC8SX-nMQD7J43xrdSY0SgG8fJeL9d5I_02
 GCP_CREDS = st.secrets.get("gcp_service_account", {})
 ANTHROPIC_KEY = st.secrets.get("ANTHROPIC_KEY", "")
 
-COLORES = ["#00C49F", "#009EE3", "#FFD700", "#FF5733", "#AA00FF", "#FF69B4"]
+# ── Design tokens ───────────────────────────────────────────────────────────────
+MG_BG       = "#0a0a0b"
+MG_SURF     = "#131316"
+MG_SURF2    = "#1a1a1e"
+MG_BORDER   = "#26272b"
+MG_TEXT     = "#f7f2f2"
+MG_MUTED    = "#8a8b90"
+MG_DIM      = "#5a5b60"
+MG_RED      = "#ff3130"
+MG_RED_DIM  = "#cc1f1e"
+
+COLORES = [MG_RED, "#009EE3", "#fbbf24", "#4ade80", "#a78bfa", "#f472b6"]
+
+# ── Global CSS ──────────────────────────────────────────────────────────────────
+st.markdown(f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+
+/* ── Base fonts ── */
+html, body {{ font-family: 'Hanken Grotesk', system-ui, sans-serif; }}
+p, h1, h2, h3, h4, h5, h6, label, input, textarea,
+[data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] *,
+[data-testid="stMetricLabel"] p,
+[data-testid="stMetricValue"],
+[data-testid="stSidebar"] label,
+[data-testid="stCaption"] p,
+[data-baseweb] label, [data-baseweb] input {{
+    font-family: 'Hanken Grotesk', system-ui, sans-serif !important;
+}}
+
+/* ── Surfaces ── */
+.stApp,
+[data-testid="stAppViewContainer"],
+section[data-testid="stMain"] {{
+    background-color: {MG_BG} !important;
+}}
+[data-testid="stSidebar"] {{
+    background-color: {MG_BG} !important;
+    border-right: 1px solid {MG_BORDER} !important;
+}}
+[data-testid="stMainBlockContainer"] {{
+    padding-top: 1.5rem !important;
+}}
+
+/* ── Sidebar nav ── */
+[data-testid="stSidebar"] label p,
+[data-testid="stSidebar"] .stCaption p,
+[data-testid="stSidebar"] .stRadio label p {{
+    color: {MG_MUTED} !important;
+    font-size: 0.85rem !important;
+}}
+[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radio"][aria-checked="true"] label p {{
+    color: {MG_TEXT} !important;
+    font-weight: 600 !important;
+}}
+[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radio"][aria-checked="true"] {{
+    border-left: 2px solid {MG_RED} !important;
+    padding-left: 6px !important;
+}}
+
+/* ── Dividers ── */
+hr {{ border-color: {MG_BORDER} !important; }}
+
+/* ── Streamlit metrics ── */
+[data-testid="stMetricLabel"] p {{
+    color: {MG_MUTED} !important;
+    font-size: 0.62rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+    font-weight: 600 !important;
+    font-family: 'Space Mono', ui-monospace, monospace !important;
+}}
+[data-testid="stMetricValue"] {{
+    color: {MG_TEXT} !important;
+    font-size: 1.4rem !important;
+    font-weight: 700 !important;
+    line-height: 1.2 !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+}}
+[data-testid="stMetricDelta"] {{
+    font-size: 0.75rem !important;
+}}
+
+/* ── Headers ── */
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3 {{
+    color: {MG_TEXT} !important;
+}}
+
+/* ── Expanders ── */
+[data-testid="stExpander"] {{
+    background-color: {MG_SURF} !important;
+    border: 1px solid {MG_BORDER} !important;
+    border-radius: 6px !important;
+}}
+[data-testid="stExpander"] summary {{
+    color: {MG_MUTED} !important;
+    font-size: 0.85rem !important;
+}}
+[data-testid="stExpander"] summary:hover {{
+    color: {MG_TEXT} !important;
+}}
+[data-testid="stExpander"] summary svg {{
+    fill: {MG_MUTED} !important;
+}}
+
+/* ── Buttons ── */
+.stButton > button[kind="primary"],
+.stButton > button[data-testid="baseButton-primary"] {{
+    background-color: {MG_RED} !important;
+    color: {MG_TEXT} !important;
+    border: none !important;
+    font-weight: 700 !important;
+    border-radius: 4px !important;
+    font-family: 'Hanken Grotesk', sans-serif !important;
+    letter-spacing: 0.02em !important;
+}}
+.stButton > button[kind="primary"]:hover {{
+    background-color: {MG_RED_DIM} !important;
+}}
+.stButton > button:not([kind="primary"]),
+.stButton > button[data-testid="baseButton-secondary"] {{
+    background-color: {MG_SURF} !important;
+    color: {MG_TEXT} !important;
+    border: 1px solid {MG_BORDER} !important;
+    border-radius: 4px !important;
+    font-family: 'Hanken Grotesk', sans-serif !important;
+}}
+.stButton > button:not([kind="primary"]):hover {{
+    border-color: {MG_MUTED} !important;
+    color: {MG_TEXT} !important;
+}}
+
+/* ── Inputs / selectbox / number_input ── */
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-testid="stSelectbox"] > div > div {{
+    background-color: {MG_SURF} !important;
+    color: {MG_TEXT} !important;
+    border: 1px solid {MG_BORDER} !important;
+    border-radius: 4px !important;
+}}
+[data-testid="stTextInput"] input:focus,
+[data-testid="stNumberInput"] input:focus {{
+    border-color: {MG_RED} !important;
+    box-shadow: 0 0 0 1px {MG_RED} !important;
+}}
+[data-testid="stSelectbox"] > div > div:focus-within {{
+    border-color: {MG_RED} !important;
+    box-shadow: 0 0 0 1px {MG_RED} !important;
+}}
+[data-baseweb="select"] > div {{
+    background-color: {MG_SURF} !important;
+    border-color: {MG_BORDER} !important;
+}}
+[data-baseweb="select"] > div:hover {{
+    border-color: {MG_MUTED} !important;
+}}
+[data-baseweb="popover"] ul {{
+    background-color: {MG_SURF} !important;
+    border: 1px solid {MG_BORDER} !important;
+}}
+[data-baseweb="popover"] li {{
+    color: {MG_TEXT} !important;
+}}
+[data-baseweb="popover"] li:hover {{
+    background-color: {MG_SURF2} !important;
+}}
+[data-baseweb="date-input"] input {{
+    background-color: {MG_SURF} !important;
+    color: {MG_TEXT} !important;
+    border-color: {MG_BORDER} !important;
+}}
+
+/* ── Dataframes / tables ── */
+[data-testid="stDataFrame"] table,
+[data-testid="stDataFrameGlideDataEditor"] {{
+    background-color: {MG_SURF} !important;
+    color: {MG_TEXT} !important;
+}}
+[data-testid="stDataFrame"] th {{
+    background-color: {MG_BG} !important;
+    color: {MG_MUTED} !important;
+    font-size: 0.68rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+    font-weight: 600 !important;
+    font-family: 'Space Mono', ui-monospace, monospace !important;
+    border-bottom: 1px solid {MG_BORDER} !important;
+}}
+[data-testid="stDataFrame"] td {{
+    border-color: {MG_BORDER} !important;
+    color: {MG_TEXT} !important;
+}}
+[data-testid="stDataFrame"] tr:hover td {{
+    background-color: {MG_SURF2} !important;
+}}
+
+/* ── Progress bar ── */
+[data-testid="stProgressBar"] > div > div {{
+    background-color: {MG_RED} !important;
+}}
+[data-testid="stProgressBar"] > div {{
+    background-color: {MG_SURF2} !important;
+}}
+
+/* ── Spinner ── */
+[data-testid="stSpinner"] svg circle {{
+    stroke: {MG_RED} !important;
+}}
+
+/* ── Alert boxes ── */
+[data-testid="stAlert"] {{
+    border-radius: 4px !important;
+}}
+[data-testid="stAlert"][kind="success"] {{
+    background-color: #001a0d !important;
+    border-left: 3px solid #4ade80 !important;
+}}
+[data-testid="stAlert"][kind="warning"] {{
+    background-color: #1a1200 !important;
+    border-left: 3px solid #fbbf24 !important;
+}}
+[data-testid="stAlert"][kind="error"] {{
+    background-color: #1a0000 !important;
+    border-left: 3px solid {MG_RED} !important;
+}}
+[data-testid="stAlert"][kind="info"] {{
+    background-color: #00101a !important;
+    border-left: 3px solid #38bdf8 !important;
+}}
+
+/* ── Toggle ── */
+[data-testid="stToggle"] svg {{
+    color: {MG_RED} !important;
+}}
+
+/* ── Pills / multiselect ── */
+[data-testid="stPills"] button[aria-pressed="true"] {{
+    background-color: {MG_RED} !important;
+    border-color: {MG_RED} !important;
+    color: {MG_TEXT} !important;
+}}
+[data-testid="stPills"] button {{
+    background-color: {MG_SURF} !important;
+    border: 1px solid {MG_BORDER} !important;
+    color: {MG_MUTED} !important;
+    border-radius: 4px !important;
+}}
+[data-testid="stPills"] button:hover {{
+    border-color: {MG_MUTED} !important;
+    color: {MG_TEXT} !important;
+}}
+
+/* ── Chat messages ── */
+[data-testid="stChatMessage"] {{
+    background-color: {MG_SURF} !important;
+    border: 1px solid {MG_BORDER} !important;
+    border-radius: 6px !important;
+}}
+[data-testid="stChatInputTextArea"] textarea {{
+    background-color: {MG_SURF} !important;
+    color: {MG_TEXT} !important;
+    border-color: {MG_BORDER} !important;
+}}
+[data-testid="stChatInputTextArea"] textarea:focus {{
+    border-color: {MG_RED} !important;
+}}
+
+/* ── Captions ── */
+[data-testid="stCaption"] p {{
+    color: {MG_DIM} !important;
+    font-size: 0.72rem !important;
+}}
+
+/* ── Info/warning/success text colors ── */
+.stSuccess, .stWarning, .stError, .stInfo {{
+    border-radius: 4px !important;
+}}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Plotly dark template ────────────────────────────────────────────────────────
+_mg_template = go.layout.Template()
+_mg_template.layout = go.Layout(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor=MG_SURF,
+    font=dict(family="Hanken Grotesk, system-ui, sans-serif", color=MG_TEXT, size=12),
+    title=dict(font=dict(size=13, color=MG_TEXT, family="Hanken Grotesk, sans-serif"), x=0, pad=dict(l=0)),
+    xaxis=dict(gridcolor=MG_BORDER, linecolor=MG_BORDER, tickfont=dict(color=MG_MUTED, size=11), title_font=dict(color=MG_MUTED)),
+    yaxis=dict(gridcolor=MG_BORDER, linecolor=MG_BORDER, tickfont=dict(color=MG_MUTED, size=11), title_font=dict(color=MG_MUTED)),
+    legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=MG_MUTED, size=11), borderwidth=0),
+    margin=dict(l=8, r=8, t=36, b=8),
+    colorway=COLORES,
+)
+pio.templates["mg_dark"] = _mg_template
+pio.templates.default = "mg_dark"
+
+# ── Page eyebrow ────────────────────────────────────────────────────────────────
+st.markdown(
+    f'<p style="font-size:0.68rem;color:{MG_DIM};margin:0 0 0.75rem 0;'
+    f'letter-spacing:0.12em;font-family:\'Space Mono\',monospace;font-weight:700;">'
+    f'MARKET GAMER · DASHBOARD</p>',
+    unsafe_allow_html=True,
+)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def fmt(n):
