@@ -1101,6 +1101,34 @@ def costo_total_final_row(row, tipo_cambio, costos_gs):
 
 # ── Dólar blue ─────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800)
+@st.cache_data(ttl=900, show_spinner=False)
+def get_meta_spend(fecha_desde_str, fecha_hasta_str):
+    """Trae gasto en Meta Ads para el período. Devuelve float ARS o None."""
+    meta_token = st.secrets.get("META_TOKEN", "")
+    meta_account = st.secrets.get("META_AD_ACCOUNT_ID", "")
+    if not meta_token or not meta_account:
+        return None
+    # Limpiar el prefijo act_ si ya viene incluido
+    account_id = meta_account.replace("act_", "")
+    url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
+    params = {
+        "access_token": meta_token,
+        "fields": "spend,account_currency",
+        "time_range": json.dumps({"since": fecha_desde_str, "until": fecha_hasta_str}),
+        "level": "account",
+    }
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            if data:
+                spend = float(data[0].get("spend", 0))
+                currency = data[0].get("account_currency", "USD")
+                return spend, currency
+        return None
+    except Exception:
+        return None
+
 def get_dolar_blue():
     try:
         r = requests.get("https://api.bluelytics.com.ar/v2/latest", timeout=5)
@@ -1769,57 +1797,59 @@ if st.session_state.df_tn is not None:
     elif seccion == "💚 Salud Financiera":
         st.subheader("💚 Salud Financiera del Período")
 
-        # ── Configuración con form para evitar rerun al cambiar valores ──
+        # ── Configuración ──
+        dolar_default = int(dolar_blue) if dolar_blue else 1200
+
         with st.expander("⚙️ Configuración", expanded=True):
             with st.form("config_salud_financiera"):
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 with col1:
-                    dolar_default = int(dolar_blue) if dolar_blue else 1200
                     tipo_cambio = st.number_input(
                         f"💵 Dólar blue (auto: ${dolar_default:,.0f})" if dolar_blue else "💵 Tipo de cambio",
                         value=st.session_state.tipo_cambio_sf or dolar_default, step=10,
                     )
-                with col2:
                     pct_iva = st.slider("🧾 IVA efectivo (%)", 0.0, 21.0, st.session_state.pct_iva, 0.5)
-                with col3:
-                    pauta_manual = st.number_input("📣 Pauta publicitaria (ARS)", value=st.session_state.pauta_manual, step=50_000)
-                submitted_config = st.form_submit_button("✅ Aplicar configuración", use_container_width=True)
+                with col2:
+                    # Intentar traer pauta desde Meta Ads
+                    _meta_result = get_meta_spend(str(fecha_desde), str(fecha_hasta))
+                    if _meta_result:
+                        _meta_spend_raw, _meta_currency = _meta_result
+                        if _meta_currency == "ARS":
+                            _pauta_meta = round(_meta_spend_raw)
+                        else:
+                            # Convertir USD → ARS con dólar blue
+                            _pauta_meta = round(_meta_spend_raw * dolar_default)
+                        st.success(
+                            f"📡 Meta Ads: {_meta_currency} {_meta_spend_raw:,.2f}"
+                            + (f" → ${_pauta_meta:,.0f} ARS" if _meta_currency != "ARS" else ""),
+                            icon="✅",
+                        )
+                        pauta_manual = st.number_input(
+                            "📣 Pauta publicitaria (ARS) — desde Meta",
+                            value=int(st.session_state.pauta_manual) if st.session_state.pauta_manual else _pauta_meta,
+                            step=10_000,
+                        )
+                    else:
+                        _meta_cfg = st.secrets.get("META_TOKEN", "")
+                        if not _meta_cfg:
+                            st.caption("💡 Agregá `META_TOKEN` y `META_AD_ACCOUNT_ID` en secrets para traer el gasto de Meta automáticamente.")
+                        else:
+                            st.warning("⚠️ No se pudo conectar con Meta Ads — ingresá el monto manualmente.")
+                        pauta_manual = st.number_input(
+                            "📣 Pauta publicitaria (ARS)",
+                            value=st.session_state.pauta_manual,
+                            step=10_000,
+                        )
+                submitted_config = st.form_submit_button("✅ Aplicar", use_container_width=True)
                 if submitted_config:
                     st.session_state.tipo_cambio_sf = tipo_cambio
                     st.session_state.pct_iva = pct_iva
                     st.session_state.pauta_manual = pauta_manual
 
-        # Use stored values
-        tipo_cambio = st.session_state.tipo_cambio_sf or (int(dolar_blue) if dolar_blue else 1200)
+        # Usar valores guardados
+        tipo_cambio = st.session_state.tipo_cambio_sf or dolar_default
         pct_iva = st.session_state.pct_iva
         pauta_manual = st.session_state.pauta_manual
-
-        # Tasas de Pago Nube
-        tasas_reales = calcular_tasas_reales(df_pagos) if not df_pagos.empty else None
-
-        with st.expander("💳 Tasas de Pago Nube por cuotas (ajustables)", expanded=False):
-            st.caption(
-                "📌 Estas tasas se usan para **recalcular la comisión de cada orden** en esta solapa. "
-                "Ajustalas si tus tasas reales difieren de las teóricas de PN."
-            )
-            if tasas_reales:
-                st.success(f"✅ Tasas calculadas desde {len(df_pagos)} transacciones reales de Pago Nube")
-                st.json(tasas_reales)
-            else:
-                st.info("Tasas calibradas manualmente. Si Pago Nube envía datos de fees, se auto-calculan.")
-
-            tc1, tc2, tc3, tc4, tc5, tc6 = st.columns(6)
-            tasa_1c  = tc1.number_input("1 cuota (%)",  value=4.15,  step=0.01, key="t1") / 100
-            tasa_2c  = tc2.number_input("2 cuotas (%)", value=11.78, step=0.01, key="t2") / 100
-            tasa_3c  = tc3.number_input("3 cuotas (%)", value=14.20, step=0.01, key="t3") / 100
-            tasa_6c  = tc4.number_input("6 cuotas (%)", value=23.70, step=0.01, key="t6") / 100
-            tasa_12c = tc5.number_input("12 cuotas (%)", value=43.24, step=0.01, key="t12") / 100
-            tasa_deb = tc6.number_input("Deb/Trans (%)", value=4.15,  step=0.01, key="tdeb") / 100
-            tasas_custom = {
-                1: tasa_1c, 2: tasa_2c, 3: tasa_3c, 6: tasa_6c,
-                9: (tasa_6c + tasa_12c) / 2, 12: tasa_12c,
-                18: tasa_12c * 1.15, 24: tasa_12c * 1.30, "debit": tasa_deb,
-            }
 
         st.divider()
         st.subheader("💰 Resumen financiero del período")
@@ -1827,21 +1857,9 @@ if st.session_state.df_tn is not None:
         if df_tn.empty:
             st.info("Buscá primero para ver los datos financieros.")
         else:
-            def comision_custom(row):
-                metodo = str(row.get("Medio de Pago", "")).lower()
-                cuotas = int(row.get("Cuotas", 1) or 1)
-                total = float(row.get("Total ($)", 0))
-                if "debit" in metodo or "debito" in metodo or "transfer" in metodo or "dinero" in metodo:
-                    tasa = tasas_custom.get("debit", 0.0199)
-                else:
-                    opciones = [k for k in tasas_custom if isinstance(k, int)]
-                    tasa_key = min(opciones, key=lambda x: abs(x - cuotas))
-                    tasa = tasas_custom.get(tasa_key, 0.0414)
-                return round(total * tasa, 2)
-
             _costos_gs_sf = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
             df_calc = df_tn.copy()
-            df_calc["Comision PN ($)"] = df_calc.apply(comision_custom, axis=1)
+            # Usar comisiones reales de TN (no recalcular con tasas teóricas)
             df_calc["Neto cobrado ($)"] = df_calc["Total ($)"] - df_calc["Comision PN ($)"]
             df_calc["Costo Productos ($)"] = df_calc.apply(
                 lambda r: costo_final_row(r, tipo_cambio, _costos_gs_sf), axis=1
@@ -1926,8 +1944,21 @@ if st.session_state.df_tn is not None:
             ).round(0)
             df_daily["Resultado_Acum"] = df_daily["Resultado"].cumsum()
 
-            # Colores por resultado positivo/negativo
-            df_daily["Color"] = df_daily["Resultado"].apply(lambda x: "#00C49F" if x >= 0 else "#FF5733")
+            # Colores de marca
+            _COLOR_POS = "#4ade80"   # verde
+            _COLOR_NEG = MG_RED      # rojo MG
+            _COLOR_ACUM = "#009EE3"  # azul
+            df_daily["Color"] = df_daily["Resultado"].apply(lambda x: _COLOR_POS if x >= 0 else _COLOR_NEG)
+
+            # Label compacto: solo K/M para no solapar
+            def _lbl(v):
+                if abs(v) >= 1_000_000:
+                    return f"${v/1_000_000:.1f}M"
+                elif abs(v) >= 1_000:
+                    return f"${v/1_000:.0f}K"
+                return f"${v:.0f}"
+
+            df_daily["Label"] = df_daily["Resultado"].apply(_lbl)
 
             fig_daily = go.Figure()
 
@@ -1936,27 +1967,38 @@ if st.session_state.df_tn is not None:
                 x=df_daily["Fecha"], y=df_daily["Resultado"],
                 name="Resultado diario",
                 marker_color=df_daily["Color"],
-                text=df_daily["Resultado"].apply(lambda x: f"${x:,.0f}"),
+                marker_line_width=0,
+                text=df_daily["Label"],
                 textposition="outside",
-                textfont_size=10,
+                textfont=dict(size=10, color=MG_MUTED),
+                hovertemplate="<b>%{x}</b><br>Resultado: $%{y:,.0f}<extra></extra>",
             ))
 
-            # Línea acumulada
+            # Línea acumulada (eje derecho)
             fig_daily.add_trace(go.Scatter(
                 x=df_daily["Fecha"], y=df_daily["Resultado_Acum"],
                 name="Acumulado",
                 mode="lines+markers",
-                line=dict(color="#009EE3", width=3),
-                marker=dict(size=7),
+                line=dict(color=_COLOR_ACUM, width=2),
+                marker=dict(size=5, color=_COLOR_ACUM),
                 yaxis="y2",
+                hovertemplate="Acumulado: $%{y:,.0f}<extra></extra>",
             ))
 
             fig_daily.update_layout(
-                title="Resultado neto por día + acumulado",
-                yaxis=dict(title="Resultado diario ($)", tickformat="$,.0f"),
-                yaxis2=dict(title="Acumulado ($)", overlaying="y", side="right", tickformat="$,.0f", showgrid=False),
-                legend=dict(orientation="h", y=-0.15),
+                yaxis=dict(
+                    title="", tickformat="$,.0f",
+                    gridcolor=MG_BORDER, zeroline=True, zerolinecolor=MG_MUTED, zerolinewidth=1,
+                ),
+                yaxis2=dict(
+                    title="", overlaying="y", side="right",
+                    tickformat="$,.0f", showgrid=False,
+                    tickfont=dict(color=_COLOR_ACUM, size=10),
+                ),
+                legend=dict(orientation="h", y=1.08, x=0, xanchor="left"),
                 hovermode="x unified",
+                bargap=0.3,
+                height=400,
             )
             st.plotly_chart(fig_daily, use_container_width=True)
 
@@ -1964,12 +2006,14 @@ if st.session_state.df_tn is not None:
             if len(df_daily) >= 3:
                 ultimos_3 = df_daily["Resultado"].tail(3).mean()
                 primeros_3 = df_daily["Resultado"].head(3).mean()
+                dias_positivos = (df_daily["Resultado"] >= 0).sum()
+                dias_totales = len(df_daily)
                 if ultimos_3 > primeros_3 * 1.1:
-                    st.success("📈 Tendencia alcista: los últimos días vienen mejor que el arranque del período.")
+                    st.success(f"📈 Tendencia alcista — últimos días {_lbl(ultimos_3)}/día vs {_lbl(primeros_3)}/día al arranque. {dias_positivos}/{dias_totales} días en verde.")
                 elif ultimos_3 < primeros_3 * 0.9:
-                    st.warning("📉 Tendencia bajista: los últimos días vienen más flojos que el arranque.")
+                    st.warning(f"📉 Tendencia bajista — últimos días {_lbl(ultimos_3)}/día vs {_lbl(primeros_3)}/día al arranque. {dias_positivos}/{dias_totales} días en verde.")
                 else:
-                    st.info("➡️ Tendencia estable durante el período.")
+                    st.info(f"➡️ Tendencia estable — promedio {_lbl(df_daily['Resultado'].mean())}/día. {dias_positivos}/{dias_totales} días en verde.")
 
             # Detalle por orden
             st.divider()
