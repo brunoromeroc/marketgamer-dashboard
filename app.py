@@ -949,6 +949,7 @@ SECCIONES = [
     "📐 Margen teórico",
     "📈 Margen real",
     "🏭 Proveedores",
+    "💳 Estadísticas de pago",
     "🤖 Analista IA",
 ]
 
@@ -3544,7 +3545,239 @@ if st.session_state.df_tn is not None:
             st.success("✅ Guardado en Google Sheets" if ok else "⚠️ Solo en sesión")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 11: ANALISTA IA
+    # TAB 11: ESTADÍSTICAS DE PAGO
+    # ══════════════════════════════════════════════════════════════════════════
+    elif seccion == "💳 Estadísticas de pago":
+        st.subheader("💳 Estadísticas de pago")
+
+        if df_tn.empty:
+            st.warning("Sin datos para el período seleccionado.")
+        else:
+            # ── Preparar columnas de fecha ──
+            df_pago = df_tn.copy()
+            df_pago["Fecha"] = pd.to_datetime(df_pago["Fecha"], errors="coerce")
+            df_pago["Semana"] = df_pago["Fecha"].dt.to_period("W").apply(lambda r: str(r.start_time.date()))
+            df_pago["Dia"] = df_pago["Fecha"].dt.date
+
+            # ── KPIs rápidos ──
+            total_fact = df_pago["Total ($)"].sum()
+            total_ordenes = len(df_pago)
+            ticket_prom = total_fact / total_ordenes if total_ordenes else 0
+            costo_pn_prom = df_pago["Costo PN (%)"].mean() if "Costo PN (%)" in df_pago.columns else 0
+
+            kp1, kp2, kp3, kp4 = st.columns(4)
+            kp1.metric("Facturación total", fmt(total_fact))
+            kp2.metric("Órdenes", total_ordenes)
+            kp3.metric("Ticket promedio", fmt(ticket_prom))
+            kp4.metric("Costo PN promedio", f"{costo_pn_prom:.2f}%")
+
+            st.divider()
+
+            # ── Sección 1: Por medio de pago ──
+            st.markdown("### 💳 Por medio de pago")
+
+            agg_medio = (
+                df_pago.groupby("Medio de Pago")
+                .agg(
+                    Ordenes=("Orden", "count"),
+                    Facturación=("Total ($)", "sum"),
+                    Neto=("Neto cobrado ($)", "sum"),
+                    Comisión=("Comision PN ($)", "sum"),
+                )
+                .reset_index()
+            )
+            agg_medio["Ticket prom"] = agg_medio["Facturación"] / agg_medio["Ordenes"]
+            agg_medio["Costo PN %"] = (agg_medio["Comisión"] / agg_medio["Facturación"] * 100).round(2)
+            agg_medio["Part. fact %"] = (agg_medio["Facturación"] / agg_medio["Facturación"].sum() * 100).round(1)
+            agg_medio = agg_medio.sort_values("Facturación", ascending=False)
+
+            col_chart1, col_chart2 = st.columns(2)
+
+            with col_chart1:
+                fig_fact_medio = px.bar(
+                    agg_medio,
+                    x="Medio de Pago",
+                    y="Facturación",
+                    color="Medio de Pago",
+                    color_discrete_sequence=COLORES,
+                    title="Facturación por medio de pago",
+                    text=agg_medio["Facturación"].apply(lambda v: fmt(v)),
+                )
+                fig_fact_medio.update_traces(textposition="outside")
+                fig_fact_medio.update_layout(showlegend=False, height=350, margin=dict(t=40, b=0))
+                st.plotly_chart(fig_fact_medio, use_container_width=True)
+
+            with col_chart2:
+                fig_ord_medio = px.bar(
+                    agg_medio,
+                    x="Medio de Pago",
+                    y="Ordenes",
+                    color="Medio de Pago",
+                    color_discrete_sequence=COLORES,
+                    title="Órdenes por medio de pago",
+                    text="Ordenes",
+                )
+                fig_ord_medio.update_traces(textposition="outside")
+                fig_ord_medio.update_layout(showlegend=False, height=350, margin=dict(t=40, b=0))
+                st.plotly_chart(fig_ord_medio, use_container_width=True)
+
+            # Donut participación en facturación
+            col_donut1, col_donut2 = st.columns(2)
+            with col_donut1:
+                fig_donut_fact = px.pie(
+                    agg_medio,
+                    names="Medio de Pago",
+                    values="Facturación",
+                    hole=0.5,
+                    color_discrete_sequence=COLORES,
+                    title="Participación en facturación",
+                )
+                fig_donut_fact.update_traces(textposition="outside", textinfo="label+percent")
+                fig_donut_fact.update_layout(showlegend=False, height=320, margin=dict(t=40, b=0))
+                st.plotly_chart(fig_donut_fact, use_container_width=True)
+
+            with col_donut2:
+                fig_costo_medio = px.bar(
+                    agg_medio.sort_values("Costo PN %", ascending=True),
+                    x="Costo PN %",
+                    y="Medio de Pago",
+                    orientation="h",
+                    color="Costo PN %",
+                    color_continuous_scale=["#00C49F", "#FFD700", "#FF5733"],
+                    title="Costo Pago Nube % por método",
+                    text=agg_medio.sort_values("Costo PN %", ascending=True)["Costo PN %"].apply(lambda v: f"{v:.2f}%"),
+                )
+                fig_costo_medio.update_traces(textposition="outside")
+                fig_costo_medio.update_layout(showlegend=False, height=320, margin=dict(t=40, b=0), coloraxis_showscale=False)
+                st.plotly_chart(fig_costo_medio, use_container_width=True)
+
+            # Tabla resumen
+            tabla_medio = agg_medio[["Medio de Pago", "Ordenes", "Facturación", "Ticket prom", "Costo PN %", "Part. fact %"]].copy()
+            tabla_medio_fmt = tabla_medio.copy()
+            tabla_medio_fmt["Facturación"] = tabla_medio["Facturación"].apply(fmt)
+            tabla_medio_fmt["Ticket prom"] = tabla_medio["Ticket prom"].apply(fmt)
+            tabla_medio_fmt["Costo PN %"] = tabla_medio["Costo PN %"].apply(lambda v: f"{v:.2f}%")
+            tabla_medio_fmt["Part. fact %"] = tabla_medio["Part. fact %"].apply(lambda v: f"{v:.1f}%")
+            st.dataframe(tabla_medio_fmt, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # ── Sección 2: Por cuotas ──
+            st.markdown("### 🔢 Por cuotas")
+
+            df_pago["Cuotas_label"] = df_pago["Cuotas"].apply(
+                lambda c: f"{int(c)} cuota{'s' if int(c) > 1 else ''}"
+            )
+            agg_cuotas = (
+                df_pago.groupby(["Cuotas", "Cuotas_label"])
+                .agg(
+                    Ordenes=("Orden", "count"),
+                    Facturación=("Total ($)", "sum"),
+                    Comisión=("Comision PN ($)", "sum"),
+                )
+                .reset_index()
+                .sort_values("Cuotas")
+            )
+            agg_cuotas["Ticket prom"] = agg_cuotas["Facturación"] / agg_cuotas["Ordenes"]
+            agg_cuotas["Costo PN %"] = (agg_cuotas["Comisión"] / agg_cuotas["Facturación"] * 100).round(2)
+            agg_cuotas["Part. fact %"] = (agg_cuotas["Facturación"] / agg_cuotas["Facturación"].sum() * 100).round(1)
+
+            col_cuotas1, col_cuotas2 = st.columns(2)
+
+            with col_cuotas1:
+                fig_fact_cuotas = px.bar(
+                    agg_cuotas,
+                    x="Cuotas_label",
+                    y="Facturación",
+                    color="Cuotas_label",
+                    color_discrete_sequence=COLORES,
+                    title="Facturación por cuotas",
+                    text=agg_cuotas["Facturación"].apply(lambda v: fmt(v)),
+                )
+                fig_fact_cuotas.update_traces(textposition="outside")
+                fig_fact_cuotas.update_layout(showlegend=False, height=350, margin=dict(t=40, b=0), xaxis_title="")
+                st.plotly_chart(fig_fact_cuotas, use_container_width=True)
+
+            with col_cuotas2:
+                fig_ord_cuotas = px.bar(
+                    agg_cuotas,
+                    x="Cuotas_label",
+                    y="Ordenes",
+                    color="Cuotas_label",
+                    color_discrete_sequence=COLORES,
+                    title="Órdenes por cuotas",
+                    text="Ordenes",
+                )
+                fig_ord_cuotas.update_traces(textposition="outside")
+                fig_ord_cuotas.update_layout(showlegend=False, height=350, margin=dict(t=40, b=0), xaxis_title="")
+                st.plotly_chart(fig_ord_cuotas, use_container_width=True)
+
+            # Tabla cuotas
+            tabla_cuotas = agg_cuotas[["Cuotas_label", "Ordenes", "Facturación", "Ticket prom", "Costo PN %", "Part. fact %"]].copy()
+            tabla_cuotas_fmt = tabla_cuotas.copy()
+            tabla_cuotas_fmt.columns = ["Cuotas", "Órdenes", "Facturación", "Ticket prom", "Costo PN %", "Part. fact %"]
+            tabla_cuotas_fmt["Facturación"] = tabla_cuotas["Facturación"].apply(fmt)
+            tabla_cuotas_fmt["Ticket prom"] = tabla_cuotas["Ticket prom"].apply(fmt)
+            tabla_cuotas_fmt["Costo PN %"] = tabla_cuotas["Costo PN %"].apply(lambda v: f"{v:.2f}%")
+            tabla_cuotas_fmt["Part. fact %"] = tabla_cuotas["Part. fact %"].apply(lambda v: f"{v:.1f}%")
+            st.dataframe(tabla_cuotas_fmt, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # ── Sección 3: Tendencia por método ──
+            st.markdown("### 📈 Tendencia de facturación por método")
+
+            # Agrupar por día y método
+            tend_medio = (
+                df_pago.groupby(["Dia", "Medio de Pago"])["Total ($)"]
+                .sum()
+                .reset_index()
+            )
+            tend_medio["Dia"] = pd.to_datetime(tend_medio["Dia"])
+            tend_medio = tend_medio.sort_values("Dia")
+
+            # Solo mostrar si hay suficientes días
+            dias_unicos = tend_medio["Dia"].nunique()
+            if dias_unicos >= 3:
+                fig_tend = px.line(
+                    tend_medio,
+                    x="Dia",
+                    y="Total ($)",
+                    color="Medio de Pago",
+                    color_discrete_sequence=COLORES,
+                    title="Facturación diaria por medio de pago",
+                    markers=True,
+                )
+                fig_tend.update_layout(height=380, margin=dict(t=40, b=0), xaxis_title="", yaxis_title="Facturación ($)")
+                st.plotly_chart(fig_tend, use_container_width=True)
+            else:
+                st.info("📅 Se necesitan al menos 3 días de datos para mostrar la tendencia.")
+
+            # ── Sección 4: Mapa de calor método × cuotas ──
+            st.markdown("### 🗺️ Facturación: método × cuotas")
+
+            pivot = df_pago.pivot_table(
+                index="Medio de Pago",
+                columns="Cuotas",
+                values="Total ($)",
+                aggfunc="sum",
+                fill_value=0,
+            )
+            pivot.columns = [f"{int(c)}c" for c in pivot.columns]
+            pivot = pivot.reset_index()
+
+            fig_heat = px.imshow(
+                pivot.set_index("Medio de Pago"),
+                color_continuous_scale=["#0d1b2a", "#009EE3", "#00C49F"],
+                text_auto=".3s",
+                aspect="auto",
+                title="Facturación ($) por método y cuotas",
+            )
+            fig_heat.update_layout(height=300, margin=dict(t=40, b=0), coloraxis_showscale=False)
+            st.plotly_chart(fig_heat, use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 12: ANALISTA IA
     # ══════════════════════════════════════════════════════════════════════════
     elif seccion == "🤖 Analista IA":
         if "analyst_messages" not in st.session_state:
