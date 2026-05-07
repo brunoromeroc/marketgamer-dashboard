@@ -2203,48 +2203,98 @@ if st.session_state.df_tn is not None:
                                 f"{_n_filtradas} liquidaciones de Pago Nube/Dlocal excluidas"
                             )
 
-                # Debug: inspeccionar pago raw por ID
-                with st.expander("🔧 Inspeccionar pago MP por ID", expanded=False):
-                    st.caption("Pegá el ID de operación de MP para ver el JSON crudo (útil para identificar campos).")
-                    _dbg_c1, _dbg_c2 = st.columns([3, 1])
-                    _dbg_id = _dbg_c1.text_input(
-                        "ID operación", placeholder="156885323147",
-                        label_visibility="collapsed", key="dbg_mp_id",
-                    )
-                    if _dbg_c2.button("Buscar", use_container_width=True, key="dbg_mp_btn") and _dbg_id:
-                        try:
-                            _r = requests.get(
-                                f"https://api.mercadopago.com/v1/payments/{_dbg_id.strip()}",
-                                headers={"Authorization": f"Bearer {MP_ACCESS_TOKEN}"},
-                                timeout=10,
+                # ── Debug MP ──────────────────────────────────────────────
+                # Persistencia de resultados en session state
+                if "mp_debug_payment" not in st.session_state:
+                    st.session_state.mp_debug_payment = None
+                if "mp_debug_sample" not in st.session_state:
+                    st.session_state.mp_debug_sample = None
+
+                with st.expander("🔧 Debug MP — inspeccionar estructura de pagos", expanded=False):
+                    st.caption("Útil para ver qué campos vienen en la API y por qué el filtro no captura una liquidación.")
+
+                    # OPCIÓN A: Buscar por ID
+                    st.markdown("**A) Buscar pago por ID de operación**")
+                    with st.form("dbg_mp_form_id"):
+                        _dbg_id = st.text_input("ID operación MP", placeholder="156885323147")
+                        _dbg_submit = st.form_submit_button("Buscar pago", use_container_width=True)
+                        if _dbg_submit and _dbg_id:
+                            try:
+                                _r = requests.get(
+                                    f"https://api.mercadopago.com/v1/payments/{_dbg_id.strip()}",
+                                    headers={"Authorization": f"Bearer {MP_ACCESS_TOKEN}"},
+                                    timeout=10,
+                                )
+                                if _r.status_code == 200:
+                                    st.session_state.mp_debug_payment = _r.json()
+                                else:
+                                    st.session_state.mp_debug_payment = {
+                                        "_error": f"HTTP {_r.status_code}: {_r.text[:400]}"
+                                    }
+                            except Exception as _e:
+                                st.session_state.mp_debug_payment = {"_error": str(_e)}
+
+                    # Renderizar resultado de búsqueda (persiste tras rerun)
+                    _dbg_data = st.session_state.mp_debug_payment
+                    if _dbg_data:
+                        if "_error" in _dbg_data:
+                            st.error(_dbg_data["_error"])
+                        else:
+                            st.markdown("**Campos clave del pago:**")
+                            _resumen = {
+                                "id": _dbg_data.get("id"),
+                                "status": _dbg_data.get("status"),
+                                "payment_type_id": _dbg_data.get("payment_type_id"),
+                                "payment_method_id": _dbg_data.get("payment_method_id"),
+                                "transaction_amount": _dbg_data.get("transaction_amount"),
+                                "description": _dbg_data.get("description"),
+                                "statement_descriptor": _dbg_data.get("statement_descriptor"),
+                                "payer.identification": _dbg_data.get("payer", {}).get("identification"),
+                                "payer.first_name": _dbg_data.get("payer", {}).get("first_name"),
+                                "payer.last_name": _dbg_data.get("payer", {}).get("last_name"),
+                                "payer.email": _dbg_data.get("payer", {}).get("email"),
+                                "payer.entity_type": _dbg_data.get("payer", {}).get("entity_type"),
+                                "additional_info.payer": _dbg_data.get("additional_info", {}).get("payer"),
+                            }
+                            st.json(_resumen, expanded=True)
+                            st.markdown(
+                                f"**¿Detectado como liquidación externa?** "
+                                f"`{_es_liquidacion_externa(_dbg_data)}` · "
+                                f"CUIT extraído: `{_cuit_payer(_dbg_data) or '(vacío)'}`"
                             )
-                            if _r.status_code == 200:
-                                _data = _r.json()
-                                st.markdown("**Resumen de campos clave:**")
-                                _resumen = {
-                                    "id": _data.get("id"),
-                                    "status": _data.get("status"),
-                                    "payment_type_id": _data.get("payment_type_id"),
-                                    "payment_method_id": _data.get("payment_method_id"),
-                                    "transaction_amount": _data.get("transaction_amount"),
-                                    "description": _data.get("description"),
-                                    "statement_descriptor": _data.get("statement_descriptor"),
-                                    "payer.identification": _data.get("payer", {}).get("identification"),
-                                    "payer.first_name": _data.get("payer", {}).get("first_name"),
-                                    "payer.last_name": _data.get("payer", {}).get("last_name"),
-                                    "payer.email": _data.get("payer", {}).get("email"),
-                                    "payer.entity_type": _data.get("payer", {}).get("entity_type"),
-                                    "additional_info.payer": _data.get("additional_info", {}).get("payer"),
-                                    "_es_liquidacion_externa": _es_liquidacion_externa(_data),
-                                    "_cuit_payer": _cuit_payer(_data),
-                                }
-                                st.json(_resumen, expanded=True)
-                                with st.expander("Ver JSON completo", expanded=False):
-                                    st.json(_data, expanded=False)
-                            else:
-                                st.error(f"Error {_r.status_code}: {_r.text[:300]}")
-                        except Exception as _e:
-                            st.error(f"Error consultando MP: {_e}")
+                            with st.expander("Ver JSON completo", expanded=False):
+                                st.json(_dbg_data)
+
+                    st.divider()
+                    # OPCIÓN B: Dump de los pagos del período actual ordenados por monto
+                    st.markdown("**B) Top 5 pagos del período por monto** (para ver de dónde viene el bruto inflado)")
+                    if st.button("Mostrar top 5 pagos crudos", use_container_width=True, key="dbg_mp_sample_btn"):
+                        sorted_pagos = sorted(_mp_raw_sf, key=lambda x: float(x.get("transaction_amount", 0)), reverse=True)[:5]
+                        st.session_state.mp_debug_sample = sorted_pagos
+
+                    if st.session_state.mp_debug_sample:
+                        for _i, _p in enumerate(st.session_state.mp_debug_sample, 1):
+                            _bruto = float(_p.get("transaction_amount", 0))
+                            _tipo = _p.get("payment_type_id", "")
+                            _liq = _es_liquidacion_externa(_p)
+                            _cuit = _cuit_payer(_p)
+                            st.markdown(
+                                f"**{_i}.** ID `{_p.get('id')}` · "
+                                f"${_bruto:,.0f} · "
+                                f"tipo: `{_tipo}` · "
+                                f"CUIT payer: `{_cuit or '(vacío)'}` · "
+                                f"filtrado: `{_liq}`"
+                            )
+                            _resumen_p = {
+                                "payment_type_id": _p.get("payment_type_id"),
+                                "payment_method_id": _p.get("payment_method_id"),
+                                "description": _p.get("description"),
+                                "statement_descriptor": _p.get("statement_descriptor"),
+                                "payer": _p.get("payer"),
+                                "additional_info.payer": _p.get("additional_info", {}).get("payer"),
+                            }
+                            with st.expander(f"Ver campos pago #{_i}", expanded=False):
+                                st.json(_resumen_p)
 
                 st.divider()
 
