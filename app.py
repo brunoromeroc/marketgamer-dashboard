@@ -1906,8 +1906,8 @@ if st.session_state.df_tn is not None:
             )
 
             cols_tn = [
-                "Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Total ($)",
-                "Descuento ($)", "Envio costo ($)", "Comision PN ($)", "Costo PN (%)",
+                "Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Pasarela", "ID MP",
+                "Total ($)", "Descuento ($)", "Envio costo ($)", "Comision PN ($)", "Costo PN (%)",
                 "Neto cobrado ($)", "Costo Productos ($)", "Margen ($)", "Margen (%)",
                 "Estado Envio", "Productos", "Cantidad", "Canal",
             ]
