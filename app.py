@@ -1050,7 +1050,7 @@ def get_mp_payments(fecha_desde_str, fecha_hasta_str):
 # CUITs de procesadores de pago externos cuyas transferencias a la cuenta MP
 # NO son ventas — ya fueron contadas como ventas vía Pago Nube en TN.
 CUITS_LIQUIDACIONES = {
-    "30714267163",  # Dlocal Argentina SA (liquida Tienda Nube / Pago Nube)
+    "30718824830",  # Tienda Nube / Pago Nube (liquidaciones a la cuenta MP)
 }
 
 def _cuit_payer(p):
