@@ -1525,6 +1525,54 @@ with st.sidebar:
         st.caption(f"{fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
     buscar = st.button("Actualizar datos", use_container_width=True)
 
+    # ── Config Salud Financiera (solo visible en esa sección) ──────────────────
+    if seccion == "💚 Salud Financiera":
+        st.divider()
+        st.markdown(
+            f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\','
+            f'monospace;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
+            f'⚙️ Configuración financiera</p>',
+            unsafe_allow_html=True,
+        )
+        _dolar_default_sf = int(dolar_blue) if dolar_blue else 1200
+        _tc_sf = st.number_input(
+            f"💵 Dólar blue",
+            value=st.session_state.tipo_cambio_sf or _dolar_default_sf,
+            step=10,
+            help="Tipo de cambio para convertir costos USD → ARS",
+        )
+        _iva_sf = st.slider("🧾 IVA efectivo (%)", 0.0, 21.0, float(st.session_state.pct_iva), 0.5)
+
+        # Meta Ads — auto-fetch
+        _meta_result_sb = get_meta_spend(str(fecha_desde), str(fecha_hasta))
+        if _meta_result_sb:
+            _meta_spend_sb, _meta_cur_sb = _meta_result_sb
+            _pauta_auto = round(_meta_spend_sb) if _meta_cur_sb == "ARS" else round(_meta_spend_sb * (_tc_sf or _dolar_default_sf))
+            st.success(
+                f"📡 Meta: {_meta_cur_sb} {_meta_spend_sb:,.0f}"
+                + (f" → ${_pauta_auto:,.0f}" if _meta_cur_sb != "ARS" else ""),
+            )
+            _pauta_default = int(st.session_state.pauta_manual) if st.session_state.pauta_manual else _pauta_auto
+        else:
+            _meta_token_check = st.secrets.get("META_TOKEN", "")
+            if not _meta_token_check:
+                st.caption("💡 Agregá `META_TOKEN` + `META_AD_ACCOUNT_ID` en secrets para auto-fetch.")
+            else:
+                st.warning("⚠️ Meta Ads no disponible — ingresá manualmente.")
+            _pauta_default = st.session_state.pauta_manual
+
+        _pauta_sf = st.number_input(
+            "📣 Pauta (ARS)",
+            value=int(_pauta_default),
+            step=10_000,
+            help="Gasto en publicidad Meta Ads del período",
+        )
+        if st.button("✅ Aplicar", use_container_width=True, key="btn_aplicar_sf"):
+            st.session_state.tipo_cambio_sf = _tc_sf
+            st.session_state.pct_iva = _iva_sf
+            st.session_state.pauta_manual = _pauta_sf
+            st.rerun()
+
 # ── Helper: cargar y cruzar datos ─────────────────────────────────────────────
 def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
     """Carga órdenes TN + pagos PN + pagos MP y ejecuta el matching automático."""
@@ -2019,56 +2067,8 @@ if st.session_state.df_tn is not None:
     elif seccion == "💚 Salud Financiera":
         st.subheader("💚 Salud Financiera del Período")
 
-        # ── Configuración ──
+        # ── Usar valores de session state (configurados en sidebar) ──
         dolar_default = int(dolar_blue) if dolar_blue else 1200
-
-        with st.expander("⚙️ Configuración", expanded=True):
-            with st.form("config_salud_financiera"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    tipo_cambio = st.number_input(
-                        f"💵 Dólar blue (auto: ${dolar_default:,.0f})" if dolar_blue else "💵 Tipo de cambio",
-                        value=st.session_state.tipo_cambio_sf or dolar_default, step=10,
-                    )
-                    pct_iva = st.slider("🧾 IVA efectivo (%)", 0.0, 21.0, st.session_state.pct_iva, 0.5)
-                with col2:
-                    # Intentar traer pauta desde Meta Ads
-                    _meta_result = get_meta_spend(str(fecha_desde), str(fecha_hasta))
-                    if _meta_result:
-                        _meta_spend_raw, _meta_currency = _meta_result
-                        if _meta_currency == "ARS":
-                            _pauta_meta = round(_meta_spend_raw)
-                        else:
-                            # Convertir USD → ARS con dólar blue
-                            _pauta_meta = round(_meta_spend_raw * dolar_default)
-                        st.success(
-                            f"📡 Meta Ads: {_meta_currency} {_meta_spend_raw:,.2f}"
-                            + (f" → ${_pauta_meta:,.0f} ARS" if _meta_currency != "ARS" else ""),
-                            icon="✅",
-                        )
-                        pauta_manual = st.number_input(
-                            "📣 Pauta publicitaria (ARS) — desde Meta",
-                            value=int(st.session_state.pauta_manual) if st.session_state.pauta_manual else _pauta_meta,
-                            step=10_000,
-                        )
-                    else:
-                        _meta_cfg = st.secrets.get("META_TOKEN", "")
-                        if not _meta_cfg:
-                            st.caption("💡 Agregá `META_TOKEN` y `META_AD_ACCOUNT_ID` en secrets para traer el gasto de Meta automáticamente.")
-                        else:
-                            st.warning("⚠️ No se pudo conectar con Meta Ads — ingresá el monto manualmente.")
-                        pauta_manual = st.number_input(
-                            "📣 Pauta publicitaria (ARS)",
-                            value=st.session_state.pauta_manual,
-                            step=10_000,
-                        )
-                submitted_config = st.form_submit_button("✅ Aplicar", use_container_width=True)
-                if submitted_config:
-                    st.session_state.tipo_cambio_sf = tipo_cambio
-                    st.session_state.pct_iva = pct_iva
-                    st.session_state.pauta_manual = pauta_manual
-
-        # Usar valores guardados
         tipo_cambio = st.session_state.tipo_cambio_sf or dolar_default
         pct_iva = st.session_state.pct_iva
         pauta_manual = st.session_state.pauta_manual
@@ -2109,6 +2109,48 @@ if st.session_state.df_tn is not None:
             gastos_fijos_periodo = round(total_gastos_fijos_mes * factor_prorrateo)
 
             resultado_final = margen_bruto - costo_iva - pauta_manual - gastos_fijos_periodo
+
+            # ── Flujo Mercado Pago ─────────────────────────────────────────────
+            if MP_ACCESS_TOKEN:
+                _mp_raw_sf = get_mp_payments(str(fecha_desde), str(fecha_hasta))
+                if _mp_raw_sf:
+                    _df_mp_sf = procesar_mp_payments(_mp_raw_sf)
+                    if not _df_mp_sf.empty:
+                        _mp_bruto  = _df_mp_sf["Bruto ($)"].sum()
+                        _mp_fee    = _df_mp_sf["Fee total ($)"].sum()
+                        _mp_neto   = _df_mp_sf["Neto ($)"].sum()
+                        _mp_pct    = round(_mp_fee / _mp_bruto * 100, 2) if _mp_bruto > 0 else 0.0
+
+                        st.markdown(
+                            f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\','
+                            f'monospace;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.3rem;">'
+                            f'💳 Flujo Mercado Pago — período</p>',
+                            unsafe_allow_html=True,
+                        )
+                        _mp_c1, _mp_c2, _mp_c3, _mp_c4 = st.columns(4)
+                        _mp_c1.metric("Bruto cobrado", fmt(_mp_bruto))
+                        _mp_c2.metric(
+                            "Fee MP",
+                            fmt(_mp_fee),
+                            delta=f"-{fmt(_mp_fee)}",
+                            delta_color="inverse",
+                            help=f"Calculado como bruto − neto recibido (real, incluye todos los tipos de fee)",
+                        )
+                        _mp_c3.metric(
+                            "Neto recibido",
+                            fmt(_mp_neto),
+                            help="Lo que realmente acreditó MP en tu cuenta",
+                        )
+                        _mp_c4.markdown(
+                            f'<div style="padding:0.4rem 0 0.4rem 0.75rem;border-left:2px solid {MG_RED};">'
+                            f'<div style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\','
+                            f'monospace;letter-spacing:0.06em;text-transform:uppercase;">Comisión MP</div>'
+                            f'<div style="font-size:1.4rem;font-weight:700;color:{MG_RED};">{_mp_pct:.2f}%</div>'
+                            f'<div style="font-size:0.7rem;color:{MG_MUTED};">promedio ponderado</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.divider()
 
             # Métricas principales
             k1, k2, k3, k4, k5 = st.columns(5)
