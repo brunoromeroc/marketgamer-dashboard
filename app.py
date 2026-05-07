@@ -955,20 +955,22 @@ def match_mp_with_tn(df_tn, mp_payments_raw):
         df["ID MP"] = ""
 
     matched, sin_match = 0, 0
-    matched_ids = set()  # evitar matchear 2 órdenes contra el mismo pago MP
+    matched_ids = set()  # cada pago MP se usa una sola vez
+
+    # ESTRATEGIA: probar match para TODA orden, ordenadas por fecha descendente.
+    # Si encuentra un pago MP con monto exacto y fecha ±1 día, usar el fee REAL.
+    # Esto cubre:
+    #   - Convenir (link MP manual fuera de TN)
+    #   - MP nativo (reemplaza estimado por fee real)
+    #   - Órdenes mal clasificadas como PN (gateway raros tipo 'other'/'offline')
+    # Riesgo: orden PN con monto idéntico a pago MP del mismo día. Mitigado con
+    # match exacto (sin tolerancia $) y matched_ids para evitar duplicados.
 
     for idx, row in df.iterrows():
-        pasarela_actual = row.get("Pasarela", "PN")
-        # PN: confiamos en la comisión que ya reporta TN
-        if pasarela_actual == "PN":
-            continue
-
         total = round(float(row.get("Total ($)", 0)))
         try:
             fecha_tn = pd.to_datetime(row.get("Fecha")).date()
         except Exception:
-            if pasarela_actual == "Convenir":
-                sin_match += 1
             continue
 
         match_data = None
@@ -997,9 +999,8 @@ def match_mp_with_tn(df_tn, mp_payments_raw):
             )
             matched += 1
         else:
-            # Solo contamos como "sin match" las órdenes Convenir (pendientes de identificar)
-            # Las MP nativas mantienen el estimado y no hace falta alertar
-            if pasarela_actual == "Convenir":
+            # Solo Convenir cuenta como pendiente — MP/PN ya tienen comisión válida
+            if row.get("Pasarela", "") == "Convenir":
                 sin_match += 1
 
     return df, matched, sin_match
