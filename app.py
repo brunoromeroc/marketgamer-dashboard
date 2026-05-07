@@ -1484,6 +1484,9 @@ def procesar_orders(orders):
             "Cantidad": cantidad,
             "Canal": str(o.get("app_id", "") or "tiendanube"),
             "Estado": o.get("status", ""),
+            "ID MP": "",
+            "Gateway raw": gateway,
+            "Metodo raw": str(metodo),
         })
     return pd.DataFrame(filas)
 
