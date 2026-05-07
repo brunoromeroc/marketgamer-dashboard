@@ -2111,6 +2111,28 @@ if st.session_state.df_tn is not None:
 
             resultado_final = margen_bruto - costo_iva - pauta_manual - gastos_fijos_periodo
 
+            # ── Helper: card KPI uniforme ──────────────────────────────────────
+            def _kpi_html(label, value, sub="", val_color=None, accent_border=False):
+                """Card de altura fija para alinear valores verticalmente."""
+                vc = val_color or MG_TEXT
+                border = f"border-left:2px solid {MG_RED};padding-left:0.75rem;" if accent_border else ""
+                sub_html = (
+                    f'<div style="font-size:0.68rem;color:{MG_MUTED};margin-top:0.25rem;'
+                    f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{sub}</div>'
+                    if sub else
+                    f'<div style="font-size:0.68rem;color:transparent;margin-top:0.25rem;">—</div>'
+                )
+                return (
+                    f'<div style="background:{MG_SURF};border-radius:8px;padding:0.9rem 1rem;'
+                    f'min-height:90px;display:flex;flex-direction:column;justify-content:flex-start;{border}">'
+                    f'<div style="font-size:0.58rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+                    f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;'
+                    f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{label}</div>'
+                    f'<div style="font-size:1.35rem;font-weight:700;color:{vc};line-height:1.1;">{value}</div>'
+                    f'{sub_html}'
+                    f'</div>'
+                )
+
             # ── Flujo Mercado Pago ─────────────────────────────────────────────
             if MP_ACCESS_TOKEN:
                 _mp_raw_sf = get_mp_payments(str(fecha_desde), str(fecha_hasta))
@@ -2124,65 +2146,63 @@ if st.session_state.df_tn is not None:
 
                         st.markdown(
                             f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\','
-                            f'monospace;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.3rem;">'
+                            f'monospace;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
                             f'💳 Flujo Mercado Pago — período</p>',
                             unsafe_allow_html=True,
                         )
-                        _mp_c1, _mp_c2, _mp_c3, _mp_c4 = st.columns(4)
-                        _mp_c1.metric("Bruto cobrado", fmt(_mp_bruto))
-                        _mp_c2.metric(
-                            "Fee MP",
-                            fmt(_mp_fee),
-                            delta=f"-{fmt(_mp_fee)}",
-                            delta_color="inverse",
-                            help=f"Calculado como bruto − neto recibido (real, incluye todos los tipos de fee)",
-                        )
-                        _mp_c3.metric(
-                            "Neto recibido",
-                            fmt(_mp_neto),
-                            help="Lo que realmente acreditó MP en tu cuenta",
-                        )
-                        _mp_c4.markdown(
-                            f'<div style="padding:0.4rem 0 0.4rem 0.75rem;border-left:2px solid {MG_RED};">'
-                            f'<div style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\','
-                            f'monospace;letter-spacing:0.06em;text-transform:uppercase;">Comisión MP</div>'
-                            f'<div style="font-size:1.4rem;font-weight:700;color:{MG_RED};">{_mp_pct:.2f}%</div>'
-                            f'<div style="font-size:0.7rem;color:{MG_MUTED};">promedio ponderado</div>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
+                        _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+                        _mc1.markdown(_kpi_html("Bruto cobrado", fmt(_mp_bruto), "total procesado por MP"), unsafe_allow_html=True)
+                        _mc2.markdown(_kpi_html("Fee MP", fmt(_mp_fee), f"−{fmt(_mp_fee)} de lo cobrado", val_color=MG_RED), unsafe_allow_html=True)
+                        _mc3.markdown(_kpi_html("Neto recibido", fmt(_mp_neto), "acreditado en tu cuenta"), unsafe_allow_html=True)
+                        _mc4.markdown(_kpi_html("Comisión MP", f"{_mp_pct:.2f}%", "promedio ponderado", val_color=MG_RED, accent_border=True), unsafe_allow_html=True)
                         st.divider()
 
-            # Métricas principales
+            # ── Métricas principales ───────────────────────────────────────────
+            st.markdown(
+                f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+                f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
+                f'📦 Ventas Tienda Nube</p>',
+                unsafe_allow_html=True,
+            )
             k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("Facturación bruta", fmt(facturacion_bruta))
-            k2.metric("Comisiones PN", fmt(comisiones_pn), delta=f"-{fmt(comisiones_pn)}", delta_color="inverse")
-            k3.metric("Neto cobrado", fmt(neto_cobrado))
-            k4.metric("Costo productos", fmt(costo_productos), delta=f"-{fmt(costo_productos)}", delta_color="inverse")
-            k5.metric("Costo envíos", fmt(costo_envios), delta=f"-{fmt(costo_envios)}", delta_color="inverse")
+            k1.markdown(_kpi_html("Facturación bruta", fmt(facturacion_bruta), "total vendido"), unsafe_allow_html=True)
+            k2.markdown(_kpi_html("Comisiones PN", fmt(comisiones_pn), f"−{fmt(comisiones_pn)}", val_color=MG_RED), unsafe_allow_html=True)
+            k3.markdown(_kpi_html("Neto cobrado", fmt(neto_cobrado), "después de comisión"), unsafe_allow_html=True)
+            k4.markdown(_kpi_html("Costo productos", fmt(costo_productos), f"−{fmt(costo_productos)}", val_color=MG_RED), unsafe_allow_html=True)
+            k5.markdown(_kpi_html("Costo envíos", fmt(costo_envios), f"−{fmt(costo_envios)}", val_color=MG_RED), unsafe_allow_html=True)
 
             st.divider()
+            st.markdown(
+                f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+                f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
+                f'📊 Gastos del período</p>',
+                unsafe_allow_html=True,
+            )
             g1, g2, g3, g4 = st.columns(4)
-            g1.metric("Margen bruto", fmt(margen_bruto))
-            g2.metric(f"IVA ({pct_iva:.1f}%)", fmt(costo_iva), delta=f"-{fmt(costo_iva)}", delta_color="inverse")
-            g3.metric("Pauta publicitaria", fmt(pauta_manual), delta=f"-{fmt(pauta_manual)}", delta_color="inverse")
-            g4.metric(
+            g1.markdown(_kpi_html("Margen bruto", fmt(margen_bruto), "neto − costos − envíos"), unsafe_allow_html=True)
+            g2.markdown(_kpi_html(f"IVA ({pct_iva:.1f}%)", fmt(costo_iva), f"−{fmt(costo_iva)}", val_color=MG_RED), unsafe_allow_html=True)
+            g3.markdown(_kpi_html("Pauta publicitaria", fmt(pauta_manual), f"−{fmt(pauta_manual)}" if pauta_manual else "sin datos aún", val_color=MG_RED if pauta_manual else MG_MUTED), unsafe_allow_html=True)
+            g4.markdown(_kpi_html(
                 f"Gastos fijos ({dias_periodo}d)",
                 fmt(gastos_fijos_periodo),
-                delta=f"-{fmt(gastos_fijos_periodo)}",
-                delta_color="inverse",
-                help=f"${total_gastos_fijos_mes:,.0f}/mes × {factor_prorrateo:.2f} = ${gastos_fijos_periodo:,.0f}",
-            )
+                f"${total_gastos_fijos_mes:,.0f}/mes × {factor_prorrateo:.2f}",
+                val_color=MG_RED,
+            ), unsafe_allow_html=True)
 
+            # ── Resultado final ────────────────────────────────────────────────
             st.divider()
-            st.metric(
-                f"{'🟢' if resultado_final >= 0 else '🔴'} RESULTADO FINAL DEL PERÍODO",
-                fmt(resultado_final),
+            _res_color = "#4ade80" if resultado_final >= 0 else MG_RED
+            _res_icon  = "🟢" if resultado_final >= 0 else "🔴"
+            st.markdown(
+                f'<div style="background:{MG_SURF};border-radius:10px;padding:1.2rem 1.5rem;'
+                f'border-left:3px solid {_res_color};margin-bottom:1rem;">'
+                f'<div style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+                f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;">'
+                f'{_res_icon} Resultado final del período</div>'
+                f'<div style="font-size:2rem;font-weight:700;color:{_res_color};">{fmt(resultado_final)}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
             )
-            if resultado_final >= 0:
-                st.success(f"✅ Resultado positivo: {fmt(resultado_final)}")
-            else:
-                st.error(f"⚠️ Resultado negativo: -{fmt(abs(resultado_final))}")
 
             # ── Gráfico de resultado día a día ──
             st.divider()
