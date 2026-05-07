@@ -897,6 +897,97 @@ def _es_gateway_mp(gateway):
     gw = str(gateway).lower().replace(" ", "").replace("-", "").replace("_", "")
     return "mercadopago" in gw or gw in {"mp", "mercadopagov1", "mercadopagocheckoutpro"}
 
+def _es_convenir(gateway, metodo):
+    """True si la orden fue creada con 'pago a convenir' (link MP generado por fuera de TN)."""
+    gw = str(gateway).lower().strip()
+    mt = str(metodo).lower().strip()
+    if "convenir" in gw or "convenir" in mt:
+        return True
+    # Gateway vacío + método no reconocido → probablemente a convenir
+    _metodos_conocidos = {"credit_card", "debit_card", "account_money"}
+    _frags_conocidos   = ["transfer", "wire", "pago", "mercado", "credit", "debit"]
+    if (not gw or gw in {"", "none", "null", "other", "offline", "manual"}) \
+       and mt not in _metodos_conocidos \
+       and not any(f in mt for f in _frags_conocidos):
+        return True
+    return False
+
+def match_mp_with_tn(df_tn, mp_payments_raw):
+    """
+    Cruza órdenes TN 'a convenir' con pagos aprobados de MP.
+    Estrategia: monto exacto (±$1) + fecha ±1 día.
+    Devuelve (df_actualizado, n_matched, n_sin_match).
+    """
+    if not mp_payments_raw or df_tn.empty:
+        return df_tn, 0, 0
+
+    # Construir índice MP: {(monto_redondeado, fecha): datos_fee}
+    mp_index = {}
+    for p in mp_payments_raw:
+        bruto = float(p.get("transaction_amount", 0))
+        try:
+            fecha_mp = pd.to_datetime(p.get("date_approved")).date()
+        except Exception:
+            continue
+        fees     = p.get("fee_details", [])
+        comision = sum(f.get("amount", 0) for f in fees if f.get("type") == "mercadopago_fee")
+        costo_fin= sum(f.get("amount", 0) for f in fees if f.get("type") == "financing_fee")
+        neto     = float(p.get("transaction_details", {}).get("net_received_amount", 0))
+        cuotas   = int(p.get("installments", 1) or 1)
+        costo_total = comision + costo_fin
+        mp_index[(round(bruto), fecha_mp)] = {
+            "id_mp":        str(int(p.get("id", 0))),
+            "comision_real":round(costo_total, 2),
+            "neto_real":    round(neto, 2),
+            "cuotas_mp":    cuotas,
+            "costo_pct":    round((costo_total / bruto * 100) if bruto > 0 else 0, 2),
+        }
+
+    df = df_tn.copy()
+    if "ID MP" not in df.columns:
+        df["ID MP"] = ""
+
+    matched, sin_match = 0, 0
+
+    for idx, row in df.iterrows():
+        if row.get("Pasarela", "PN") != "Convenir":
+            continue
+        total = round(float(row.get("Total ($)", 0)))
+        try:
+            fecha_tn = pd.to_datetime(row.get("Fecha")).date()
+        except Exception:
+            sin_match += 1
+            continue
+
+        match_data = None
+        for delta in [0, 1, -1]:
+            key = (total, fecha_tn + timedelta(days=delta))
+            if key in mp_index:
+                match_data = mp_index[key]
+                break
+
+        if match_data:
+            df.at[idx, "Comision PN ($)"]  = match_data["comision_real"]
+            df.at[idx, "Neto cobrado ($)"] = match_data["neto_real"]
+            df.at[idx, "Costo PN (%)"]     = match_data["costo_pct"]
+            df.at[idx, "Cuotas"]           = match_data["cuotas_mp"]
+            df.at[idx, "Pasarela"]         = "MP"
+            df.at[idx, "ID MP"]            = match_data["id_mp"]
+            # Recalcular margen con fee real
+            costo_prods = float(row.get("Costo Productos ($)", 0))
+            costo_envio = float(row.get("Envio costo ($)", 0))
+            nuevo_margen = match_data["neto_real"] - costo_prods - costo_envio
+            df.at[idx, "Margen ($)"]   = round(nuevo_margen, 2)
+            total_val = float(row.get("Total ($)", 0))
+            df.at[idx, "Margen (%)"]   = round(
+                (nuevo_margen / total_val * 100) if total_val > 0 else 0, 2
+            )
+            matched += 1
+        else:
+            sin_match += 1
+
+    return df, matched, sin_match
+
 def tasa_pasarela(gateway, metodo, cuotas):
     """Tasa de comisión real según pasarela: Mercado Pago o Pago Nube."""
     if _es_gateway_mp(gateway):
@@ -1309,8 +1400,15 @@ def procesar_orders(orders):
         total = float(o.get("total", 0))
         descuento = float(o.get("discount", 0) or 0)
         costo_envio_dueno = float(o.get("shipping_cost_owner", 0) or 0)
-        pasarela = "MP" if _es_gateway_mp(gateway) else "PN"
-        tasa = tasa_pasarela(gateway, metodo, cuotas)
+        if _es_gateway_mp(gateway):
+            pasarela = "MP"
+            tasa = tasa_pasarela(gateway, metodo, cuotas)
+        elif _es_convenir(gateway, metodo):
+            pasarela = "Convenir"   # se resolverá en match_mp_with_tn()
+            tasa = 0.0
+        else:
+            pasarela = "PN"
+            tasa = tasa_pasarela(gateway, metodo, cuotas)
         comision_pn = round(total * tasa, 2)
         neto = round(total - comision_pn, 2)
         margen = round(neto - costo_productos - costo_envio_dueno, 2)
@@ -1378,6 +1476,7 @@ def calcular_tasas_reales(df_pagos):
 defaults = {
     "df_tn": None, "df_pagos": None, "orders_raw": [],
     "costos_productos": {}, "ordenes_efectivo": set(), "ids_venta_local": set(),
+    "mp_raw": [], "mp_match_stats": {"matched": 0, "sin_match": 0},
 }
 for key, default in defaults.items():
     if key not in st.session_state:
@@ -1431,8 +1530,10 @@ with st.sidebar:
         st.caption(f"{fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
     buscar = st.button("Actualizar datos", use_container_width=True)
 
-# ── Búsqueda ───────────────────────────────────────────────────────────────────
-if buscar:
+# ── Helper: cargar y cruzar datos ─────────────────────────────────────────────
+def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
+    """Carga órdenes TN + pagos PN + pagos MP y ejecuta el matching automático."""
+    # 1. Órdenes TN
     orders = get_tn_orders(fecha_desde, fecha_hasta)
     if orders:
         orders_filtrados = []
@@ -1446,45 +1547,53 @@ if buscar:
             except Exception:
                 orders_filtrados.append(o)
         orders = orders_filtrados
-        st.session_state.df_tn = procesar_orders(orders)
+        df_tn = procesar_orders(orders)
         st.session_state.orders_raw = orders
-        st.success(f"✅ {len(orders)} órdenes cargadas desde Tienda Nube")
     else:
-        st.session_state.df_tn = pd.DataFrame()
+        df_tn = pd.DataFrame()
         st.session_state.orders_raw = []
-        st.info("No se encontraron órdenes en el período.")
 
+    # 2. Pagos Pago Nube
     pagos = get_tn_pagos(fecha_desde, fecha_hasta)
     st.session_state.df_pagos = procesar_pagos_pn(pagos) if pagos else pd.DataFrame()
+
+    # 3. Pagos Mercado Pago + matching automático con órdenes "a convenir"
+    if MP_ACCESS_TOKEN and not df_tn.empty:
+        mp_raw = get_mp_payments(str(fecha_desde), str(fecha_hasta))
+        st.session_state.mp_raw = mp_raw
+        if mp_raw:
+            df_tn, n_matched, n_sin = match_mp_with_tn(df_tn, mp_raw)
+            st.session_state.mp_match_stats = {"matched": n_matched, "sin_match": n_sin}
+        else:
+            st.session_state.mp_match_stats = {"matched": 0, "sin_match": 0}
+    else:
+        st.session_state.mp_raw = []
+        st.session_state.mp_match_stats = {"matched": 0, "sin_match": 0}
+
+    st.session_state.df_tn = df_tn
     st.session_state.ordenes_efectivo = set()
     st.session_state.ids_venta_local = set()
 
+    if mostrar_success and orders:
+        n_matched = st.session_state.mp_match_stats["matched"]
+        n_convenir= int((df_tn["Pasarela"] == "Convenir").sum()) if not df_tn.empty and "Pasarela" in df_tn.columns else 0
+        msg = f"✅ {len(orders)} órdenes cargadas"
+        if n_matched:
+            msg += f" · 🔀 {n_matched} órdenes 'a convenir' cruzadas con MP"
+        if n_convenir:
+            msg += f" · ⚠️ {n_convenir} sin cruzar (sin pago MP coincidente)"
+        st.success(msg)
+    elif mostrar_success:
+        st.info("No se encontraron órdenes en el período.")
+
+# ── Búsqueda ───────────────────────────────────────────────────────────────────
+if buscar:
+    _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=True)
+
 # ── Auto-carga del mes actual en primera visita ──────────────────────────────
 if st.session_state.df_tn is None:
-    with st.spinner("Cargando datos del mes actual..."):
-        orders = get_tn_orders(fecha_desde, fecha_hasta)
-        if orders:
-            orders_filtrados = []
-            for o in orders:
-                try:
-                    dt = pd.to_datetime(o.get("created_at", ""))
-                    if dt.tzinfo:
-                        dt = dt.tz_convert(None)
-                    if fecha_desde <= dt.date() <= fecha_hasta:
-                        orders_filtrados.append(o)
-                except Exception:
-                    orders_filtrados.append(o)
-            orders = orders_filtrados
-            st.session_state.df_tn = procesar_orders(orders)
-            st.session_state.orders_raw = orders
-        else:
-            st.session_state.df_tn = pd.DataFrame()
-            st.session_state.orders_raw = []
-
-        pagos = get_tn_pagos(fecha_desde, fecha_hasta)
-        st.session_state.df_pagos = procesar_pagos_pn(pagos) if pagos else pd.DataFrame()
-        st.session_state.ordenes_efectivo = set()
-        st.session_state.ids_venta_local = set()
+    with st.spinner("Cargando datos..."):
+        _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False)
 
 # ── Contenido principal ───────────────────────────────────────────────────────
 dolar_blue = get_dolar_blue()
