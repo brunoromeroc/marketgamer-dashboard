@@ -1047,28 +1047,15 @@ def get_mp_payments(fecha_desde_str, fecha_hasta_str):
             break
     return all_payments
 
-def _es_liquidacion_pn(p):
-    """Detecta transferencias de Dlocal (liquidaciones de Pago Nube) — NO son ventas MP."""
-    if p.get("payment_type_id", "") != "bank_transfer":
-        return False
-    # Buscar "dlocal" en todos los campos de texto del pago
-    campos = [
-        str(p.get("description", "")),
-        str(p.get("statement_descriptor", "")),
-        str(p.get("payer", {}).get("last_name", "")),
-        str(p.get("payer", {}).get("first_name", "")),
-        str(p.get("additional_info", {}).get("payer", {}).get("last_name", "")),
-    ]
-    return any("dlocal" in c.lower() for c in campos)
-
 def procesar_mp_payments(payments):
     """Convierte lista raw de MP en DataFrame con fee real por operación.
-    Excluye liquidaciones de Pago Nube (transferencias de Dlocal Argentina SA).
+    Excluye bank_transfer: las transferencias en MP son liquidaciones de
+    Pago Nube (Dlocal Argentina SA), no ventas propias de MP.
     """
     filas = []
     for p in payments:
-        # Ignorar liquidaciones de PN que caen en la cuenta MP
-        if _es_liquidacion_pn(p):
+        # Transferencias bancarias = liquidaciones de PN, no ventas MP
+        if p.get("payment_type_id", "") == "bank_transfer":
             continue
         cuotas    = p.get("installments", 1)
         bruto     = float(p.get("transaction_amount", 0))
