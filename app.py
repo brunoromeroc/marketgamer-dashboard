@@ -914,23 +914,31 @@ def _es_convenir(gateway, metodo):
 
 def match_mp_with_tn(df_tn, mp_payments_raw):
     """
-    Cruza órdenes TN 'a convenir' con pagos aprobados de MP.
+    Cruza TODAS las órdenes TN (excepto PN explícito) con pagos aprobados de MP.
     Estrategia: monto exacto (±$1) + fecha ±1 día.
-    Devuelve (df_actualizado, n_matched, n_sin_match).
+
+    Por qué match a TODO no-PN:
+    - 'Convenir' = link MP manual (pago externo a TN) → siempre matchear
+    - 'MP' = gateway MP nativo → matchear para usar fee REAL en lugar del estimado
+    - 'PN' = Pago Nube (con comisión real ya reportada por TN) → no tocar
+
+    Devuelve (df_actualizado, n_matched, n_sin_match_pendientes).
     """
     if not mp_payments_raw or df_tn.empty:
         return df_tn, 0, 0
 
     # Construir índice MP: {(monto_redondeado, fecha): datos_fee}
+    # Excluir liquidaciones externas (Dlocal/PN) del índice
     mp_index = {}
     for p in mp_payments_raw:
+        if _es_liquidacion_externa(p):
+            continue
         bruto = float(p.get("transaction_amount", 0))
         try:
             fecha_mp = pd.to_datetime(p.get("date_approved")).date()
         except Exception:
             continue
         # Usar bruto - neto: captura TODOS los fees sin importar tipo
-        # (cubre Cuotas sin Tarjeta, Mercado Crédito y cualquier producto MP futuro)
         neto        = float(p.get("transaction_details", {}).get("net_received_amount", 0))
         costo_total = round(bruto - neto, 2)
         cuotas      = int(p.get("installments", 1) or 1)
@@ -947,21 +955,26 @@ def match_mp_with_tn(df_tn, mp_payments_raw):
         df["ID MP"] = ""
 
     matched, sin_match = 0, 0
+    matched_ids = set()  # evitar matchear 2 órdenes contra el mismo pago MP
 
     for idx, row in df.iterrows():
-        if row.get("Pasarela", "PN") != "Convenir":
+        pasarela_actual = row.get("Pasarela", "PN")
+        # PN: confiamos en la comisión que ya reporta TN
+        if pasarela_actual == "PN":
             continue
+
         total = round(float(row.get("Total ($)", 0)))
         try:
             fecha_tn = pd.to_datetime(row.get("Fecha")).date()
         except Exception:
-            sin_match += 1
+            if pasarela_actual == "Convenir":
+                sin_match += 1
             continue
 
         match_data = None
         for delta in [0, 1, -1]:
             key = (total, fecha_tn + timedelta(days=delta))
-            if key in mp_index:
+            if key in mp_index and mp_index[key]["id_mp"] not in matched_ids:
                 match_data = mp_index[key]
                 break
 
@@ -972,6 +985,7 @@ def match_mp_with_tn(df_tn, mp_payments_raw):
             df.at[idx, "Cuotas"]           = match_data["cuotas_mp"]
             df.at[idx, "Pasarela"]         = "MP"
             df.at[idx, "ID MP"]            = match_data["id_mp"]
+            matched_ids.add(match_data["id_mp"])
             # Recalcular margen con fee real
             costo_prods = float(row.get("Costo Productos ($)", 0))
             costo_envio = float(row.get("Envio costo ($)", 0))
@@ -983,7 +997,10 @@ def match_mp_with_tn(df_tn, mp_payments_raw):
             )
             matched += 1
         else:
-            sin_match += 1
+            # Solo contamos como "sin match" las órdenes Convenir (pendientes de identificar)
+            # Las MP nativas mantienen el estimado y no hace falta alertar
+            if pasarela_actual == "Convenir":
+                sin_match += 1
 
     return df, matched, sin_match
 
