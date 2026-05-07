@@ -2170,40 +2170,108 @@ if st.session_state.df_tn is not None:
                     f'</div>'
                 )
 
-            # ── Flujo Mercado Pago ─────────────────────────────────────────────
+            # ── Cargar datos MP del período (para detalle pasarela) ────────────
+            _mp_raw_sf = []
+            _df_mp_sf = pd.DataFrame()
             if MP_ACCESS_TOKEN:
-                _mp_raw_sf = get_mp_payments(str(fecha_desde), str(fecha_hasta))
+                _mp_raw_sf = get_mp_payments(str(fecha_desde), str(fecha_hasta)) or []
                 if _mp_raw_sf:
                     _df_mp_sf = procesar_mp_payments(_mp_raw_sf)
-                    if not _df_mp_sf.empty:
-                        _mp_bruto  = _df_mp_sf["Bruto ($)"].sum()
-                        _mp_fee    = _df_mp_sf["Fee total ($)"].sum()
-                        _mp_neto   = _df_mp_sf["Neto ($)"].sum()
-                        _mp_pct    = round(_mp_fee / _mp_bruto * 100, 2) if _mp_bruto > 0 else 0.0
 
-                        st.markdown(
-                            f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\','
-                            f'monospace;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
-                            f'💳 Flujo Mercado Pago — período</p>',
-                            unsafe_allow_html=True,
-                        )
-                        _mc1, _mc2, _mc3, _mc4 = st.columns(4)
-                        _mc1.markdown(_kpi_html("Bruto cobrado", fmt(_mp_bruto), "total procesado por MP"), unsafe_allow_html=True)
-                        _mc2.markdown(_kpi_html("Fee MP", fmt(_mp_fee), f"−{fmt(_mp_fee)} de lo cobrado", val_color=MG_RED), unsafe_allow_html=True)
-                        _mc3.markdown(_kpi_html("Neto recibido", fmt(_mp_neto), "acreditado en tu cuenta"), unsafe_allow_html=True)
-                        _mc4.markdown(_kpi_html("Comisión MP", f"{_mp_pct:.2f}%", "promedio ponderado", val_color=MG_RED, accent_border=True), unsafe_allow_html=True)
+            # ── 1) RESUMEN DEL PERÍODO — 4 cards ──────────────────────────────
+            comisiones_pasarela = comisiones_pn  # ya incluye PN + MP (calculado en procesar_orders)
+            neto_cobrado = facturacion_bruta - comisiones_pasarela
+            costo_operativo = costo_productos + costo_envios
 
-                        # Stats útiles: cuántas operaciones se filtraron como liquidaciones
-                        _n_total = len(_mp_raw_sf)
-                        _n_filtradas = sum(1 for p in _mp_raw_sf if _es_liquidacion_externa(p))
-                        _n_validas = _n_total - _n_filtradas
-                        if _n_filtradas > 0:
-                            st.caption(
-                                f"ℹ️ {_n_validas} ventas MP en el período · "
-                                f"{_n_filtradas} liquidaciones de Pago Nube/Dlocal excluidas"
-                            )
+            st.markdown(
+                f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+                f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
+                f'💰 Resumen del período</p>',
+                unsafe_allow_html=True,
+            )
+            _r1, _r2, _r3, _r4 = st.columns(4)
+            _pct_total = (comisiones_pasarela / facturacion_bruta * 100) if facturacion_bruta > 0 else 0.0
+            _r1.markdown(_kpi_html("Facturación bruta", fmt(facturacion_bruta), "total vendido"), unsafe_allow_html=True)
+            _r2.markdown(_kpi_html("Comisiones pasarela", fmt(comisiones_pasarela), f"PN + MP · {_pct_total:.2f}%", val_color=MG_RED), unsafe_allow_html=True)
+            _r3.markdown(_kpi_html("Neto cobrado", fmt(neto_cobrado), "bruto − comisiones"), unsafe_allow_html=True)
+            _r4.markdown(_kpi_html("Costo operativo", fmt(costo_operativo), f"prods {fmt(costo_productos)} + envíos {fmt(costo_envios)}", val_color=MG_RED), unsafe_allow_html=True)
 
-                # ── Debug MP ──────────────────────────────────────────────
+            # ── 2) DETALLE POR PASARELA ────────────────────────────────────────
+            st.divider()
+            st.markdown(
+                f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+                f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
+                f'🔀 Detalle por pasarela</p>',
+                unsafe_allow_html=True,
+            )
+
+            _mask_pn = df_calc["Pasarela"] == "PN"
+            _mask_mp = df_calc["Pasarela"].isin(["MP", "Convenir"]) if "Pasarela" in df_calc.columns else pd.Series([False]*len(df_calc))
+
+            _bruto_pn = df_calc.loc[_mask_pn, "Total ($)"].sum() if _mask_pn.any() else 0
+            _com_pn   = df_calc.loc[_mask_pn, "Comision PN ($)"].sum() if _mask_pn.any() else 0
+            _ord_pn   = int(_mask_pn.sum())
+            _pct_pn   = (_com_pn / _bruto_pn * 100) if _bruto_pn > 0 else 0.0
+
+            _bruto_mp = df_calc.loc[_mask_mp, "Total ($)"].sum() if _mask_mp.any() else 0
+            _com_mp   = df_calc.loc[_mask_mp, "Comision PN ($)"].sum() if _mask_mp.any() else 0
+            _ord_mp   = int(_mask_mp.sum())
+            _pct_mp   = (_com_mp / _bruto_mp * 100) if _bruto_mp > 0 else 0.0
+
+            def _pasarela_card(titulo, icon, ordenes, bruto, comision, pct, color):
+                return (
+                    f'<div style="background:{MG_SURF};border-radius:8px;padding:1rem 1.2rem;'
+                    f'border-left:3px solid {color};">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">'
+                    f'<div style="font-size:0.85rem;font-weight:700;color:{MG_TEXT};">{icon} {titulo}</div>'
+                    f'<div style="font-size:0.7rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;">{ordenes} órdenes</div>'
+                    f'</div>'
+                    f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.8rem;">'
+                    f'<div>'
+                    f'<div style="font-size:0.55rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em;">Bruto</div>'
+                    f'<div style="font-size:1.05rem;font-weight:700;color:{MG_TEXT};">{fmt(bruto)}</div>'
+                    f'</div>'
+                    f'<div>'
+                    f'<div style="font-size:0.55rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em;">Comisión</div>'
+                    f'<div style="font-size:1.05rem;font-weight:700;color:{MG_RED};">{fmt(comision)}</div>'
+                    f'</div>'
+                    f'<div>'
+                    f'<div style="font-size:0.55rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;text-transform:uppercase;letter-spacing:0.08em;">Costo %</div>'
+                    f'<div style="font-size:1.05rem;font-weight:700;color:{color};">{pct:.2f}%</div>'
+                    f'</div>'
+                    f'</div>'
+                    f'</div>'
+                )
+
+            _pc1, _pc2 = st.columns(2)
+            _pc1.markdown(
+                _pasarela_card("Pago Nube", "🔵", _ord_pn, _bruto_pn, _com_pn, _pct_pn, "#009EE3"),
+                unsafe_allow_html=True,
+            )
+            _pc2.markdown(
+                _pasarela_card("Mercado Pago", "💳", _ord_mp, _bruto_mp, _com_mp, _pct_mp, MG_RED),
+                unsafe_allow_html=True,
+            )
+
+            # Validación cruzada con MP API (si los datos no cuadran avisamos)
+            if not _df_mp_sf.empty and _bruto_mp > 0:
+                _mp_api_bruto = _df_mp_sf["Bruto ($)"].sum()
+                _mp_api_fee   = _df_mp_sf["Fee total ($)"].sum()
+                _diff_pct = abs(_mp_api_bruto - _bruto_mp) / _bruto_mp * 100 if _bruto_mp > 0 else 0
+                if _diff_pct > 5:  # más de 5% de diferencia
+                    st.caption(
+                        f"⚠️ Diferencia entre MP (API) y TN (órdenes MP): "
+                        f"API ${_mp_api_bruto:,.0f} vs TN ${_bruto_mp:,.0f} "
+                        f"({_diff_pct:.1f}% diff) · Fee real API: {fmt(_mp_api_fee)}"
+                    )
+                else:
+                    st.caption(
+                        f"✅ Conciliado con API MP: Fee real {fmt(_mp_api_fee)} "
+                        f"vs estimado {fmt(_com_mp)}"
+                    )
+
+            # ── Debug MP (sigue disponible) ────────────────────────────────────
+            if MP_ACCESS_TOKEN:
                 # Persistencia de resultados en session state
                 if "mp_debug_payment" not in st.session_state:
                     st.session_state.mp_debug_payment = None
@@ -2298,22 +2366,8 @@ if st.session_state.df_tn is not None:
 
                 st.divider()
 
-            # ── Ventas TN — 4 columnas ────────────────────────────────────────
-            st.markdown(
-                f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
-                f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
-                f'📦 Ventas Tienda Nube</p>',
-                unsafe_allow_html=True,
-            )
-            costo_operativo = costo_productos + costo_envios
-            k1, k2, k3, k4 = st.columns(4)
-            k1.markdown(_kpi_html("Facturación bruta", fmt(facturacion_bruta), "total vendido"), unsafe_allow_html=True)
-            k2.markdown(_kpi_html("Comisiones PN", fmt(comisiones_pn), f"−{fmt(comisiones_pn)}", val_color=MG_RED), unsafe_allow_html=True)
-            k3.markdown(_kpi_html("Neto cobrado", fmt(neto_cobrado), "después de comisión"), unsafe_allow_html=True)
-            k4.markdown(_kpi_html("Costo operativo", fmt(costo_operativo), f"prods {fmt(costo_productos)} + envíos {fmt(costo_envios)}", val_color=MG_RED), unsafe_allow_html=True)
-
             st.divider()
-            # ── Gastos — 4 columnas ───────────────────────────────────────────
+            # ── 3) GASTOS DEL PERÍODO — 4 columnas ────────────────────────────
             st.markdown(
                 f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
                 f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
