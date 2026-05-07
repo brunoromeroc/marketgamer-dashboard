@@ -1047,15 +1047,46 @@ def get_mp_payments(fecha_desde_str, fecha_hasta_str):
             break
     return all_payments
 
+# CUITs de procesadores de pago externos cuyas transferencias a la cuenta MP
+# NO son ventas — ya fueron contadas como ventas vía Pago Nube en TN.
+CUITS_LIQUIDACIONES = {
+    "30714267163",  # Dlocal Argentina SA (liquida Tienda Nube / Pago Nube)
+}
+
+def _cuit_payer(p):
+    """Devuelve el CUIT/CUIL del payer del pago, limpio (solo dígitos)."""
+    candidatos = [
+        p.get("payer", {}).get("identification", {}).get("number", ""),
+        p.get("additional_info", {}).get("payer", {}).get("identification", {}).get("number", ""),
+    ]
+    for c in candidatos:
+        digits = "".join(ch for ch in str(c) if ch.isdigit())
+        if digits:
+            return digits
+    return ""
+
+def _es_liquidacion_externa(p):
+    """Detecta liquidación de procesador externo (PN/Dlocal) en cuenta MP.
+    Criterio principal: bank_transfer cuyo CUIT del payer está en CUITS_LIQUIDACIONES.
+    Fallback: bank_transfer con 'dlocal' en description/statement_descriptor.
+    """
+    if p.get("payment_type_id", "") != "bank_transfer":
+        return False
+    if _cuit_payer(p) in CUITS_LIQUIDACIONES:
+        return True
+    textos = [
+        str(p.get("description", "")),
+        str(p.get("statement_descriptor", "")),
+    ]
+    return any("dlocal" in t.lower() for t in textos)
+
 def procesar_mp_payments(payments):
     """Convierte lista raw de MP en DataFrame con fee real por operación.
-    Excluye bank_transfer: las transferencias en MP son liquidaciones de
-    Pago Nube (Dlocal Argentina SA), no ventas propias de MP.
+    Excluye liquidaciones de procesadores externos (Dlocal/Pago Nube).
     """
     filas = []
     for p in payments:
-        # Transferencias bancarias = liquidaciones de PN, no ventas MP
-        if p.get("payment_type_id", "") == "bank_transfer":
+        if _es_liquidacion_externa(p):
             continue
         cuotas    = p.get("installments", 1)
         bruto     = float(p.get("transaction_amount", 0))
@@ -2161,7 +2192,61 @@ if st.session_state.df_tn is not None:
                         _mc2.markdown(_kpi_html("Fee MP", fmt(_mp_fee), f"−{fmt(_mp_fee)} de lo cobrado", val_color=MG_RED), unsafe_allow_html=True)
                         _mc3.markdown(_kpi_html("Neto recibido", fmt(_mp_neto), "acreditado en tu cuenta"), unsafe_allow_html=True)
                         _mc4.markdown(_kpi_html("Comisión MP", f"{_mp_pct:.2f}%", "promedio ponderado", val_color=MG_RED, accent_border=True), unsafe_allow_html=True)
-                        st.divider()
+
+                        # Stats útiles: cuántas operaciones se filtraron como liquidaciones
+                        _n_total = len(_mp_raw_sf)
+                        _n_filtradas = sum(1 for p in _mp_raw_sf if _es_liquidacion_externa(p))
+                        _n_validas = _n_total - _n_filtradas
+                        if _n_filtradas > 0:
+                            st.caption(
+                                f"ℹ️ {_n_validas} ventas MP en el período · "
+                                f"{_n_filtradas} liquidaciones de Pago Nube/Dlocal excluidas"
+                            )
+
+                # Debug: inspeccionar pago raw por ID
+                with st.expander("🔧 Inspeccionar pago MP por ID", expanded=False):
+                    st.caption("Pegá el ID de operación de MP para ver el JSON crudo (útil para identificar campos).")
+                    _dbg_c1, _dbg_c2 = st.columns([3, 1])
+                    _dbg_id = _dbg_c1.text_input(
+                        "ID operación", placeholder="156885323147",
+                        label_visibility="collapsed", key="dbg_mp_id",
+                    )
+                    if _dbg_c2.button("Buscar", use_container_width=True, key="dbg_mp_btn") and _dbg_id:
+                        try:
+                            _r = requests.get(
+                                f"https://api.mercadopago.com/v1/payments/{_dbg_id.strip()}",
+                                headers={"Authorization": f"Bearer {MP_ACCESS_TOKEN}"},
+                                timeout=10,
+                            )
+                            if _r.status_code == 200:
+                                _data = _r.json()
+                                st.markdown("**Resumen de campos clave:**")
+                                _resumen = {
+                                    "id": _data.get("id"),
+                                    "status": _data.get("status"),
+                                    "payment_type_id": _data.get("payment_type_id"),
+                                    "payment_method_id": _data.get("payment_method_id"),
+                                    "transaction_amount": _data.get("transaction_amount"),
+                                    "description": _data.get("description"),
+                                    "statement_descriptor": _data.get("statement_descriptor"),
+                                    "payer.identification": _data.get("payer", {}).get("identification"),
+                                    "payer.first_name": _data.get("payer", {}).get("first_name"),
+                                    "payer.last_name": _data.get("payer", {}).get("last_name"),
+                                    "payer.email": _data.get("payer", {}).get("email"),
+                                    "payer.entity_type": _data.get("payer", {}).get("entity_type"),
+                                    "additional_info.payer": _data.get("additional_info", {}).get("payer"),
+                                    "_es_liquidacion_externa": _es_liquidacion_externa(_data),
+                                    "_cuit_payer": _cuit_payer(_data),
+                                }
+                                st.json(_resumen, expanded=True)
+                                with st.expander("Ver JSON completo", expanded=False):
+                                    st.json(_data, expanded=False)
+                            else:
+                                st.error(f"Error {_r.status_code}: {_r.text[:300]}")
+                        except Exception as _e:
+                            st.error(f"Error consultando MP: {_e}")
+
+                st.divider()
 
             # ── Ventas TN — 4 columnas ────────────────────────────────────────
             st.markdown(
