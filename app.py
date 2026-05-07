@@ -18,6 +18,7 @@ TN_STORE_ID = st.secrets["TN_STORE_ID"]
 SHEET_ID = st.secrets.get("SHEET_ID", "1wY2KjSC8SX-nMQD7J43xrdSY0SgG8fJeL9d5I_02DdE")
 GCP_CREDS = st.secrets.get("gcp_service_account", {})
 ANTHROPIC_KEY = st.secrets.get("ANTHROPIC_KEY", "")
+MP_ACCESS_TOKEN = st.secrets.get("MP_ACCESS_TOKEN", "")
 
 # ── Design tokens ───────────────────────────────────────────────────────────────
 MG_BG       = "#0a0a0b"
@@ -866,7 +867,7 @@ CUOTAS_BASE = {
     12: 0.3104, 18: 0.4346, 24: 0.5432,
 }
 
-def tasa_pago_nube(metodo, cuotas):
+def tasa_pago_nube(metodo, cuotas):  # noqa: keep for compatibilidad
     metodo = str(metodo).lower()
     if any(x in metodo for x in ["transfer", "wire", "account_money"]):
         return 0.0099 * IVA_FACTOR
@@ -877,6 +878,121 @@ def tasa_pago_nube(metodo, cuotas):
     cuotas_key = min(opciones, key=lambda x: abs(x - cuotas))
     costo_cuotas = CUOTAS_BASE.get(cuotas_key, 0.0) * IVA_FACTOR
     return PROC_EFECTIVO + costo_cuotas
+
+# ── Tasas Mercado Pago ──────────────────────────────────────────────────────────
+# Fuente: MP → Costos y cuotas → Checkout Pro (abr-2026)
+# Fórmula: (financing_fee × 1.21 IVA) + 3.87% comisión base
+COSTOS_MP_DEFAULTS = {
+    "Transferencia": 0.0,
+    "Contado":       3.87,
+    "2 cuotas":      8.71,   # 4.00% × 1.21 + 3.87
+    "3 cuotas":      11.13,  # 6.00% × 1.21 + 3.87
+    "6 cuotas":      15.97,  # 10.00% × 1.21 + 3.87
+    "9 cuotas":      22.62,  # 15.50% × 1.21 + 3.87
+    "12 cuotas":     28.07,  # 20.00% × 1.21 + 3.87
+}
+
+def _es_gateway_mp(gateway):
+    """True si la orden pasó por Mercado Pago (no Pago Nube)."""
+    gw = str(gateway).lower().replace(" ", "").replace("-", "").replace("_", "")
+    return "mercadopago" in gw or gw in {"mp", "mercadopagov1", "mercadopagocheckoutpro"}
+
+def tasa_pasarela(gateway, metodo, cuotas):
+    """Tasa de comisión real según pasarela: Mercado Pago o Pago Nube."""
+    if _es_gateway_mp(gateway):
+        m = str(metodo).lower()
+        c = int(cuotas or 1)
+        if any(x in m for x in ["transfer", "wire", "bank_transfer"]):
+            clave = "Transferencia"
+        elif "debit" in m or "debito" in m:
+            clave = "Contado"
+        elif c <= 1:
+            clave = "Contado"
+        elif c <= 2:
+            clave = "2 cuotas"
+        elif c <= 3:
+            clave = "3 cuotas"
+        elif c <= 6:
+            clave = "6 cuotas"
+        elif c <= 9:
+            clave = "9 cuotas"
+        else:
+            clave = "12 cuotas"
+        return COSTOS_MP_DEFAULTS.get(clave, 3.87) / 100
+    else:
+        return tasa_pago_nube(metodo, cuotas)
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_mp_payments(fecha_desde_str, fecha_hasta_str):
+    """Trae pagos aprobados de MP para el período. Devuelve lista de dicts con fee real."""
+    if not MP_ACCESS_TOKEN:
+        return []
+    headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
+    all_payments, offset = [], 0
+    while True:
+        try:
+            r = requests.get(
+                "https://api.mercadopago.com/v1/payments/search",
+                headers=headers,
+                params={
+                    "status": "approved",
+                    "begin_date": f"{fecha_desde_str}T00:00:00.000-03:00",
+                    "end_date":   f"{fecha_hasta_str}T23:59:59.999-03:00",
+                    "limit": 100,
+                    "offset": offset,
+                },
+                timeout=15,
+            )
+        except Exception:
+            break
+        if r.status_code != 200:
+            break
+        data = r.json()
+        results = data.get("results", [])
+        if not results:
+            break
+        all_payments.extend(results)
+        offset += 100
+        if offset >= data.get("paging", {}).get("total", 0):
+            break
+    return all_payments
+
+def procesar_mp_payments(payments):
+    """Convierte lista raw de MP en DataFrame con fee real por operación."""
+    filas = []
+    for p in payments:
+        cuotas = p.get("installments", 1)
+        fees = p.get("fee_details", [])
+        comision = sum(f.get("amount", 0) for f in fees if f.get("type") == "mercadopago_fee")
+        costo_fin = sum(f.get("amount", 0) for f in fees if f.get("type") == "financing_fee")
+        neto = p.get("transaction_details", {}).get("net_received_amount", 0)
+        bruto = p.get("transaction_amount", 0)
+        tipo_pago = p.get("payment_type_id", "")
+        if tipo_pago == "bank_transfer":
+            tipo_label = "Transferencia"
+        elif cuotas == 1:
+            tipo_label = "Contado"
+        else:
+            tipo_label = f"{cuotas} cuotas"
+        costo_total = comision + costo_fin
+        try:
+            fecha = pd.to_datetime(p.get("date_approved")).strftime("%Y-%m-%d")
+        except Exception:
+            fecha = ""
+        filas.append({
+            "ID MP": str(int(p.get("id", 0))),
+            "Fecha": fecha,
+            "Tipo": tipo_label,
+            "Cuotas": cuotas,
+            "Medio": p.get("payment_method_id", "").upper(),
+            "Bruto ($)": round(bruto, 2),
+            "Comisión MP ($)": round(comision, 2),
+            "Costo fin ($)": round(costo_fin, 2),
+            "Costo total ($)": round(costo_total, 2),
+            "Costo %": round((costo_total / bruto * 100) if bruto > 0 else 0, 2),
+            "Neto ($)": round(neto, 2),
+        })
+    return pd.DataFrame(filas) if filas else pd.DataFrame()
 
 # ── FOB defaults ───────────────────────────────────────────────────────────────
 FOB_DEFAULTS = {
@@ -1193,7 +1309,8 @@ def procesar_orders(orders):
         total = float(o.get("total", 0))
         descuento = float(o.get("discount", 0) or 0)
         costo_envio_dueno = float(o.get("shipping_cost_owner", 0) or 0)
-        tasa = tasa_pago_nube(metodo, cuotas)
+        pasarela = "MP" if _es_gateway_mp(gateway) else "PN"
+        tasa = tasa_pasarela(gateway, metodo, cuotas)
         comision_pn = round(total * tasa, 2)
         neto = round(total - comision_pn, 2)
         margen = round(neto - costo_productos - costo_envio_dueno, 2)
@@ -1205,6 +1322,7 @@ def procesar_orders(orders):
             "Cliente": str(o.get("contact_name", "")),
             "Medio de Pago": label_medio,
             "Cuotas": cuotas,
+            "Pasarela": pasarela,
             "Total ($)": total,
             "Descuento ($)": descuento,
             "Envio costo ($)": costo_envio_dueno,
@@ -1408,7 +1526,7 @@ if st.session_state.df_tn is not None:
             order_total = float(o.get("total", 0))
             n_products = len(o.get("products", []))
             costo_envio = float(o.get("shipping_cost_owner", 0) or 0)
-            tasa = tasa_pago_nube(metodo, cuotas)
+            tasa = tasa_pasarela(gateway, metodo, cuotas)
 
             for p in o.get("products", []):
                 nombre = _extraer_nombre_producto(p.get("name", ""))
@@ -2058,6 +2176,82 @@ if st.session_state.df_tn is not None:
             fig_wf.update_layout(showlegend=False, yaxis_tickformat="$,.0f")
             fig_wf.update_traces(texttemplate="%{y:$,.0f}", textposition="outside")
             st.plotly_chart(fig_wf, use_container_width=True)
+
+            # ── Desglose por pasarela (MP vs PN) ──
+            if "Pasarela" in df_calc.columns:
+                st.divider()
+                st.subheader("🔀 Comisiones por pasarela")
+                agg_pasarela = (
+                    df_calc.groupby("Pasarela")
+                    .agg(
+                        Órdenes=("Orden", "count"),
+                        Facturación=("Total ($)", "sum"),
+                        Comisión=("Comision PN ($)", "sum"),
+                        Neto=("Neto cobrado ($)", "sum"),
+                    )
+                    .reset_index()
+                )
+                agg_pasarela["Costo %"] = (
+                    agg_pasarela["Comisión"] / agg_pasarela["Facturación"] * 100
+                ).round(2)
+
+                pas_c1, pas_c2 = st.columns(2)
+                for _, row_p in agg_pasarela.iterrows():
+                    col_p = pas_c1 if row_p["Pasarela"] == "PN" else pas_c2
+                    label = "Pago Nube" if row_p["Pasarela"] == "PN" else "Mercado Pago"
+                    icon = "💳" if row_p["Pasarela"] == "MP" else "🔵"
+                    with col_p:
+                        st.markdown(
+                            f'<p style="font-size:0.68rem;color:{MG_MUTED};font-family:\'Space Mono\','
+                            f'monospace;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.3rem;">'
+                            f'{icon} {label}</p>',
+                            unsafe_allow_html=True,
+                        )
+                        pm1, pm2, pm3 = st.columns(3)
+                        pm1.metric("Órdenes", int(row_p["Órdenes"]))
+                        pm2.metric("Facturación", fmt(row_p["Facturación"]))
+                        pm3.metric("Comisión", fmt(row_p["Comisión"]), help=f"Costo %: {row_p['Costo %']:.2f}%")
+
+                # Si hay token de MP, mostrar fees reales
+                if MP_ACCESS_TOKEN:
+                    with st.spinner("Consultando fees reales de Mercado Pago..."):
+                        mp_raw = get_mp_payments(str(fecha_desde), str(fecha_hasta))
+                    if mp_raw:
+                        df_mp = procesar_mp_payments(mp_raw)
+                        if not df_mp.empty:
+                            st.markdown("**Fees reales desde API de Mercado Pago**")
+                            # Resumen por tipo
+                            mp_res = (
+                                df_mp.groupby("Tipo")
+                                .agg(
+                                    Ops=("ID MP", "count"),
+                                    Bruto=("Bruto ($)", "sum"),
+                                    Comisión=("Comisión MP ($)", "sum"),
+                                    CostoFin=("Costo fin ($)", "sum"),
+                                    CostoTotal=("Costo total ($)", "sum"),
+                                    Neto=("Neto ($)", "sum"),
+                                )
+                                .reset_index()
+                            )
+                            mp_res["Costo %"] = (
+                                mp_res["CostoTotal"] / mp_res["Bruto"] * 100
+                            ).round(2)
+                            mp_res_fmt = mp_res.copy()
+                            for col in ["Bruto", "Comisión", "CostoFin", "CostoTotal", "Neto"]:
+                                mp_res_fmt[col] = mp_res[col].apply(fmt)
+                            mp_res_fmt["Costo %"] = mp_res["Costo %"].apply(fmt_pct)
+                            mp_res_fmt.columns = [
+                                "Tipo", "Ops", "Bruto ($)", "Com. MP ($)",
+                                "Costo Fin ($)", "Costo Total ($)", "Neto ($)", "Costo %",
+                            ]
+                            st.dataframe(mp_res_fmt, use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("No se encontraron pagos MP en este período (o el token venció).")
+                else:
+                    st.caption(
+                        f'💡 Agregá `MP_ACCESS_TOKEN` en secrets para ver fees reales de MP '
+                        f'(comisión + costo financiero por operación).'
+                    )
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 4: STOCK
