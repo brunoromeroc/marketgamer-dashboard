@@ -1534,7 +1534,8 @@ with st.sidebar:
             f'⚙️ Configuración financiera</p>',
             unsafe_allow_html=True,
         )
-        _dolar_default_sf = int(dolar_blue) if dolar_blue else 1200
+        _dolar_raw_sb = get_dolar_blue()
+        _dolar_default_sf = int(_dolar_raw_sb) if _dolar_raw_sb else 1200
         _tc_sf = st.number_input(
             f"💵 Dólar blue",
             value=st.session_state.tipo_cambio_sf or _dolar_default_sf,
