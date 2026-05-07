@@ -1047,10 +1047,29 @@ def get_mp_payments(fecha_desde_str, fecha_hasta_str):
             break
     return all_payments
 
+def _es_liquidacion_pn(p):
+    """Detecta transferencias de Dlocal (liquidaciones de Pago Nube) — NO son ventas MP."""
+    if p.get("payment_type_id", "") != "bank_transfer":
+        return False
+    # Buscar "dlocal" en todos los campos de texto del pago
+    campos = [
+        str(p.get("description", "")),
+        str(p.get("statement_descriptor", "")),
+        str(p.get("payer", {}).get("last_name", "")),
+        str(p.get("payer", {}).get("first_name", "")),
+        str(p.get("additional_info", {}).get("payer", {}).get("last_name", "")),
+    ]
+    return any("dlocal" in c.lower() for c in campos)
+
 def procesar_mp_payments(payments):
-    """Convierte lista raw de MP en DataFrame con fee real por operación."""
+    """Convierte lista raw de MP en DataFrame con fee real por operación.
+    Excluye liquidaciones de Pago Nube (transferencias de Dlocal Argentina SA).
+    """
     filas = []
     for p in payments:
+        # Ignorar liquidaciones de PN que caen en la cuenta MP
+        if _es_liquidacion_pn(p):
+            continue
         cuotas    = p.get("installments", 1)
         bruto     = float(p.get("transaction_amount", 0))
         neto      = float(p.get("transaction_details", {}).get("net_received_amount", 0))
@@ -2157,21 +2176,22 @@ if st.session_state.df_tn is not None:
                         _mc4.markdown(_kpi_html("Comisión MP", f"{_mp_pct:.2f}%", "promedio ponderado", val_color=MG_RED, accent_border=True), unsafe_allow_html=True)
                         st.divider()
 
-            # ── Métricas principales ───────────────────────────────────────────
+            # ── Ventas TN — 4 columnas ────────────────────────────────────────
             st.markdown(
                 f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
                 f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
                 f'📦 Ventas Tienda Nube</p>',
                 unsafe_allow_html=True,
             )
-            k1, k2, k3, k4, k5 = st.columns(5)
+            costo_operativo = costo_productos + costo_envios
+            k1, k2, k3, k4 = st.columns(4)
             k1.markdown(_kpi_html("Facturación bruta", fmt(facturacion_bruta), "total vendido"), unsafe_allow_html=True)
             k2.markdown(_kpi_html("Comisiones PN", fmt(comisiones_pn), f"−{fmt(comisiones_pn)}", val_color=MG_RED), unsafe_allow_html=True)
             k3.markdown(_kpi_html("Neto cobrado", fmt(neto_cobrado), "después de comisión"), unsafe_allow_html=True)
-            k4.markdown(_kpi_html("Costo productos", fmt(costo_productos), f"−{fmt(costo_productos)}", val_color=MG_RED), unsafe_allow_html=True)
-            k5.markdown(_kpi_html("Costo envíos", fmt(costo_envios), f"−{fmt(costo_envios)}", val_color=MG_RED), unsafe_allow_html=True)
+            k4.markdown(_kpi_html("Costo operativo", fmt(costo_operativo), f"prods {fmt(costo_productos)} + envíos {fmt(costo_envios)}", val_color=MG_RED), unsafe_allow_html=True)
 
             st.divider()
+            # ── Gastos — 4 columnas ───────────────────────────────────────────
             st.markdown(
                 f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
                 f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
