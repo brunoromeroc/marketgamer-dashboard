@@ -929,15 +929,14 @@ def match_mp_with_tn(df_tn, mp_payments_raw):
             fecha_mp = pd.to_datetime(p.get("date_approved")).date()
         except Exception:
             continue
-        fees     = p.get("fee_details", [])
-        comision = sum(f.get("amount", 0) for f in fees if f.get("type") == "mercadopago_fee")
-        costo_fin= sum(f.get("amount", 0) for f in fees if f.get("type") == "financing_fee")
-        neto     = float(p.get("transaction_details", {}).get("net_received_amount", 0))
-        cuotas   = int(p.get("installments", 1) or 1)
-        costo_total = comision + costo_fin
+        # Usar bruto - neto: captura TODOS los fees sin importar tipo
+        # (cubre Cuotas sin Tarjeta, Mercado Crédito y cualquier producto MP futuro)
+        neto        = float(p.get("transaction_details", {}).get("net_received_amount", 0))
+        costo_total = round(bruto - neto, 2)
+        cuotas      = int(p.get("installments", 1) or 1)
         mp_index[(round(bruto), fecha_mp)] = {
             "id_mp":        str(int(p.get("id", 0))),
-            "comision_real":round(costo_total, 2),
+            "comision_real":costo_total,
             "neto_real":    round(neto, 2),
             "cuotas_mp":    cuotas,
             "costo_pct":    round((costo_total / bruto * 100) if bruto > 0 else 0, 2),
@@ -1052,12 +1051,11 @@ def procesar_mp_payments(payments):
     """Convierte lista raw de MP en DataFrame con fee real por operación."""
     filas = []
     for p in payments:
-        cuotas = p.get("installments", 1)
-        fees = p.get("fee_details", [])
-        comision = sum(f.get("amount", 0) for f in fees if f.get("type") == "mercadopago_fee")
-        costo_fin = sum(f.get("amount", 0) for f in fees if f.get("type") == "financing_fee")
-        neto = p.get("transaction_details", {}).get("net_received_amount", 0)
-        bruto = p.get("transaction_amount", 0)
+        cuotas    = p.get("installments", 1)
+        bruto     = float(p.get("transaction_amount", 0))
+        neto      = float(p.get("transaction_details", {}).get("net_received_amount", 0))
+        # Fee real = bruto - neto (captura todos los tipos de fee de MP)
+        costo_total = round(bruto - neto, 2)
         tipo_pago = p.get("payment_type_id", "")
         if tipo_pago == "bank_transfer":
             tipo_label = "Transferencia"
@@ -1065,7 +1063,6 @@ def procesar_mp_payments(payments):
             tipo_label = "Contado"
         else:
             tipo_label = f"{cuotas} cuotas"
-        costo_total = comision + costo_fin
         try:
             fecha = pd.to_datetime(p.get("date_approved")).strftime("%Y-%m-%d")
         except Exception:
@@ -1077,9 +1074,7 @@ def procesar_mp_payments(payments):
             "Cuotas": cuotas,
             "Medio": p.get("payment_method_id", "").upper(),
             "Bruto ($)": round(bruto, 2),
-            "Comisión MP ($)": round(comision, 2),
-            "Costo fin ($)": round(costo_fin, 2),
-            "Costo total ($)": round(costo_total, 2),
+            "Fee total ($)": costo_total,
             "Costo %": round((costo_total / bruto * 100) if bruto > 0 else 0, 2),
             "Neto ($)": round(neto, 2),
         })
@@ -2335,23 +2330,20 @@ if st.session_state.df_tn is not None:
                                 .agg(
                                     Ops=("ID MP", "count"),
                                     Bruto=("Bruto ($)", "sum"),
-                                    Comisión=("Comisión MP ($)", "sum"),
-                                    CostoFin=("Costo fin ($)", "sum"),
-                                    CostoTotal=("Costo total ($)", "sum"),
+                                    FeeTotal=("Fee total ($)", "sum"),
                                     Neto=("Neto ($)", "sum"),
                                 )
                                 .reset_index()
                             )
                             mp_res["Costo %"] = (
-                                mp_res["CostoTotal"] / mp_res["Bruto"] * 100
+                                mp_res["FeeTotal"] / mp_res["Bruto"] * 100
                             ).round(2)
                             mp_res_fmt = mp_res.copy()
-                            for col in ["Bruto", "Comisión", "CostoFin", "CostoTotal", "Neto"]:
+                            for col in ["Bruto", "FeeTotal", "Neto"]:
                                 mp_res_fmt[col] = mp_res[col].apply(fmt)
                             mp_res_fmt["Costo %"] = mp_res["Costo %"].apply(fmt_pct)
                             mp_res_fmt.columns = [
-                                "Tipo", "Ops", "Bruto ($)", "Com. MP ($)",
-                                "Costo Fin ($)", "Costo Total ($)", "Neto ($)", "Costo %",
+                                "Tipo", "Ops", "Bruto ($)", "Fee MP ($)", "Neto ($)", "Costo %",
                             ]
                             st.dataframe(mp_res_fmt, use_container_width=True, hide_index=True)
                     else:
