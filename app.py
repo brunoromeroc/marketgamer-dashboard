@@ -2773,10 +2773,9 @@ if st.session_state.df_tn is not None:
             _r4.markdown(_kpi_html("Costo operativo", fmt(costo_operativo), f"prods {fmt(costo_productos)} + envíos {fmt(costo_envios)}", val_color=MG_RED), unsafe_allow_html=True)
 
             # ── 2) DETALLE POR PASARELA ────────────────────────────────────────
-            st.divider()
             st.markdown(
                 f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
-                f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
+                f'letter-spacing:0.08em;text-transform:uppercase;margin-top:1.5rem;margin-bottom:0.5rem;">'
                 f'🔀 Detalle por pasarela</p>',
                 unsafe_allow_html=True,
             )
@@ -2940,13 +2939,10 @@ if st.session_state.df_tn is not None:
                             with st.expander(f"Ver campos pago #{_i}", expanded=False):
                                 st.json(_resumen_p)
 
-                st.divider()
-
-            st.divider()
             # ── 3) GASTOS DEL PERÍODO — 4 columnas ────────────────────────────
             st.markdown(
                 f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
-                f'letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
+                f'letter-spacing:0.08em;text-transform:uppercase;margin-top:1.5rem;margin-bottom:0.5rem;">'
                 f'📊 Gastos del período</p>',
                 unsafe_allow_html=True,
             )
@@ -2962,12 +2958,11 @@ if st.session_state.df_tn is not None:
             ), unsafe_allow_html=True)
 
             # ── Resultado final ────────────────────────────────────────────────
-            st.divider()
             _res_color = "#4ade80" if resultado_final >= 0 else MG_RED
             _res_icon  = "🟢" if resultado_final >= 0 else "🔴"
             st.markdown(
                 f'<div style="background:{MG_SURF};border-radius:10px;padding:1.2rem 1.5rem;'
-                f'border-left:3px solid {_res_color};margin-bottom:1rem;">'
+                f'border-left:3px solid {_res_color};margin-top:1.5rem;margin-bottom:1rem;">'
                 f'<div style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
                 f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;">'
                 f'{_res_icon} Resultado final del período</div>'
@@ -2977,7 +2972,7 @@ if st.session_state.df_tn is not None:
             )
 
             # ── Gráfico de resultado día a día ──
-            st.divider()
+            st.markdown("<div style='margin-top:1.5rem'></div>", unsafe_allow_html=True)
             st.subheader("📈 Resultado diario — Tendencia del período")
 
             # Calcular P&L por día
