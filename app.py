@@ -971,6 +971,9 @@ def match_mp_with_tn(df_tn, mp_payments_raw):
     # match exacto (sin tolerancia $) y matched_ids para evitar duplicados.
 
     for idx, row in df.iterrows():
+        # No matchear órdenes marcadas explícitamente como Efectivo
+        if row.get("Pasarela", "") == "Efectivo":
+            continue
         total = round(float(row.get("Total ($)", 0)))
         try:
             fecha_tn = pd.to_datetime(row.get("Fecha")).date()
@@ -1919,7 +1922,36 @@ def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
 
     st.session_state.pn_match_stats = pn_match_stats
 
+    # 2c. Cargar set de órdenes marcadas como efectivo (de Google Sheets) y aplicarlas
+    # ANTES del matching MP para que no se peguen a un pago coincidente por accidente.
+    ordenes_efectivo_raw = gs_read("OrdenesEfectivo") or {}
+    ordenes_efectivo_set = set()
+    if isinstance(ordenes_efectivo_raw, dict):
+        for k, v in ordenes_efectivo_raw.items():
+            if v:  # truthy = marcada
+                ordenes_efectivo_set.add(str(k))
+    st.session_state.ordenes_efectivo = ordenes_efectivo_set
+
+    if not df_tn.empty and ordenes_efectivo_set:
+        for idx, row in df_tn.iterrows():
+            num_orden = str(row.get("Orden", ""))
+            if num_orden in ordenes_efectivo_set:
+                total = float(row.get("Total ($)", 0))
+                df_tn.at[idx, "Pasarela"]          = "Efectivo"
+                df_tn.at[idx, "Comision PN ($)"]   = 0.0
+                df_tn.at[idx, "Costo PN (%)"]      = 0.0
+                df_tn.at[idx, "Neto cobrado ($)"]  = total
+                df_tn.at[idx, "ID MP"]             = ""
+                # Recalcular margen sin descontar comisión
+                costo_prods = float(row.get("Costo Productos ($)", 0))
+                costo_envio = float(row.get("Envio costo ($)", 0))
+                df_tn.at[idx, "Margen ($)"] = round(total - costo_prods - costo_envio, 2)
+                df_tn.at[idx, "Margen (%)"] = round(
+                    ((total - costo_prods - costo_envio) / total * 100) if total > 0 else 0, 2
+                )
+
     # 3. Pagos Mercado Pago + matching automático con órdenes "a convenir"
+    # match_mp_with_tn() ya saltea órdenes con Pasarela == "Efectivo"
     if MP_ACCESS_TOKEN and not df_tn.empty:
         mp_raw = get_mp_payments(str(fecha_desde), str(fecha_hasta))
         st.session_state.mp_raw = mp_raw
@@ -1933,7 +1965,6 @@ def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
         st.session_state.mp_match_stats = {"matched": 0, "sin_match": 0}
 
     st.session_state.df_tn = df_tn
-    st.session_state.ordenes_efectivo = set()
     st.session_state.ids_venta_local = set()
 
     if mostrar_success and orders:
@@ -2436,6 +2467,52 @@ if st.session_state.df_tn is not None:
                 "(IIBB, IVA) no se exponen vía API**, así que no se incluyen en este número. "
                 "Para verlas reales tenés que entrar al panel de Pago Nube de cada orden."
             )
+
+            # ── Marcar órdenes en efectivo ─────────────────────────────────────
+            st.divider()
+            with st.expander("💵 Marcar órdenes pagadas en efectivo", expanded=False):
+                st.caption(
+                    "Las órdenes marcadas como efectivo no tienen costo financiero (neto = bruto) "
+                    "y se excluyen del matching automático con MP. La selección se guarda en Google Sheets."
+                )
+                _ordenes_actuales = st.session_state.get("ordenes_efectivo", set()) or set()
+                _opciones_ord = []
+                _label_a_num = {}
+                for _, row in df_det.iterrows():
+                    n = str(row.get("Orden", ""))
+                    cli = str(row.get("Cliente", ""))[:30]
+                    tot = float(row.get("Total ($)", 0) or 0)
+                    medio = str(row.get("Medio de Pago", ""))
+                    label = f"{n} — {cli} — ${tot:,.0f} ({medio})"
+                    _opciones_ord.append(label)
+                    _label_a_num[label] = n
+                _default_labels = [
+                    lbl for lbl, n in _label_a_num.items() if n in _ordenes_actuales
+                ]
+                _seleccion_efec = st.multiselect(
+                    "Órdenes pagadas en efectivo",
+                    options=_opciones_ord,
+                    default=_default_labels,
+                    label_visibility="collapsed",
+                )
+                if st.button("💾 Guardar selección efectivo", use_container_width=True):
+                    nuevos_nums = {_label_a_num[l] for l in _seleccion_efec}
+                    # Construir dict para Sheets: union de los actuales (de otros períodos)
+                    # con los nuevos. Solo marcamos las que estén actualmente en la tabla.
+                    # Para no perder marcas de períodos anteriores, leemos lo que ya hay.
+                    actual_gs = gs_read("OrdenesEfectivo") or {}
+                    if not isinstance(actual_gs, dict):
+                        actual_gs = {}
+                    # Quitar de actual_gs las órdenes del período actual (se reemplazan)
+                    nums_periodo = {str(o) for o in df_det["Orden"].tolist()}
+                    actual_gs = {k: v for k, v in actual_gs.items() if str(k) not in nums_periodo}
+                    # Agregar las seleccionadas
+                    for n in nuevos_nums:
+                        actual_gs[str(n)] = True
+                    if gs_write("OrdenesEfectivo", actual_gs):
+                        st.success(f"✅ {len(nuevos_nums)} órdenes marcadas como efectivo. Click 'Actualizar datos' en el sidebar para aplicar.")
+                    else:
+                        st.error("❌ Error al guardar en Google Sheets.")
             st.download_button("⬇️ Descargar CSV órdenes TN",
                 df_view.to_csv(index=False).encode("utf-8"), "ordenes_tn.csv", "text/csv")
 
