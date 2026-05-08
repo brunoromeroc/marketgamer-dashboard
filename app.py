@@ -1945,64 +1945,39 @@ if st.session_state.df_tn is not None:
                     )
                     st.plotly_chart(fig_tp, use_container_width=True)
 
-            # ── Top 10 facturación + Donut comisiones (Pareto) ──
-            col_rev1, col_rev2 = st.columns(2)
-
-            with col_rev1:
-                top_revenue = {}
-                for _, row in df_tn.iterrows():
-                    prods_list = [p.strip() for p in str(row.get("Productos", "")).split(" / ") if p.strip()]
-                    n_prods = max(len(prods_list), 1)
-                    for p in prods_list:
-                        top_revenue[p] = top_revenue.get(p, 0) + row.get("Total ($)", 0) / n_prods
-                if top_revenue:
-                    df_rev = pd.DataFrame(list(top_revenue.items()), columns=["Producto", "Monto ($)"])
-                    df_rev["Monto ($)"] = df_rev["Monto ($)"].round(0)
-                    df_rev = df_rev.sort_values("Monto ($)", ascending=False).head(10)
-                    df_rev["Label"] = df_rev["Producto"].apply(_truncar)
-                    df_rev["Texto"] = df_rev["Monto ($)"].apply(_fmt_compact)
-                    fig_rev = px.bar(
-                        df_rev, x="Monto ($)", y="Label", orientation="h",
-                        title="Top 10 productos (facturación)",
-                        color="Monto ($)",
-                        color_continuous_scale=[[0, "#26272b"], [1, MG_RED]],
-                        text="Texto",
-                        custom_data=["Producto"],
-                    )
-                    fig_rev.update_layout(
-                        yaxis={"categoryorder": "total ascending", "title": ""},
-                        xaxis_tickformat="$,.0f",
-                        coloraxis_showscale=False,
-                        height=380,
-                    )
-                    fig_rev.update_traces(
-                        textposition="inside", textfont_size=11, textfont_color=MG_TEXT,
-                        hovertemplate="<b>%{customdata[0]}</b><br>$%{x:,.0f}<extra></extra>",
-                    )
-                    st.plotly_chart(fig_rev, use_container_width=True)
-
-            with col_rev2:
-                # ── Tabla comisiones detalle (tabla completa) ──
-                comis_medio = df_tn.groupby("Medio de Pago").agg(
-                    Ordenes=("Orden", "count"),
-                    Facturacion=("Total ($)", "sum"),
-                    Comision=("Comision PN ($)", "sum"),
-                ).reset_index().sort_values("Comision", ascending=False)
-                comis_medio["Costo %"] = (comis_medio["Comision"] / comis_medio["Facturacion"] * 100).round(2)
-
-                comis_fmt = comis_medio.copy()
-                comis_fmt["Facturacion"] = comis_fmt["Facturacion"].apply(fmt)
-                comis_fmt["Comision"] = comis_fmt["Comision"].apply(fmt)
-                comis_fmt["Costo %"] = comis_fmt["Costo %"].apply(fmt_pct)
-                comis_fmt.columns = ["Medio de Pago", "Órdenes", "Facturación", "Comisión", "Costo %"]
-                st.markdown(
-                    f'<p style="font-size:0.72rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
-                    f'letter-spacing:0.06em;text-transform:uppercase;margin-bottom:0.4rem;">'
-                    f'Detalle por medio — costo total ponderado: <span style="color:{MG_TEXT};font-weight:700;">'
-                    f'{costo_ponderado_pn:.2f}%</span></p>',
-                    unsafe_allow_html=True,
+            # ── Top 10 facturación (full width) ───────────────────────────────
+            top_revenue = {}
+            for _, row in df_tn.iterrows():
+                prods_list = [p.strip() for p in str(row.get("Productos", "")).split(" / ") if p.strip()]
+                n_prods = max(len(prods_list), 1)
+                for p in prods_list:
+                    top_revenue[p] = top_revenue.get(p, 0) + row.get("Total ($)", 0) / n_prods
+            if top_revenue:
+                df_rev = pd.DataFrame(list(top_revenue.items()), columns=["Producto", "Monto ($)"])
+                df_rev["Monto ($)"] = df_rev["Monto ($)"].round(0)
+                df_rev = df_rev.sort_values("Monto ($)", ascending=False).head(10)
+                df_rev["Label"] = df_rev["Producto"].apply(_truncar)
+                df_rev["Texto"] = df_rev["Monto ($)"].apply(_fmt_compact)
+                fig_rev = px.bar(
+                    df_rev, x="Monto ($)", y="Label", orientation="h",
+                    title="Top 10 productos (facturación)",
+                    color="Monto ($)",
+                    color_continuous_scale=[[0, "#26272b"], [1, MG_RED]],
+                    text="Texto",
+                    custom_data=["Producto"],
                 )
-                st.dataframe(comis_fmt, use_container_width=True, hide_index=True, height=380)
+                fig_rev.update_layout(
+                    yaxis={"categoryorder": "total ascending", "title": ""},
+                    xaxis_tickformat="$,.0f",
+                    coloraxis_showscale=False,
+                    height=380,
+                    margin=dict(t=50, b=40, l=10, r=10),
+                )
+                fig_rev.update_traces(
+                    textposition="inside", textfont_size=11, textfont_color=MG_TEXT,
+                    hovertemplate="<b>%{customdata[0]}</b><br>$%{x:,.0f}<extra></extra>",
+                )
+                st.plotly_chart(fig_rev, use_container_width=True)
 
             # ── Donuts separados: Pago Nube vs Mercado Pago ───────────────────
             st.markdown(
