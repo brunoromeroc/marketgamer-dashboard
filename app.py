@@ -2308,33 +2308,54 @@ if st.session_state.df_tn is not None:
         )
 
         # Debug: inspeccionar payment_details crudo de una orden
-        with st.expander("🔧 Debug — inspeccionar payment_details de una orden TN", expanded=False):
-            st.caption("Pegá el número de orden para ver los campos crudos. Útil para identificar dónde TN guarda fee/retención.")
-            with st.form("dbg_order_form"):
-                _dbg_orden_num = st.text_input("Número de orden", placeholder="446")
-                _dbg_submit = st.form_submit_button("Buscar")
-                if _dbg_submit and _dbg_orden_num:
-                    orders_raw = st.session_state.get("orders_raw", [])
-                    encontrada = None
-                    for o in orders_raw:
-                        if str(o.get("number", "")) == str(_dbg_orden_num).strip():
-                            encontrada = o
-                            break
-                    if encontrada:
-                        st.session_state["dbg_order_data"] = encontrada
-                    else:
-                        st.session_state["dbg_order_data"] = {"_error": "Orden no encontrada en el período"}
-            _dbg_data = st.session_state.get("dbg_order_data")
-            if _dbg_data:
-                if "_error" in _dbg_data:
-                    st.error(_dbg_data["_error"])
-                else:
-                    st.markdown(f"**Orden #{_dbg_data.get('number')}** · ID: `{_dbg_data.get('id')}`")
-                    st.markdown(f"**gateway:** `{_dbg_data.get('gateway')}`")
+        _orders_raw_dbg = st.session_state.get("orders_raw", [])
+        with st.expander(
+            f"🔧 Debug — inspeccionar payment_details de una orden TN ({len(_orders_raw_dbg)} órdenes en sesión)",
+            expanded=False,
+        ):
+            if not _orders_raw_dbg:
+                st.warning("No hay órdenes en sesión. Click 'Actualizar datos' en el sidebar primero.")
+            else:
+                # Construir opciones: "446 — Leonardo Attila — $236.250"
+                _opciones = ["— elegí una orden —"]
+                _orden_por_label = {}
+                for o in _orders_raw_dbg:
+                    n = o.get("number", "?")
+                    cli = str(o.get("contact_name", ""))[:30]
+                    tot = float(o.get("total", 0) or 0)
+                    label = f"{n} — {cli} — ${tot:,.0f}"
+                    _opciones.append(label)
+                    _orden_por_label[label] = o
+
+                _sel = st.selectbox(
+                    "Elegí orden", _opciones, index=0, key="dbg_order_sel",
+                    label_visibility="collapsed",
+                )
+                if _sel and _sel in _orden_por_label:
+                    o = _orden_por_label[_sel]
+                    st.markdown(f"**Orden #{o.get('number')}** · ID: `{o.get('id')}` · gateway: `{o.get('gateway')}`")
                     st.markdown("**payment_details (crudo):**")
-                    st.json(_dbg_data.get("payment_details", {}))
+                    pd_data = o.get("payment_details", {}) or {}
+                    if not pd_data:
+                        st.warning("⚠️ Esta orden NO tiene payment_details (puede ser efectivo o convenir manual).")
+                    else:
+                        st.json(pd_data)
+                        # Resaltar campos relevantes
+                        st.markdown("**Campos detectados para fee / retención:**")
+                        _resumen = {}
+                        for k in ["transaction_fee", "fee_amount", "fee", "processing_cost",
+                                  "tax_amount", "withholding_amount", "retention_amount",
+                                  "iibb_withholding", "tax_withholding",
+                                  "net_amount", "amount_received", "payout_amount",
+                                  "method", "installments"]:
+                            if k in pd_data:
+                                _resumen[k] = pd_data[k]
+                        if _resumen:
+                            st.json(_resumen)
+                        else:
+                            st.info("Ninguno de los campos esperados está presente. Mostrá el JSON completo arriba.")
                     with st.expander("Ver orden completa (JSON)", expanded=False):
-                        st.json(_dbg_data)
+                        st.json(o)
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
