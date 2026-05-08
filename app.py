@@ -1546,60 +1546,28 @@ def procesar_orders(orders):
         total = float(o.get("total", 0))
         descuento = float(o.get("discount", 0) or 0)
         costo_envio_dueno = float(o.get("shipping_cost_owner", 0) or 0)
-
-        # Buscar fee/retención directamente en payment_details del order
-        # (más confiable que /transactions que a veces no devuelve data).
-        fee_real = 0.0
-        retencion_real = 0.0
-        neto_real_pn = 0.0
-        if isinstance(pd_raw, dict):
-            for k in ["transaction_fee", "fee_amount", "fee", "processing_cost"]:
-                v = pd_raw.get(k)
-                if v:
-                    try:
-                        fee_real = float(v); break
-                    except Exception:
-                        pass
-            for k in ["tax_amount", "withholding_amount", "retention_amount",
-                      "iibb_withholding", "tax_withholding"]:
-                v = pd_raw.get(k)
-                if v:
-                    try:
-                        retencion_real += float(v)
-                    except Exception:
-                        pass
-            # Array de retenciones/impuestos
-            for arr in ["taxes", "withholdings", "tax_details"]:
-                for t in pd_raw.get(arr, []) or []:
-                    try:
-                        retencion_real += float(t.get("amount", 0) or t.get("value", 0) or 0)
-                    except Exception:
-                        pass
-            for k in ["net_amount", "amount_received", "payout_amount"]:
-                v = pd_raw.get(k)
-                if v:
-                    try:
-                        neto_real_pn = float(v); break
-                    except Exception:
-                        pass
+        province = str(o.get("billing_province", "")).strip()
 
         if _es_gateway_mp(gateway):
             pasarela = "MP"
             tasa = tasa_pasarela(gateway, metodo, cuotas)
             comision_pn = round(total * tasa, 2)
+            retencion_iibb = 0.0
         elif _es_convenir(gateway, metodo):
             pasarela = "Convenir"   # se resolverá en match_mp_with_tn()
             tasa = 0.0
             comision_pn = 0.0
+            retencion_iibb = 0.0
         else:
             pasarela = "PN"
-            # Si payment_details trae fee/retención reales, usarlos
-            if fee_real > 0 or retencion_real > 0:
-                comision_pn = round(fee_real + retencion_real, 2)
-                tasa = (comision_pn / total) if total > 0 else 0.0
-            else:
-                tasa = tasa_pasarela(gateway, metodo, cuotas)
-                comision_pn = round(total * tasa, 2)
+            tasa = tasa_pasarela(gateway, metodo, cuotas)
+            fee_pn = round(total * tasa, 2)
+            # Aplicar retención IIBB por provincia (PN retiene impuesto provincial)
+            iibb_rate = _iibb_rate_provincia(province)
+            retencion_iibb = round(total * iibb_rate / 100, 2)
+            # Comisión PN total = fee + retención
+            comision_pn = round(fee_pn + retencion_iibb, 2)
+            tasa = (comision_pn / total) if total > 0 else 0.0
         neto = round(total - comision_pn, 2)
         margen = round(neto - costo_productos - costo_envio_dueno, 2)
         margen_pct = round((margen / total * 100) if total > 0 else 0, 2)
@@ -1626,11 +1594,59 @@ def procesar_orders(orders):
             "Canal": str(o.get("app_id", "") or "tiendanube"),
             "Estado": o.get("status", ""),
             "ID MP": "",
-            "Retención IIBB ($)": round(retencion_real, 2) if pasarela == "PN" else 0.0,
+            "Retención IIBB ($)": retencion_iibb,
+            "Provincia": province,
             "Gateway raw": gateway,
             "Metodo raw": str(metodo),
         })
     return pd.DataFrame(filas)
+
+# Tasas IIBB por provincia para órdenes Pago Nube (transferencia bancaria).
+# Valores observados en MG. Editables vía Google Sheets si querés ajustarlas.
+IIBB_DEFAULT_RATES = {
+    "Capital Federal": 2.5,
+    "CABA":            2.5,
+    "Buenos Aires":    1.7,
+    "Córdoba":         2.5,
+    "Cordoba":         2.5,
+    "Santa Fe":        4.5,
+    "Mendoza":         3.0,
+    "Salta":           1.5,
+    "Tucumán":         2.5,
+    "Tucuman":         2.5,
+    "Entre Ríos":      2.0,
+    "Entre Rios":      2.0,
+    "Misiones":        3.0,
+    "Neuquén":         2.5,
+    "Neuquen":         2.5,
+    "Río Negro":       2.0,
+    "Rio Negro":       2.0,
+    "Chaco":           3.5,
+    "Corrientes":      2.5,
+    "San Juan":        2.5,
+    "San Luis":        2.5,
+    "La Pampa":        2.5,
+    "La Rioja":        2.5,
+    "Catamarca":       2.5,
+    "Santiago del Estero": 2.5,
+    "Formosa":         2.5,
+    "Jujuy":           2.5,
+    "Chubut":          2.5,
+    "Santa Cruz":      0.0,
+    "Tierra del Fuego": 0.0,
+}
+
+def _iibb_rate_provincia(provincia):
+    """Devuelve % de retención IIBB según provincia. 0 si no la conoce."""
+    if not provincia:
+        return 0.0
+    # Permitir override desde Google Sheets / session state
+    custom = st.session_state.get("iibb_rates") or {}
+    p = str(provincia).strip()
+    if p in custom:
+        return float(custom[p])
+    # Fallback al default
+    return float(IIBB_DEFAULT_RATES.get(p, 0.0))
 
 def _extraer_retencion_pn(p):
     """Busca retenciones de impuestos (IIBB, IVA, etc.) en el pago PN.
@@ -1851,13 +1867,16 @@ def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
     df_pagos_pn = procesar_pagos_pn(pagos) if pagos else pd.DataFrame()
     st.session_state.df_pagos = df_pagos_pn
 
-    # 2b. Cross-reference: actualizar comisión PN real (fee + retención IIBB)
-    # de cada orden con datos del API de TN /transactions, en lugar del estimado.
-    # SIEMPRE agregamos la columna Retención IIBB ($) aunque no haya pagos.
+    # 2b. Cross-reference (opcional): si /transactions devolvió datos reales,
+    # se usan en lugar del estimado por tasa+provincia. Si vino vacío, se
+    # mantiene la estimación que ya hizo procesar_orders.
     if not df_tn.empty and "Retención IIBB ($)" not in df_tn.columns:
         df_tn["Retención IIBB ($)"] = 0.0
 
-    pn_match_stats = {"intentos": 0, "matched": 0, "sin_pago": 0}
+    pn_match_stats = {"intentos": 0, "matched": 0, "sin_pago": 0, "estimados": 0}
+    # Contar cuántas órdenes PN están usando estimación (sin match en /transactions)
+    if not df_tn.empty:
+        pn_match_stats["estimados"] = int((df_tn.get("Pasarela") == "PN").sum()) if "Pasarela" in df_tn.columns else 0
 
     if not df_tn.empty and not df_pagos_pn.empty:
         # Mapear order_id → (fee_real, retencion_real, costo_total_real)
@@ -2303,8 +2322,9 @@ if st.session_state.df_tn is not None:
         # Marker de versión para verificar que el deploy llegó
         _stats = st.session_state.get("pn_match_stats") or {}
         st.caption(
-            f"🔧 v0.5.0 · Cross-ref PN: {_stats.get('matched', 0)} órdenes con costo real · "
-            f"{_stats.get('sin_pago', 0)} sin pago · {_stats.get('intentos', 0)} intentos"
+            f"🔧 v0.6.0 · PN: {_stats.get('estimados', 0)} órdenes con estimación por provincia · "
+            f"IIBB tomado de billing_province · "
+            f"Cross-ref /transactions: {_stats.get('matched', 0)} matched"
         )
 
         # Debug: inspeccionar payment_details crudo de una orden
