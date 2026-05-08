@@ -1198,9 +1198,10 @@ def procesar_mp_payments(payments):
             "Fee total ($)": costo_total,
             "Costo %": round((costo_total / bruto * 100) if bruto > 0 else 0, 2),
             "Neto ($)": round(neto, 2),
-            "Cargo MP ($)":         round(desg.get("Cargo MP", 0), 2),
-            "Impuestos ($)":        round(desg.get("Impuestos", 0), 2),
-            "Cargo plataforma ($)": round(desg.get("Cargo plataforma", 0), 2),
+            "Cargo MP ($)":           round(desg.get("Cargo MP", 0), 2),
+            "Cargo financiación ($)": round(desg.get("Cargo financiación", 0), 2),
+            "Impuestos ($)":          round(desg.get("Impuestos", 0), 2),
+            "Cargo plataforma ($)":   round(desg.get("Cargo plataforma", 0), 2),
         })
     return pd.DataFrame(filas) if filas else pd.DataFrame()
 
@@ -2211,8 +2212,8 @@ if st.session_state.df_tn is not None:
                             )
                             _cols_mp = [
                                 "ID MP", "Fecha", "Tipo", "Cuotas", "Medio",
-                                "Bruto ($)", "Cargo MP ($)", "Impuestos ($)",
-                                "Cargo plataforma ($)",
+                                "Bruto ($)", "Cargo MP ($)", "Cargo financiación ($)",
+                                "Impuestos ($)", "Cargo plataforma ($)",
                                 "Fee total ($)", "Costo %", "Neto ($)",
                             ]
                             _cols_mp = [c for c in _cols_mp if c in _df_mp_det.columns]
