@@ -1098,6 +1098,50 @@ def _es_liquidacion_externa(p):
     ]
     return any("dlocal" in t.lower() for t in textos)
 
+_FEE_TYPE_LABELS = {
+    "mercadopago_fee":         "Cargo MP",
+    "financing_fee":           "Cargo financiación",
+    "application_fee":         "Cargo plataforma",   # plataforma de terceros (TN)
+    "discount_fee":            "Descuento aplicado",
+    "fixed_fee":               "Cargo fijo",
+    "iva_fee":                 "IVA",
+    "absorbed_financing_fee":  "Intereses absorbidos",
+    "tax_fee":                 "Impuestos",
+    "iibb":                    "IIBB",
+    "credit_fee":              "Crédito",
+}
+
+def _desglose_fees(p):
+    """Devuelve dict {label: monto} con desglose de fee_details + impuestos.
+    Para análisis fino: cargo MP, intereses absorbidos, IVA, IIBB, plataforma, etc.
+    """
+    desglose = {}
+    # 1) fee_details — viene como lista de {type, amount, fee_payer}
+    for f in p.get("fee_details", []) or []:
+        tipo = f.get("type", "")
+        label = _FEE_TYPE_LABELS.get(tipo, tipo or "Otro")
+        try:
+            monto = float(f.get("amount", 0) or 0)
+        except Exception:
+            monto = 0.0
+        desglose[label] = round(desglose.get(label, 0) + monto, 2)
+    # 2) charges_details — viene como lista para cargos extra (plataforma, etc.)
+    for c in p.get("charges_details", []) or []:
+        tipo = c.get("type", "")
+        # 'application_fee' suele venir aquí (cobro plataforma de terceros)
+        label = _FEE_TYPE_LABELS.get(tipo, tipo or "Otro")
+        amounts = c.get("amounts", {}) or {}
+        try:
+            monto = float(amounts.get("original", 0) or 0)
+        except Exception:
+            monto = 0.0
+        desglose[label] = round(desglose.get(label, 0) + monto, 2)
+    # 3) Impuestos directos en transaction_details / taxes
+    taxes = p.get("taxes_amount", 0) or 0
+    if taxes:
+        desglose["Impuestos"] = round(desglose.get("Impuestos", 0) + float(taxes), 2)
+    return desglose
+
 def procesar_mp_payments(payments):
     """Convierte lista raw de MP en DataFrame con fee real por operación.
     Excluye liquidaciones de procesadores externos (Dlocal/Pago Nube).
@@ -1122,6 +1166,9 @@ def procesar_mp_payments(payments):
             fecha = pd.to_datetime(p.get("date_approved")).strftime("%Y-%m-%d")
         except Exception:
             fecha = ""
+
+        # Desglose detallado de fees (impuestos, cargos, intereses absorbidos, etc.)
+        desg = _desglose_fees(p)
         filas.append({
             "ID MP": str(int(p.get("id", 0))),
             "Fecha": fecha,
@@ -1132,6 +1179,12 @@ def procesar_mp_payments(payments):
             "Fee total ($)": costo_total,
             "Costo %": round((costo_total / bruto * 100) if bruto > 0 else 0, 2),
             "Neto ($)": round(neto, 2),
+            "Cargo MP ($)":              round(desg.get("Cargo MP", 0), 2),
+            "Cargo financiación ($)":    round(desg.get("Cargo financiación", 0), 2),
+            "Intereses absorbidos ($)":  round(desg.get("Intereses absorbidos", 0), 2),
+            "Impuestos ($)":             round(desg.get("Impuestos", 0), 2),
+            "Cargo plataforma ($)":      round(desg.get("Cargo plataforma", 0), 2),
+            "IIBB ($)":                  round(desg.get("IIBB", 0), 2),
         })
     return pd.DataFrame(filas) if filas else pd.DataFrame()
 
@@ -1343,12 +1396,19 @@ def calcular_costo_total_orden_ars(productos_str, cantidad, tipo_cambio_ars, cos
     return sum(get_costo_total_usd(p, costos_gs) * tipo_cambio_ars for p in prods)
 
 def costo_final_row(row, tipo_cambio, costos_gs):
-    costo_tn = float(row.get("Costo Productos ($)", 0) or 0)
-    if costo_tn > 0:
-        return round(costo_tn, 0)
-    return round(calcular_costo_orden_ars(
+    """Costo de productos en ARS = (FOB + Import) de cada producto × cantidad × TC.
+    Usa la tabla CostosConsolas como source of truth (FOB + Import).
+    Solo cae al costo TN si la tabla no tiene el producto.
+    """
+    # 1) Intentar con CostosConsolas (FOB + Import)
+    costo_calc = calcular_costo_total_orden_ars(
         row.get("Productos", ""), row.get("Cantidad", 1), tipo_cambio, costos_gs
-    ), 0)
+    )
+    if costo_calc > 0:
+        return round(costo_calc, 0)
+    # 2) Fallback: lo que TN reporta (puede ser FOB solo o desactualizado)
+    costo_tn = float(row.get("Costo Productos ($)", 0) or 0)
+    return round(costo_tn, 0)
 
 def costo_total_final_row(row, tipo_cambio, costos_gs):
     """Costo total (FOB + import) para la fila."""
@@ -2096,12 +2156,19 @@ if st.session_state.df_tn is not None:
                 caption_txt += f" · ⚠️ {sin_costo_tn} orden(es) sin costo cargado"
             st.caption(caption_txt)
 
+            # Renombrar columnas visibles (más generales — ahora cubre PN y MP)
+            _rename_view = {
+                "Comision PN ($)": "Costo fin. ($)",
+                "Costo PN (%)":    "Costo fin. %",
+            }
+            df_view = df_det[cols_tn].rename(columns=_rename_view)
+
             st.dataframe(
-                df_det[cols_tn].style
+                df_view.style
                     .format({
                         "Total ($)": "${:,.0f}", "Descuento ($)": "${:,.0f}",
-                        "Envio costo ($)": "${:,.0f}", "Comision PN ($)": "${:,.0f}",
-                        "Costo PN (%)": "{:.2f}%", "Neto cobrado ($)": "${:,.0f}",
+                        "Envio costo ($)": "${:,.0f}", "Costo fin. ($)": "${:,.0f}",
+                        "Costo fin. %": "{:.2f}%", "Neto cobrado ($)": "${:,.0f}",
                         "Costo Productos ($)": "${:,.0f}", "Margen ($)": "${:,.0f}",
                         "Margen (%)": "{:.2f}%",
                     })
@@ -2109,7 +2176,37 @@ if st.session_state.df_tn is not None:
                 use_container_width=True, hide_index=True,
             )
             st.download_button("⬇️ Descargar CSV órdenes TN",
-                df_det[cols_tn].to_csv(index=False).encode("utf-8"), "ordenes_tn.csv", "text/csv")
+                df_view.to_csv(index=False).encode("utf-8"), "ordenes_tn.csv", "text/csv")
+
+            # ── Desglose detallado de fees MP por operación ───────────────────
+            if MP_ACCESS_TOKEN:
+                _mp_raw_det = get_mp_payments(str(fecha_desde), str(fecha_hasta)) or []
+                if _mp_raw_det:
+                    _df_mp_det = procesar_mp_payments(_mp_raw_det)
+                    if not _df_mp_det.empty:
+                        st.divider()
+                        with st.expander(
+                            f"💳 Desglose detallado de fees MP por operación ({len(_df_mp_det)} pagos)",
+                            expanded=False,
+                        ):
+                            st.caption(
+                                "Componentes que cobra MP en cada operación: cargo MP, "
+                                "intereses absorbidos (cuotas sin interés), impuestos, IIBB, plataforma de terceros."
+                            )
+                            _cols_mp = [
+                                "ID MP", "Fecha", "Tipo", "Cuotas", "Medio",
+                                "Bruto ($)", "Cargo MP ($)", "Cargo financiación ($)",
+                                "Intereses absorbidos ($)", "Impuestos ($)",
+                                "IIBB ($)", "Cargo plataforma ($)",
+                                "Fee total ($)", "Costo %", "Neto ($)",
+                            ]
+                            _cols_mp = [c for c in _cols_mp if c in _df_mp_det.columns]
+                            _fmt_money = {c: "${:,.2f}" for c in _cols_mp if "($)" in c}
+                            _fmt_money["Costo %"] = "{:.2f}%"
+                            st.dataframe(
+                                _df_mp_det[_cols_mp].style.format(_fmt_money),
+                                use_container_width=True, hide_index=True,
+                            )
 
             # Métricas resumen
             st.divider()
@@ -2120,7 +2217,7 @@ if st.session_state.df_tn is not None:
             mg1, mg2, mg3, mg4 = st.columns(4)
             mg1.metric("💰 Facturación bruta", fmt(total_bruto))
             mg2.metric("📦 Costo productos", fmt(total_costo), delta=f"-{fmt(total_costo)}", delta_color="inverse")
-            mg3.metric("💳 Comisión PN", fmt(total_comis), delta=f"-{fmt(total_comis)}", delta_color="inverse")
+            mg3.metric("💳 Costo financiero", fmt(total_comis), delta=f"-{fmt(total_comis)}", delta_color="inverse")
             mg4.metric(
                 f"{'🟢' if total_margen >= 0 else '🔴'} Margen neto",
                 fmt(total_margen),
