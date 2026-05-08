@@ -1111,35 +1111,54 @@ _FEE_TYPE_LABELS = {
     "credit_fee":              "Crédito",
 }
 
+_TAX_TYPES = {"iva_fee", "tax_fee", "iibb", "iibb_fee", "tax", "iva", "ingresos_brutos"}
+
 def _desglose_fees(p):
     """Devuelve dict {label: monto} con desglose de fee_details + impuestos.
-    Para análisis fino: cargo MP, intereses absorbidos, IVA, IIBB, plataforma, etc.
+    Para análisis fino: cargo MP, IVA, IIBB, plataforma, etc.
     """
     desglose = {}
-    # 1) fee_details — viene como lista de {type, amount, fee_payer}
+    # 1) fee_details — lista de {type, amount, fee_payer}
     for f in p.get("fee_details", []) or []:
-        tipo = f.get("type", "")
-        label = _FEE_TYPE_LABELS.get(tipo, tipo or "Otro")
+        tipo = str(f.get("type", "")).lower()
         try:
             monto = float(f.get("amount", 0) or 0)
         except Exception:
             monto = 0.0
-        desglose[label] = round(desglose.get(label, 0) + monto, 2)
-    # 2) charges_details — viene como lista para cargos extra (plataforma, etc.)
+        # Si es impuesto, agruparlo bajo 'Impuestos'
+        if tipo in _TAX_TYPES:
+            desglose["Impuestos"] = round(desglose.get("Impuestos", 0) + monto, 2)
+        else:
+            label = _FEE_TYPE_LABELS.get(tipo, tipo or "Otro")
+            desglose[label] = round(desglose.get(label, 0) + monto, 2)
+    # 2) charges_details — cargos extra (plataforma de terceros, etc.)
     for c in p.get("charges_details", []) or []:
-        tipo = c.get("type", "")
-        # 'application_fee' suele venir aquí (cobro plataforma de terceros)
-        label = _FEE_TYPE_LABELS.get(tipo, tipo or "Otro")
+        tipo = str(c.get("type", "")).lower()
         amounts = c.get("amounts", {}) or {}
         try:
             monto = float(amounts.get("original", 0) or 0)
         except Exception:
             monto = 0.0
-        desglose[label] = round(desglose.get(label, 0) + monto, 2)
-    # 3) Impuestos directos en transaction_details / taxes
-    taxes = p.get("taxes_amount", 0) or 0
-    if taxes:
-        desglose["Impuestos"] = round(desglose.get("Impuestos", 0) + float(taxes), 2)
+        if tipo in _TAX_TYPES:
+            desglose["Impuestos"] = round(desglose.get("Impuestos", 0) + monto, 2)
+        else:
+            label = _FEE_TYPE_LABELS.get(tipo, tipo or "Otro")
+            desglose[label] = round(desglose.get(label, 0) + monto, 2)
+    # 3) Array 'taxes' a nivel raíz (MP a veces lo expone separado)
+    for t in p.get("taxes", []) or []:
+        try:
+            monto = float(t.get("value", 0) or 0)
+        except Exception:
+            monto = 0.0
+        desglose["Impuestos"] = round(desglose.get("Impuestos", 0) + monto, 2)
+    # 4) taxes_amount en transaction_details (campo legacy)
+    taxes_extra = (
+        p.get("taxes_amount", 0)
+        or p.get("transaction_details", {}).get("taxes_amount", 0)
+        or 0
+    )
+    if taxes_extra:
+        desglose["Impuestos"] = round(desglose.get("Impuestos", 0) + float(taxes_extra), 2)
     return desglose
 
 def procesar_mp_payments(payments):
@@ -1179,12 +1198,9 @@ def procesar_mp_payments(payments):
             "Fee total ($)": costo_total,
             "Costo %": round((costo_total / bruto * 100) if bruto > 0 else 0, 2),
             "Neto ($)": round(neto, 2),
-            "Cargo MP ($)":              round(desg.get("Cargo MP", 0), 2),
-            "Cargo financiación ($)":    round(desg.get("Cargo financiación", 0), 2),
-            "Intereses absorbidos ($)":  round(desg.get("Intereses absorbidos", 0), 2),
-            "Impuestos ($)":             round(desg.get("Impuestos", 0), 2),
-            "Cargo plataforma ($)":      round(desg.get("Cargo plataforma", 0), 2),
-            "IIBB ($)":                  round(desg.get("IIBB", 0), 2),
+            "Cargo MP ($)":         round(desg.get("Cargo MP", 0), 2),
+            "Impuestos ($)":        round(desg.get("Impuestos", 0), 2),
+            "Cargo plataforma ($)": round(desg.get("Cargo plataforma", 0), 2),
         })
     return pd.DataFrame(filas) if filas else pd.DataFrame()
 
@@ -2195,9 +2211,8 @@ if st.session_state.df_tn is not None:
                             )
                             _cols_mp = [
                                 "ID MP", "Fecha", "Tipo", "Cuotas", "Medio",
-                                "Bruto ($)", "Cargo MP ($)", "Cargo financiación ($)",
-                                "Intereses absorbidos ($)", "Impuestos ($)",
-                                "IIBB ($)", "Cargo plataforma ($)",
+                                "Bruto ($)", "Cargo MP ($)", "Impuestos ($)",
+                                "Cargo plataforma ($)",
                                 "Fee total ($)", "Costo %", "Neto ($)",
                             ]
                             _cols_mp = [c for c in _cols_mp if c in _df_mp_det.columns]
