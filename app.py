@@ -1587,6 +1587,46 @@ def procesar_orders(orders):
         })
     return pd.DataFrame(filas)
 
+def _extraer_retencion_pn(p):
+    """Busca retenciones de impuestos (IIBB, IVA, etc.) en el pago PN.
+    TN expone esto en distintos lugares según la versión del payload.
+    """
+    retencion = 0.0
+    # 1) Campos directos
+    for campo in ["tax_amount", "withholding_amount", "retention_amount", "retencion"]:
+        v = p.get(campo, 0)
+        try:
+            retencion += float(v or 0)
+        except Exception:
+            pass
+    # 2) Array 'taxes' o 'withholdings'
+    for arr_name in ["taxes", "withholdings", "tax_details"]:
+        for t in p.get(arr_name, []) or []:
+            try:
+                retencion += float(t.get("amount", 0) or t.get("value", 0) or 0)
+            except Exception:
+                pass
+    # 3) Charges con tipo de retención
+    for c in p.get("charges", []) or []:
+        tipo = str(c.get("type", "")).lower()
+        if any(k in tipo for k in ["iibb", "ingresos", "withhold", "retencion", "retention", "tax"]):
+            try:
+                retencion += float(c.get("amount", 0) or 0)
+            except Exception:
+                pass
+    # 4) Fallback: amount - fee_amount - net_amount (si los 3 están)
+    if retencion == 0:
+        try:
+            amt = float(p.get("amount", 0) or 0)
+            fee = float(p.get("fee_amount", 0) or p.get("fee", 0) or 0)
+            net = float(p.get("net_amount", 0) or 0)
+            diff = round(amt - fee - net, 2)
+            if diff > 0:
+                retencion = diff
+        except Exception:
+            pass
+    return round(retencion, 2)
+
 def procesar_pagos_pn(pagos):
     filas = []
     for p in pagos:
@@ -1594,15 +1634,25 @@ def procesar_pagos_pn(pagos):
             fecha = pd.to_datetime(p.get("created_at", "")).strftime("%Y-%m-%d")
         except Exception:
             fecha = ""
+        monto = float(p.get("amount", 0) or 0)
+        fee = float(p.get("fee_amount", 0) or p.get("fee", 0) or 0)
+        neto_api = float(p.get("net_amount", 0) or 0)
+        retencion = _extraer_retencion_pn(p)
+        # Costo total = fee + retención
+        costo_total = round(fee + retencion, 2)
+        # Neto real = monto - costo total (si el API trae net_amount usamos eso)
+        neto_real = neto_api if neto_api > 0 else round(monto - costo_total, 2)
         filas.append({
             "ID": str(p.get("id", "")),
             "Fecha": fecha,
             "Estado": p.get("status", ""),
             "Método": p.get("payment_method", ""),
             "Cuotas": p.get("installments", 1),
-            "Monto ($)": float(p.get("amount", 0) or 0),
-            "Fee ($)": float(p.get("fee_amount", 0) or p.get("fee", 0) or 0),
-            "Neto ($)": float(p.get("net_amount", 0) or 0),
+            "Monto ($)": monto,
+            "Fee ($)":          fee,
+            "Retención ($)":    retencion,
+            "Costo total ($)":  costo_total,
+            "Neto ($)": neto_real,
             "Orden TN": str(p.get("order_id", "")),
         })
     return pd.DataFrame(filas) if filas else pd.DataFrame()
@@ -1753,7 +1803,51 @@ def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
 
     # 2. Pagos Pago Nube
     pagos = get_tn_pagos(fecha_desde, fecha_hasta)
-    st.session_state.df_pagos = procesar_pagos_pn(pagos) if pagos else pd.DataFrame()
+    df_pagos_pn = procesar_pagos_pn(pagos) if pagos else pd.DataFrame()
+    st.session_state.df_pagos = df_pagos_pn
+
+    # 2b. Cross-reference: actualizar comisión PN real (fee + retención IIBB)
+    # de cada orden con datos del API de TN /transactions, en lugar del estimado.
+    if not df_tn.empty and not df_pagos_pn.empty:
+        # Mapear order_id → (fee_real, retencion_real, costo_total_real)
+        pagos_por_orden = {}
+        for _, p in df_pagos_pn.iterrows():
+            oid = str(p.get("Orden TN", "")).strip()
+            if not oid:
+                continue
+            pagos_por_orden[oid] = {
+                "fee": float(p.get("Fee ($)", 0) or 0),
+                "retencion": float(p.get("Retención ($)", 0) or 0),
+                "costo_total": float(p.get("Costo total ($)", 0) or 0),
+                "neto": float(p.get("Neto ($)", 0) or 0),
+            }
+
+        # Aplicar a las órdenes que sean PN (tengan match en pagos_por_orden).
+        # Para órdenes MP no tocamos (esas las maneja match_mp_with_tn).
+        if "Retención IIBB ($)" not in df_tn.columns:
+            df_tn["Retención IIBB ($)"] = 0.0
+        for idx, row in df_tn.iterrows():
+            if row.get("Pasarela", "PN") != "PN":
+                continue
+            # Match por número de orden (orders.id == transactions.order_id)
+            try:
+                orders_raw = st.session_state.get("orders_raw", [])
+                ord_idx = idx if idx < len(orders_raw) else None
+                if ord_idx is None:
+                    continue
+                tn_order_id = str(orders_raw[ord_idx].get("id", ""))
+            except Exception:
+                continue
+            if tn_order_id and tn_order_id in pagos_por_orden:
+                p_info = pagos_por_orden[tn_order_id]
+                if p_info["costo_total"] > 0:
+                    total = float(row.get("Total ($)", 0))
+                    df_tn.at[idx, "Comision PN ($)"]    = round(p_info["costo_total"], 2)
+                    df_tn.at[idx, "Retención IIBB ($)"] = round(p_info["retencion"], 2)
+                    df_tn.at[idx, "Costo PN (%)"]       = round(
+                        (p_info["costo_total"] / total * 100) if total > 0 else 0, 2
+                    )
+                    df_tn.at[idx, "Neto cobrado ($)"]   = round(total - p_info["costo_total"], 2)
 
     # 3. Pagos Mercado Pago + matching automático con órdenes "a convenir"
     if MP_ACCESS_TOKEN and not df_tn.empty:
@@ -2170,7 +2264,8 @@ if st.session_state.df_tn is not None:
 
             cols_tn = [
                 "Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Pasarela", "ID MP",
-                "Total ($)", "Descuento ($)", "Envio costo ($)", "Comision PN ($)", "Costo PN (%)",
+                "Total ($)", "Descuento ($)", "Envio costo ($)",
+                "Comision PN ($)", "Retención IIBB ($)", "Costo PN (%)",
                 "Neto cobrado ($)", "Costo Productos ($)", "Margen ($)", "Margen (%)",
                 "Estado Envio", "Productos", "Cantidad", "Canal",
             ]
@@ -2194,8 +2289,9 @@ if st.session_state.df_tn is not None:
 
             # Renombrar columnas visibles (más generales — ahora cubre PN y MP)
             _rename_view = {
-                "Comision PN ($)": "Costo fin. ($)",
-                "Costo PN (%)":    "Costo fin. %",
+                "Comision PN ($)":    "Costo fin. ($)",
+                "Costo PN (%)":       "Costo fin. %",
+                "Retención IIBB ($)": "Ret. IIBB ($)",
             }
             df_view = df_det[cols_tn].rename(columns=_rename_view)
 
@@ -2204,6 +2300,7 @@ if st.session_state.df_tn is not None:
                     .format({
                         "Total ($)": "${:,.0f}", "Descuento ($)": "${:,.0f}",
                         "Envio costo ($)": "${:,.0f}", "Costo fin. ($)": "${:,.0f}",
+                        "Ret. IIBB ($)": "${:,.0f}",
                         "Costo fin. %": "{:.2f}%", "Neto cobrado ($)": "${:,.0f}",
                         "Costo Productos ($)": "${:,.0f}", "Margen ($)": "${:,.0f}",
                         "Margen (%)": "{:.2f}%",
@@ -2213,6 +2310,29 @@ if st.session_state.df_tn is not None:
             )
             st.download_button("⬇️ Descargar CSV órdenes TN",
                 df_view.to_csv(index=False).encode("utf-8"), "ordenes_tn.csv", "text/csv")
+
+            # ── Desglose detallado de fees PN por operación ───────────────────
+            df_pn_det = st.session_state.get("df_pagos")
+            if df_pn_det is not None and not df_pn_det.empty:
+                st.divider()
+                with st.expander(
+                    f"🔵 Desglose detallado de fees Pago Nube por operación ({len(df_pn_det)} pagos)",
+                    expanded=False,
+                ):
+                    st.caption(
+                        "Componentes que descuenta Pago Nube: costo de procesamiento (fee) + "
+                        "retenciones impositivas (IIBB, IVA, etc.) por provincia del cliente."
+                    )
+                    _cols_pn = [
+                        "Orden TN", "ID", "Fecha", "Estado", "Método", "Cuotas",
+                        "Monto ($)", "Fee ($)", "Retención ($)", "Costo total ($)", "Neto ($)",
+                    ]
+                    _cols_pn = [c for c in _cols_pn if c in df_pn_det.columns]
+                    _fmt_pn = {c: "${:,.2f}" for c in _cols_pn if "($)" in c}
+                    st.dataframe(
+                        df_pn_det[_cols_pn].style.format(_fmt_pn),
+                        use_container_width=True, hide_index=True,
+                    )
 
             # ── Desglose detallado de fees MP por operación ───────────────────
             if MP_ACCESS_TOKEN:
