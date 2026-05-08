@@ -2374,26 +2374,77 @@ if st.session_state.df_tn is not None:
                 if _sel and _sel in _orden_por_label:
                     o = _orden_por_label[_sel]
                     st.markdown(f"**Orden #{o.get('number')}** · ID: `{o.get('id')}` · gateway: `{o.get('gateway')}`")
+
+                    # Match de costos por producto
+                    st.markdown("**🔍 Match de costos por producto:**")
+                    _costos_dbg = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
+                    _tc_dbg = float(st.session_state.tipo_cambio_sf or (dolar_blue or 1400))
+                    _filas_costo_dbg = []
+                    for _p in o.get("products", []) or []:
+                        _nombre_raw = _p.get("name", {})
+                        if isinstance(_nombre_raw, dict):
+                            _nombre = _nombre_raw.get("es", "") or next(iter(_nombre_raw.values()), "")
+                        else:
+                            _nombre = str(_nombre_raw)
+                        _nombre = _extraer_nombre_producto(_nombre)
+                        _qty = int(_p.get("quantity", 1) or 1)
+                        _costo_tn = float(_p.get("cost") or 0)
+                        # Buscar match en CostosConsolas / FOB_DEFAULTS
+                        _matched_key, _fob, _imp, _total = "(no match)", 0.0, 0.0, 0.0
+                        _nombre_norm = _normalizar(_nombre)
+                        _nombre_comp = _norm_compact(_nombre)
+                        # Recorrer ambos sources buscando match
+                        _all_sources = []
+                        for k, v in (_costos_dbg or {}).items():
+                            if not k.startswith("_") and isinstance(v, dict):
+                                _all_sources.append(("Sheets", k, v))
+                        for k, v in FOB_DEFAULTS.items():
+                            _all_sources.append(("Default", k, v))
+                        # Match exacto
+                        for src, k, v in _all_sources:
+                            if _normalizar(k) == _nombre_norm:
+                                _matched_key = f"[{src}] {k} (exact)"
+                                break
+                        else:
+                            # Match compact exacto
+                            for src, k, v in _all_sources:
+                                if _norm_compact(k) and _norm_compact(k) == _nombre_comp:
+                                    _matched_key = f"[{src}] {k} (compact)"
+                                    break
+                            else:
+                                # Match key in nombre
+                                _best_len = 0
+                                for src, k, v in _all_sources:
+                                    if _normalizar(k) in _nombre_norm and len(_normalizar(k)) > _best_len:
+                                        _matched_key = f"[{src}] {k} (key in nombre)"
+                                        _best_len = len(_normalizar(k))
+                                if _best_len == 0:
+                                    # Match compact reverso
+                                    for src, k, v in _all_sources:
+                                        if _norm_compact(k) and _nombre_comp in _norm_compact(k) and len(_nombre_comp) > _best_len:
+                                            _matched_key = f"[{src}] {k} (nombre in key)"
+                                            _best_len = len(_nombre_comp)
+                        _fob_real, _imp_real, _total_real = _match_costo_entry(_nombre, _costos_dbg)
+                        _filas_costo_dbg.append({
+                            "Producto TN":      _nombre,
+                            "Cantidad":         _qty,
+                            "Match":            _matched_key,
+                            "FOB USD":          round(_fob_real, 2),
+                            "Import USD":       round(_imp_real, 2),
+                            "Total USD":        round(_total_real, 2),
+                            "Total ARS (×TC)":  round(_total_real * _qty * _tc_dbg, 0),
+                            "TN cost field":    _costo_tn,
+                        })
+                    if _filas_costo_dbg:
+                        _df_costo_dbg = pd.DataFrame(_filas_costo_dbg)
+                        st.dataframe(_df_costo_dbg, use_container_width=True, hide_index=True)
+
                     st.markdown("**payment_details (crudo):**")
                     pd_data = o.get("payment_details", {}) or {}
                     if not pd_data:
                         st.warning("⚠️ Esta orden NO tiene payment_details (puede ser efectivo o convenir manual).")
                     else:
                         st.json(pd_data)
-                        # Resaltar campos relevantes
-                        st.markdown("**Campos detectados para fee / retención:**")
-                        _resumen = {}
-                        for k in ["transaction_fee", "fee_amount", "fee", "processing_cost",
-                                  "tax_amount", "withholding_amount", "retention_amount",
-                                  "iibb_withholding", "tax_withholding",
-                                  "net_amount", "amount_received", "payout_amount",
-                                  "method", "installments"]:
-                            if k in pd_data:
-                                _resumen[k] = pd_data[k]
-                        if _resumen:
-                            st.json(_resumen)
-                        else:
-                            st.info("Ninguno de los campos esperados está presente. Mostrá el JSON completo arriba.")
                     with st.expander("Ver orden completa (JSON)", expanded=False):
                         st.json(o)
         if df_tn.empty:
