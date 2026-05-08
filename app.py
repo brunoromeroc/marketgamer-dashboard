@@ -1546,16 +1546,60 @@ def procesar_orders(orders):
         total = float(o.get("total", 0))
         descuento = float(o.get("discount", 0) or 0)
         costo_envio_dueno = float(o.get("shipping_cost_owner", 0) or 0)
+
+        # Buscar fee/retención directamente en payment_details del order
+        # (más confiable que /transactions que a veces no devuelve data).
+        fee_real = 0.0
+        retencion_real = 0.0
+        neto_real_pn = 0.0
+        if isinstance(pd_raw, dict):
+            for k in ["transaction_fee", "fee_amount", "fee", "processing_cost"]:
+                v = pd_raw.get(k)
+                if v:
+                    try:
+                        fee_real = float(v); break
+                    except Exception:
+                        pass
+            for k in ["tax_amount", "withholding_amount", "retention_amount",
+                      "iibb_withholding", "tax_withholding"]:
+                v = pd_raw.get(k)
+                if v:
+                    try:
+                        retencion_real += float(v)
+                    except Exception:
+                        pass
+            # Array de retenciones/impuestos
+            for arr in ["taxes", "withholdings", "tax_details"]:
+                for t in pd_raw.get(arr, []) or []:
+                    try:
+                        retencion_real += float(t.get("amount", 0) or t.get("value", 0) or 0)
+                    except Exception:
+                        pass
+            for k in ["net_amount", "amount_received", "payout_amount"]:
+                v = pd_raw.get(k)
+                if v:
+                    try:
+                        neto_real_pn = float(v); break
+                    except Exception:
+                        pass
+
         if _es_gateway_mp(gateway):
             pasarela = "MP"
             tasa = tasa_pasarela(gateway, metodo, cuotas)
+            comision_pn = round(total * tasa, 2)
         elif _es_convenir(gateway, metodo):
             pasarela = "Convenir"   # se resolverá en match_mp_with_tn()
             tasa = 0.0
+            comision_pn = 0.0
         else:
             pasarela = "PN"
-            tasa = tasa_pasarela(gateway, metodo, cuotas)
-        comision_pn = round(total * tasa, 2)
+            # Si payment_details trae fee/retención reales, usarlos
+            if fee_real > 0 or retencion_real > 0:
+                comision_pn = round(fee_real + retencion_real, 2)
+                tasa = (comision_pn / total) if total > 0 else 0.0
+            else:
+                tasa = tasa_pasarela(gateway, metodo, cuotas)
+                comision_pn = round(total * tasa, 2)
         neto = round(total - comision_pn, 2)
         margen = round(neto - costo_productos - costo_envio_dueno, 2)
         margen_pct = round((margen / total * 100) if total > 0 else 0, 2)
@@ -1582,6 +1626,7 @@ def procesar_orders(orders):
             "Canal": str(o.get("app_id", "") or "tiendanube"),
             "Estado": o.get("status", ""),
             "ID MP": "",
+            "Retención IIBB ($)": round(retencion_real, 2) if pasarela == "PN" else 0.0,
             "Gateway raw": gateway,
             "Metodo raw": str(metodo),
         })
@@ -2258,9 +2303,38 @@ if st.session_state.df_tn is not None:
         # Marker de versión para verificar que el deploy llegó
         _stats = st.session_state.get("pn_match_stats") or {}
         st.caption(
-            f"🔧 v0.4.0 · Cross-ref PN: {_stats.get('matched', 0)} órdenes con costo real · "
+            f"🔧 v0.5.0 · Cross-ref PN: {_stats.get('matched', 0)} órdenes con costo real · "
             f"{_stats.get('sin_pago', 0)} sin pago · {_stats.get('intentos', 0)} intentos"
         )
+
+        # Debug: inspeccionar payment_details crudo de una orden
+        with st.expander("🔧 Debug — inspeccionar payment_details de una orden TN", expanded=False):
+            st.caption("Pegá el número de orden para ver los campos crudos. Útil para identificar dónde TN guarda fee/retención.")
+            with st.form("dbg_order_form"):
+                _dbg_orden_num = st.text_input("Número de orden", placeholder="446")
+                _dbg_submit = st.form_submit_button("Buscar")
+                if _dbg_submit and _dbg_orden_num:
+                    orders_raw = st.session_state.get("orders_raw", [])
+                    encontrada = None
+                    for o in orders_raw:
+                        if str(o.get("number", "")) == str(_dbg_orden_num).strip():
+                            encontrada = o
+                            break
+                    if encontrada:
+                        st.session_state["dbg_order_data"] = encontrada
+                    else:
+                        st.session_state["dbg_order_data"] = {"_error": "Orden no encontrada en el período"}
+            _dbg_data = st.session_state.get("dbg_order_data")
+            if _dbg_data:
+                if "_error" in _dbg_data:
+                    st.error(_dbg_data["_error"])
+                else:
+                    st.markdown(f"**Orden #{_dbg_data.get('number')}** · ID: `{_dbg_data.get('id')}`")
+                    st.markdown(f"**gateway:** `{_dbg_data.get('gateway')}`")
+                    st.markdown("**payment_details (crudo):**")
+                    st.json(_dbg_data.get("payment_details", {}))
+                    with st.expander("Ver orden completa (JSON)", expanded=False):
+                        st.json(_dbg_data)
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
