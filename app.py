@@ -2255,6 +2255,12 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     elif seccion == "🔍 Detalle y ajustes":
         st.subheader("🛍️ Detalle de órdenes — Tienda Nube")
+        # Marker de versión para verificar que el deploy llegó
+        _stats = st.session_state.get("pn_match_stats") or {}
+        st.caption(
+            f"🔧 v0.4.0 · Cross-ref PN: {_stats.get('matched', 0)} órdenes con costo real · "
+            f"{_stats.get('sin_pago', 0)} sin pago · {_stats.get('intentos', 0)} intentos"
+        )
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
