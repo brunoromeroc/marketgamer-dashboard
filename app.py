@@ -1808,6 +1808,12 @@ def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
 
     # 2b. Cross-reference: actualizar comisión PN real (fee + retención IIBB)
     # de cada orden con datos del API de TN /transactions, en lugar del estimado.
+    # SIEMPRE agregamos la columna Retención IIBB ($) aunque no haya pagos.
+    if not df_tn.empty and "Retención IIBB ($)" not in df_tn.columns:
+        df_tn["Retención IIBB ($)"] = 0.0
+
+    pn_match_stats = {"intentos": 0, "matched": 0, "sin_pago": 0}
+
     if not df_tn.empty and not df_pagos_pn.empty:
         # Mapear order_id → (fee_real, retencion_real, costo_total_real)
         pagos_por_orden = {}
@@ -1822,23 +1828,24 @@ def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
                 "neto": float(p.get("Neto ($)", 0) or 0),
             }
 
-        # Aplicar a las órdenes que sean PN (tengan match en pagos_por_orden).
-        # Para órdenes MP no tocamos (esas las maneja match_mp_with_tn).
-        if "Retención IIBB ($)" not in df_tn.columns:
-            df_tn["Retención IIBB ($)"] = 0.0
+        orders_raw = st.session_state.get("orders_raw", [])
+        # Construir mapa numero_orden → tn_order_id para matchear seguro
+        num_to_tnid = {}
+        for o in orders_raw:
+            num = str(o.get("number", ""))
+            tn_id = str(o.get("id", ""))
+            if num and tn_id:
+                num_to_tnid[num] = tn_id
+
         for idx, row in df_tn.iterrows():
             if row.get("Pasarela", "PN") != "PN":
                 continue
-            # Match por número de orden (orders.id == transactions.order_id)
-            try:
-                orders_raw = st.session_state.get("orders_raw", [])
-                ord_idx = idx if idx < len(orders_raw) else None
-                if ord_idx is None:
-                    continue
-                tn_order_id = str(orders_raw[ord_idx].get("id", ""))
-            except Exception:
+            pn_match_stats["intentos"] += 1
+            num_orden = str(row.get("Orden", ""))
+            tn_order_id = num_to_tnid.get(num_orden, "")
+            if not tn_order_id:
                 continue
-            if tn_order_id and tn_order_id in pagos_por_orden:
+            if tn_order_id in pagos_por_orden:
                 p_info = pagos_por_orden[tn_order_id]
                 if p_info["costo_total"] > 0:
                     total = float(row.get("Total ($)", 0))
@@ -1848,6 +1855,11 @@ def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
                         (p_info["costo_total"] / total * 100) if total > 0 else 0, 2
                     )
                     df_tn.at[idx, "Neto cobrado ($)"]   = round(total - p_info["costo_total"], 2)
+                    pn_match_stats["matched"] += 1
+            else:
+                pn_match_stats["sin_pago"] += 1
+
+    st.session_state.pn_match_stats = pn_match_stats
 
     # 3. Pagos Mercado Pago + matching automático con órdenes "a convenir"
     if MP_ACCESS_TOKEN and not df_tn.empty:
@@ -2315,6 +2327,12 @@ if st.session_state.df_tn is not None:
             df_pn_det = st.session_state.get("df_pagos")
             if df_pn_det is not None and not df_pn_det.empty:
                 st.divider()
+                _stats = st.session_state.get("pn_match_stats", {})
+                _stat_caption = (
+                    f"Cross-reference PN: {_stats.get('matched', 0)} órdenes con costo real · "
+                    f"{_stats.get('sin_pago', 0)} sin pago en /transactions · "
+                    f"{_stats.get('intentos', 0)} intentos totales"
+                ) if _stats else ""
                 with st.expander(
                     f"🔵 Desglose detallado de fees Pago Nube por operación ({len(df_pn_det)} pagos)",
                     expanded=False,
@@ -2323,6 +2341,8 @@ if st.session_state.df_tn is not None:
                         "Componentes que descuenta Pago Nube: costo de procesamiento (fee) + "
                         "retenciones impositivas (IIBB, IVA, etc.) por provincia del cliente."
                     )
+                    if _stat_caption:
+                        st.caption(_stat_caption)
                     _cols_pn = [
                         "Orden TN", "ID", "Fecha", "Estado", "Método", "Cuotas",
                         "Monto ($)", "Fee ($)", "Retención ($)", "Costo total ($)", "Neto ($)",
