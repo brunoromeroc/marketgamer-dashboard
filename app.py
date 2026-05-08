@@ -931,8 +931,12 @@ def match_mp_with_tn(df_tn, mp_payments_raw):
     # Excluir liquidaciones externas (Dlocal/PN) del índice
     mp_index = {}
     for p in mp_payments_raw:
-        if _es_liquidacion_externa(p):
-            continue
+        # NO filtramos liquidaciones del índice. Razón: el CUIT del payer en
+        # bank_transfers entrantes es el de MG (no el de TN), así que no es
+        # confiable. Las liquidaciones de TN son sumas grandes que no van a
+        # coincidir con monto exacto de ninguna orden individual, así que no
+        # generan falsos matches. Las transferencias de clientes reales sí
+        # coinciden y deben matchear (caso 449: Sabrina, $180k).
         bruto = float(p.get("transaction_amount", 0))
         try:
             fecha_mp = pd.to_datetime(p.get("date_approved")).date()
@@ -1161,14 +1165,29 @@ def _desglose_fees(p):
         desglose["Impuestos"] = round(desglose.get("Impuestos", 0) + float(taxes_extra), 2)
     return desglose
 
-def procesar_mp_payments(payments):
+def procesar_mp_payments(payments, montos_validos_tn=None):
     """Convierte lista raw de MP en DataFrame con fee real por operación.
-    Excluye liquidaciones de procesadores externos (Dlocal/Pago Nube).
+    Excluye liquidaciones de procesadores externos: bank_transfer cuyo monto
+    NO coincide con ninguna orden TN del período (= no es venta, es liquidación).
+
+    Args:
+        montos_validos_tn: set de montos (round) de órdenes TN del período.
+                           Si se pasa, los bank_transfer que no estén ahí se excluyen.
+                           Si es None, usa el filtro legacy por CUIT/descripción.
     """
     filas = []
     for p in payments:
-        if _es_liquidacion_externa(p):
-            continue
+        # Filtro mejorado de liquidaciones
+        if p.get("payment_type_id", "") == "bank_transfer":
+            bruto_p = round(float(p.get("transaction_amount", 0)))
+            if montos_validos_tn is not None:
+                # Si el monto NO coincide con ninguna orden TN, es liquidación
+                if bruto_p not in montos_validos_tn:
+                    continue
+            else:
+                # Fallback al filtro viejo (por CUIT)
+                if _es_liquidacion_externa(p):
+                    continue
         cuotas    = p.get("installments", 1)
         bruto     = float(p.get("transaction_amount", 0))
         neto      = float(p.get("transaction_details", {}).get("net_received_amount", 0))
@@ -2199,7 +2218,8 @@ if st.session_state.df_tn is not None:
             if MP_ACCESS_TOKEN:
                 _mp_raw_det = get_mp_payments(str(fecha_desde), str(fecha_hasta)) or []
                 if _mp_raw_det:
-                    _df_mp_det = procesar_mp_payments(_mp_raw_det)
+                    _montos_tn_det = {round(float(t)) for t in df_det["Total ($)"]} if not df_det.empty else set()
+                    _df_mp_det = procesar_mp_payments(_mp_raw_det, montos_validos_tn=_montos_tn_det)
                     if not _df_mp_det.empty:
                         st.divider()
                         with st.expander(
@@ -2375,7 +2395,8 @@ if st.session_state.df_tn is not None:
             if MP_ACCESS_TOKEN:
                 _mp_raw_sf = get_mp_payments(str(fecha_desde), str(fecha_hasta)) or []
                 if _mp_raw_sf:
-                    _df_mp_sf = procesar_mp_payments(_mp_raw_sf)
+                    _montos_tn_sf = {round(float(t)) for t in df_calc["Total ($)"]} if not df_calc.empty else set()
+                    _df_mp_sf = procesar_mp_payments(_mp_raw_sf, montos_validos_tn=_montos_tn_sf)
 
             # ── 1) RESUMEN DEL PERÍODO — 4 cards ──────────────────────────────
             comisiones_pasarela = comisiones_pn  # ya incluye PN + MP (calculado en procesar_orders)
@@ -2779,7 +2800,8 @@ if st.session_state.df_tn is not None:
                     with st.spinner("Consultando fees reales de Mercado Pago..."):
                         mp_raw = get_mp_payments(str(fecha_desde), str(fecha_hasta))
                     if mp_raw:
-                        df_mp = procesar_mp_payments(mp_raw)
+                        _montos_tn_legacy = {round(float(t)) for t in df_calc["Total ($)"]} if not df_calc.empty else set()
+                        df_mp = procesar_mp_payments(mp_raw, montos_validos_tn=_montos_tn_legacy)
                         if not df_mp.empty:
                             st.markdown("**Fees reales desde API de Mercado Pago**")
                             # Resumen por tipo
