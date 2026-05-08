@@ -1552,22 +1552,17 @@ def procesar_orders(orders):
             pasarela = "MP"
             tasa = tasa_pasarela(gateway, metodo, cuotas)
             comision_pn = round(total * tasa, 2)
-            retencion_iibb = 0.0
         elif _es_convenir(gateway, metodo):
             pasarela = "Convenir"   # se resolverá en match_mp_with_tn()
             tasa = 0.0
             comision_pn = 0.0
-            retencion_iibb = 0.0
         else:
             pasarela = "PN"
+            # Fee = tasa pública oficial de PN (no es estimación inventada,
+            # son los rates publicados: 1.25% transferencia, 4.15% crédito, etc.)
+            # La retención IIBB NO se calcula porque TN no la expone vía API.
             tasa = tasa_pasarela(gateway, metodo, cuotas)
-            fee_pn = round(total * tasa, 2)
-            # Aplicar retención IIBB por provincia (PN retiene impuesto provincial)
-            iibb_rate = _iibb_rate_provincia(province)
-            retencion_iibb = round(total * iibb_rate / 100, 2)
-            # Comisión PN total = fee + retención
-            comision_pn = round(fee_pn + retencion_iibb, 2)
-            tasa = (comision_pn / total) if total > 0 else 0.0
+            comision_pn = round(total * tasa, 2)
         neto = round(total - comision_pn, 2)
         margen = round(neto - costo_productos - costo_envio_dueno, 2)
         margen_pct = round((margen / total * 100) if total > 0 else 0, 2)
@@ -1594,7 +1589,6 @@ def procesar_orders(orders):
             "Canal": str(o.get("app_id", "") or "tiendanube"),
             "Estado": o.get("status", ""),
             "ID MP": "",
-            "Retención IIBB ($)": retencion_iibb,
             "Provincia": province,
             "Gateway raw": gateway,
             "Metodo raw": str(metodo),
@@ -2320,12 +2314,7 @@ if st.session_state.df_tn is not None:
     elif seccion == "🔍 Detalle y ajustes":
         st.subheader("🛍️ Detalle de órdenes — Tienda Nube")
         # Marker de versión para verificar que el deploy llegó
-        _stats = st.session_state.get("pn_match_stats") or {}
-        st.caption(
-            f"🔧 v0.6.0 · PN: {_stats.get('estimados', 0)} órdenes con estimación por provincia · "
-            f"IIBB tomado de billing_province · "
-            f"Cross-ref /transactions: {_stats.get('matched', 0)} matched"
-        )
+        st.caption("🔧 v0.7.0")
 
         # Debug: inspeccionar payment_details crudo de una orden
         _orders_raw_dbg = st.session_state.get("orders_raw", [])
@@ -2398,7 +2387,7 @@ if st.session_state.df_tn is not None:
             cols_tn = [
                 "Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Pasarela", "ID MP",
                 "Total ($)", "Descuento ($)", "Envio costo ($)",
-                "Comision PN ($)", "Retención IIBB ($)", "Costo PN (%)",
+                "Comision PN ($)", "Costo PN (%)",
                 "Neto cobrado ($)", "Costo Productos ($)", "Margen ($)", "Margen (%)",
                 "Estado Envio", "Productos", "Cantidad", "Canal",
             ]
@@ -2424,7 +2413,6 @@ if st.session_state.df_tn is not None:
             _rename_view = {
                 "Comision PN ($)":    "Costo fin. ($)",
                 "Costo PN (%)":       "Costo fin. %",
-                "Retención IIBB ($)": "Ret. IIBB ($)",
             }
             df_view = df_det[cols_tn].rename(columns=_rename_view)
 
@@ -2433,13 +2421,20 @@ if st.session_state.df_tn is not None:
                     .format({
                         "Total ($)": "${:,.0f}", "Descuento ($)": "${:,.0f}",
                         "Envio costo ($)": "${:,.0f}", "Costo fin. ($)": "${:,.0f}",
-                        "Ret. IIBB ($)": "${:,.0f}",
                         "Costo fin. %": "{:.2f}%", "Neto cobrado ($)": "${:,.0f}",
                         "Costo Productos ($)": "${:,.0f}", "Margen ($)": "${:,.0f}",
                         "Margen (%)": "{:.2f}%",
                     })
                     .apply(_color_margen_row, axis=1),
                 use_container_width=True, hide_index=True,
+            )
+
+            # Disclaimer sobre limitaciones de data PN
+            st.caption(
+                "ℹ️ **Pago Nube**: el costo financiero mostrado es la tasa pública oficial de PN "
+                "(1.25% transferencia, 4.15% crédito contado, etc.). **Las retenciones impositivas "
+                "(IIBB, IVA) no se exponen vía API**, así que no se incluyen en este número. "
+                "Para verlas reales tenés que entrar al panel de Pago Nube de cada orden."
             )
             st.download_button("⬇️ Descargar CSV órdenes TN",
                 df_view.to_csv(index=False).encode("utf-8"), "ordenes_tn.csv", "text/csv")
