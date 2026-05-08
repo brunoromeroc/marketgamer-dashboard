@@ -2344,116 +2344,14 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     elif seccion == "🔍 Detalle y ajustes":
         st.subheader("🛍️ Detalle de órdenes — Tienda Nube")
-        # Marker de versión para verificar que el deploy llegó
-        st.caption("🔧 v0.7.0")
+        st.caption("🔧 v0.8.0")
 
-        # Debug: inspeccionar payment_details crudo de una orden
-        _orders_raw_dbg = st.session_state.get("orders_raw", [])
-        with st.expander(
-            f"🔧 Debug — inspeccionar payment_details de una orden TN ({len(_orders_raw_dbg)} órdenes en sesión)",
-            expanded=False,
-        ):
-            if not _orders_raw_dbg:
-                st.warning("No hay órdenes en sesión. Click 'Actualizar datos' en el sidebar primero.")
-            else:
-                # Construir opciones: "446 — Leonardo Attila — $236.250"
-                _opciones = ["— elegí una orden —"]
-                _orden_por_label = {}
-                for o in _orders_raw_dbg:
-                    n = o.get("number", "?")
-                    cli = str(o.get("contact_name", ""))[:30]
-                    tot = float(o.get("total", 0) or 0)
-                    label = f"{n} — {cli} — ${tot:,.0f}"
-                    _opciones.append(label)
-                    _orden_por_label[label] = o
-
-                _sel = st.selectbox(
-                    "Elegí orden", _opciones, index=0, key="dbg_order_sel",
-                    label_visibility="collapsed",
-                )
-                if _sel and _sel in _orden_por_label:
-                    o = _orden_por_label[_sel]
-                    st.markdown(f"**Orden #{o.get('number')}** · ID: `{o.get('id')}` · gateway: `{o.get('gateway')}`")
-
-                    # Match de costos por producto
-                    st.markdown("**🔍 Match de costos por producto:**")
-                    _costos_dbg = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
-                    _tc_dbg = float(st.session_state.tipo_cambio_sf or (dolar_blue or 1400))
-                    _filas_costo_dbg = []
-                    for _p in o.get("products", []) or []:
-                        _nombre_raw = _p.get("name", {})
-                        if isinstance(_nombre_raw, dict):
-                            _nombre = _nombre_raw.get("es", "") or next(iter(_nombre_raw.values()), "")
-                        else:
-                            _nombre = str(_nombre_raw)
-                        _nombre = _extraer_nombre_producto(_nombre)
-                        _qty = int(_p.get("quantity", 1) or 1)
-                        _costo_tn = float(_p.get("cost") or 0)
-                        # Buscar match en CostosConsolas / FOB_DEFAULTS
-                        _matched_key, _fob, _imp, _total = "(no match)", 0.0, 0.0, 0.0
-                        _nombre_norm = _normalizar(_nombre)
-                        _nombre_comp = _norm_compact(_nombre)
-                        # Recorrer ambos sources buscando match
-                        _all_sources = []
-                        for k, v in (_costos_dbg or {}).items():
-                            if not k.startswith("_") and isinstance(v, dict):
-                                _all_sources.append(("Sheets", k, v))
-                        for k, v in FOB_DEFAULTS.items():
-                            _all_sources.append(("Default", k, v))
-                        # Match exacto
-                        for src, k, v in _all_sources:
-                            if _normalizar(k) == _nombre_norm:
-                                _matched_key = f"[{src}] {k} (exact)"
-                                break
-                        else:
-                            # Match compact exacto
-                            for src, k, v in _all_sources:
-                                if _norm_compact(k) and _norm_compact(k) == _nombre_comp:
-                                    _matched_key = f"[{src}] {k} (compact)"
-                                    break
-                            else:
-                                # Match key in nombre
-                                _best_len = 0
-                                for src, k, v in _all_sources:
-                                    if _normalizar(k) in _nombre_norm and len(_normalizar(k)) > _best_len:
-                                        _matched_key = f"[{src}] {k} (key in nombre)"
-                                        _best_len = len(_normalizar(k))
-                                if _best_len == 0:
-                                    # Match compact reverso
-                                    for src, k, v in _all_sources:
-                                        if _norm_compact(k) and _nombre_comp in _norm_compact(k) and len(_nombre_comp) > _best_len:
-                                            _matched_key = f"[{src}] {k} (nombre in key)"
-                                            _best_len = len(_nombre_comp)
-                        _fob_real, _imp_real, _total_real = _match_costo_entry(_nombre, _costos_dbg)
-                        _filas_costo_dbg.append({
-                            "Producto TN":      _nombre,
-                            "Cantidad":         _qty,
-                            "Match":            _matched_key,
-                            "FOB USD":          round(_fob_real, 2),
-                            "Import USD":       round(_imp_real, 2),
-                            "Total USD":        round(_total_real, 2),
-                            "Total ARS (×TC)":  round(_total_real * _qty * _tc_dbg, 0),
-                            "TN cost field":    _costo_tn,
-                        })
-                    if _filas_costo_dbg:
-                        _df_costo_dbg = pd.DataFrame(_filas_costo_dbg)
-                        st.dataframe(_df_costo_dbg, use_container_width=True, hide_index=True)
-
-                    st.markdown("**payment_details (crudo):**")
-                    pd_data = o.get("payment_details", {}) or {}
-                    if not pd_data:
-                        st.warning("⚠️ Esta orden NO tiene payment_details (puede ser efectivo o convenir manual).")
-                    else:
-                        st.json(pd_data)
-                    with st.expander("Ver orden completa (JSON)", expanded=False):
-                        st.json(o)
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
             _dolar_det = dolar_blue or 1200
             _costos_gs = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
             df_det = df_tn.copy()
-
             df_det["Costo Productos ($)"] = df_det.apply(
                 lambda r: costo_final_row(r, _dolar_det, _costos_gs), axis=1
             )
@@ -2466,6 +2364,39 @@ if st.session_state.df_tn is not None:
                 lambda r: round((r["Margen ($)"] / r["Total ($)"] * 100) if r["Total ($)"] > 0 else 0, 2), axis=1
             )
 
+            # ══════════════════════════════════════════════════════════════════
+            # 1) KPIs ARRIBA — 5 cards uniformes
+            # ══════════════════════════════════════════════════════════════════
+            _total_bruto = df_det["Total ($)"].sum()
+            _total_costo = df_det["Costo Productos ($)"].sum()
+            _total_comis = df_det["Comision PN ($)"].sum()
+            _total_margen = df_det["Margen ($)"].sum()
+            _n_ordenes = len(df_det)
+            _pct_margen_tot = round(_total_margen / _total_bruto * 100, 1) if _total_bruto > 0 else 0
+            _color_margen_tot = "#4ade80" if _total_margen >= 0 else MG_RED
+
+            def _kpi_det(label, value, sub="", color=None):
+                vc = color or MG_TEXT
+                return (
+                    f'<div style="background:{MG_SURF};border-radius:8px;padding:0.85rem 1rem;'
+                    f'min-height:88px;display:flex;flex-direction:column;justify-content:flex-start;">'
+                    f'<div style="font-size:0.58rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+                    f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;">{label}</div>'
+                    f'<div style="font-size:1.3rem;font-weight:700;color:{vc};line-height:1.1;">{value}</div>'
+                    f'<div style="font-size:0.66rem;color:{MG_MUTED};margin-top:0.2rem;">{sub or "—"}</div>'
+                    f'</div>'
+                )
+            _k1, _k2, _k3, _k4, _k5 = st.columns(5)
+            _k1.markdown(_kpi_det("Órdenes", str(_n_ordenes), "del período"), unsafe_allow_html=True)
+            _k2.markdown(_kpi_det("Facturación bruta", fmt(_total_bruto), "total vendido"), unsafe_allow_html=True)
+            _k3.markdown(_kpi_det("Costo productos", fmt(_total_costo), f"−{fmt(_total_costo)}", color=MG_RED), unsafe_allow_html=True)
+            _k4.markdown(_kpi_det("Costo financiero", fmt(_total_comis), f"−{fmt(_total_comis)}", color=MG_RED), unsafe_allow_html=True)
+            _k5.markdown(_kpi_det("Margen neto", fmt(_total_margen), f"{_pct_margen_tot}% sobre bruto", color=_color_margen_tot), unsafe_allow_html=True)
+
+            # ══════════════════════════════════════════════════════════════════
+            # 2) TABLA PRINCIPAL — protagonista
+            # ══════════════════════════════════════════════════════════════════
+            st.divider()
             cols_tn = [
                 "Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Pasarela", "ID MP",
                 "Total ($)", "Descuento ($)", "Envio costo ($)",
@@ -2486,18 +2417,17 @@ if st.session_state.df_tn is not None:
                 return styles
 
             sin_costo_tn = int((df_det["Costo Productos ($)"] == 0).sum())
-            caption_txt = f"💵 Tipo de cambio: ${_dolar_det:,.0f} ARS/USD"
+            _caption_parts = [f"💵 TC: ${_dolar_det:,.0f} ARS/USD"]
             if sin_costo_tn > 0:
-                caption_txt += f" · ⚠️ {sin_costo_tn} orden(es) sin costo cargado"
-            st.caption(caption_txt)
+                _caption_parts.append(f"⚠️ {sin_costo_tn} sin costo")
+            _caption_parts.append("ℹ️ PN: tasas oficiales públicas; retenciones IIBB no se exponen vía API")
+            st.caption(" · ".join(_caption_parts))
 
-            # Renombrar columnas visibles (más generales — ahora cubre PN y MP)
             _rename_view = {
-                "Comision PN ($)":    "Costo fin. ($)",
-                "Costo PN (%)":       "Costo fin. %",
+                "Comision PN ($)": "Costo fin. ($)",
+                "Costo PN (%)":    "Costo fin. %",
             }
             df_view = df_det[cols_tn].rename(columns=_rename_view)
-
             st.dataframe(
                 df_view.style
                     .format({
@@ -2508,141 +2438,183 @@ if st.session_state.df_tn is not None:
                         "Margen (%)": "{:.2f}%",
                     })
                     .apply(_color_margen_row, axis=1),
-                use_container_width=True, hide_index=True,
+                use_container_width=True, hide_index=True, height=460,
             )
 
-            # Disclaimer sobre limitaciones de data PN
-            st.caption(
-                "ℹ️ **Pago Nube**: el costo financiero mostrado es la tasa pública oficial de PN "
-                "(1.25% transferencia, 4.15% crédito contado, etc.). **Las retenciones impositivas "
-                "(IIBB, IVA) no se exponen vía API**, así que no se incluyen en este número. "
-                "Para verlas reales tenés que entrar al panel de Pago Nube de cada orden."
-            )
+            # ══════════════════════════════════════════════════════════════════
+            # 3) ACCIONES — fila compacta de 3 columnas
+            # ══════════════════════════════════════════════════════════════════
+            _orders_raw_dbg = st.session_state.get("orders_raw", [])
+            _ac1, _ac2, _ac3 = st.columns(3)
 
-            # ── Marcar órdenes en efectivo ─────────────────────────────────────
-            st.divider()
-            with st.expander("💵 Marcar órdenes pagadas en efectivo", expanded=False):
-                st.caption(
-                    "Las órdenes marcadas como efectivo no tienen costo financiero (neto = bruto) "
-                    "y se excluyen del matching automático con MP. La selección se guarda en Google Sheets."
+            with _ac1:
+                st.download_button(
+                    "⬇️ Descargar CSV",
+                    df_view.to_csv(index=False).encode("utf-8"),
+                    "ordenes_tn.csv", "text/csv",
+                    use_container_width=True,
                 )
+
+            with _ac2.expander("💵 Marcar efectivo", expanded=False):
+                st.caption("Las marcadas no tienen costo fin. ni se cruzan con MP. Persiste en Sheets.")
                 _ordenes_actuales = st.session_state.get("ordenes_efectivo", set()) or set()
                 _opciones_ord = []
                 _label_a_num = {}
                 for _, row in df_det.iterrows():
                     n = str(row.get("Orden", ""))
-                    cli = str(row.get("Cliente", ""))[:30]
+                    cli = str(row.get("Cliente", ""))[:25]
                     tot = float(row.get("Total ($)", 0) or 0)
-                    medio = str(row.get("Medio de Pago", ""))
-                    label = f"{n} — {cli} — ${tot:,.0f} ({medio})"
+                    label = f"{n} — {cli} — ${tot:,.0f}"
                     _opciones_ord.append(label)
                     _label_a_num[label] = n
-                _default_labels = [
-                    lbl for lbl, n in _label_a_num.items() if n in _ordenes_actuales
-                ]
+                _default_labels = [lbl for lbl, n in _label_a_num.items() if n in _ordenes_actuales]
                 _seleccion_efec = st.multiselect(
-                    "Órdenes pagadas en efectivo",
-                    options=_opciones_ord,
-                    default=_default_labels,
+                    "Órdenes en efectivo", options=_opciones_ord, default=_default_labels,
                     label_visibility="collapsed",
                 )
-                if st.button("💾 Guardar selección efectivo", use_container_width=True):
+                if st.button("💾 Guardar", use_container_width=True, key="btn_save_efec"):
                     nuevos_nums = {_label_a_num[l] for l in _seleccion_efec}
-                    # Construir dict para Sheets: union de los actuales (de otros períodos)
-                    # con los nuevos. Solo marcamos las que estén actualmente en la tabla.
-                    # Para no perder marcas de períodos anteriores, leemos lo que ya hay.
                     actual_gs = gs_read("OrdenesEfectivo") or {}
                     if not isinstance(actual_gs, dict):
                         actual_gs = {}
-                    # Quitar de actual_gs las órdenes del período actual (se reemplazan)
                     nums_periodo = {str(o) for o in df_det["Orden"].tolist()}
                     actual_gs = {k: v for k, v in actual_gs.items() if str(k) not in nums_periodo}
-                    # Agregar las seleccionadas
                     for n in nuevos_nums:
                         actual_gs[str(n)] = True
                     if gs_write("OrdenesEfectivo", actual_gs):
-                        st.success(f"✅ {len(nuevos_nums)} órdenes marcadas como efectivo. Click 'Actualizar datos' en el sidebar para aplicar.")
+                        st.success(f"✅ {len(nuevos_nums)} marcadas. Click 'Actualizar datos' para aplicar.")
                     else:
-                        st.error("❌ Error al guardar en Google Sheets.")
-            st.download_button("⬇️ Descargar CSV órdenes TN",
-                df_view.to_csv(index=False).encode("utf-8"), "ordenes_tn.csv", "text/csv")
+                        st.error("❌ Error guardando en Sheets.")
 
-            # ── Desglose detallado de fees PN por operación ───────────────────
-            df_pn_det = st.session_state.get("df_pagos")
-            if df_pn_det is not None and not df_pn_det.empty:
-                st.divider()
-                _stats = st.session_state.get("pn_match_stats", {})
-                _stat_caption = (
-                    f"Cross-reference PN: {_stats.get('matched', 0)} órdenes con costo real · "
-                    f"{_stats.get('sin_pago', 0)} sin pago en /transactions · "
-                    f"{_stats.get('intentos', 0)} intentos totales"
-                ) if _stats else ""
-                with st.expander(
-                    f"🔵 Desglose detallado de fees Pago Nube por operación ({len(df_pn_det)} pagos)",
-                    expanded=False,
-                ):
-                    st.caption(
-                        "Componentes que descuenta Pago Nube: costo de procesamiento (fee) + "
-                        "retenciones impositivas (IIBB, IVA, etc.) por provincia del cliente."
+            with _ac3.expander(f"🔧 Debug orden ({len(_orders_raw_dbg)})", expanded=False):
+                if not _orders_raw_dbg:
+                    st.warning("No hay órdenes en sesión. Click 'Actualizar datos'.")
+                else:
+                    _opciones = ["— elegí una orden —"]
+                    _orden_por_label = {}
+                    for o in _orders_raw_dbg:
+                        n = o.get("number", "?")
+                        cli = str(o.get("contact_name", ""))[:25]
+                        tot = float(o.get("total", 0) or 0)
+                        label = f"{n} — {cli} — ${tot:,.0f}"
+                        _opciones.append(label)
+                        _orden_por_label[label] = o
+                    _sel = st.selectbox(
+                        "Elegí orden", _opciones, index=0, key="dbg_order_sel",
+                        label_visibility="collapsed",
                     )
-                    if _stat_caption:
-                        st.caption(_stat_caption)
-                    _cols_pn = [
-                        "Orden TN", "ID", "Fecha", "Estado", "Método", "Cuotas",
-                        "Monto ($)", "Fee ($)", "Retención ($)", "Costo total ($)", "Neto ($)",
-                    ]
-                    _cols_pn = [c for c in _cols_pn if c in df_pn_det.columns]
-                    _fmt_pn = {c: "${:,.2f}" for c in _cols_pn if "($)" in c}
-                    st.dataframe(
-                        df_pn_det[_cols_pn].style.format(_fmt_pn),
-                        use_container_width=True, hide_index=True,
-                    )
+                    if _sel and _sel in _orden_por_label:
+                        o = _orden_por_label[_sel]
+                        st.markdown(f"**#{o.get('number')}** · ID `{o.get('id')}` · gw `{o.get('gateway')}`")
+                        # Match de costos
+                        st.markdown("**🔍 Match de costos:**")
+                        _costos_dbg = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
+                        _tc_dbg = float(st.session_state.tipo_cambio_sf or (dolar_blue or 1400))
+                        _filas_costo_dbg = []
+                        for _p in o.get("products", []) or []:
+                            _nombre_raw = _p.get("name", {})
+                            if isinstance(_nombre_raw, dict):
+                                _nombre = _nombre_raw.get("es", "") or next(iter(_nombre_raw.values()), "")
+                            else:
+                                _nombre = str(_nombre_raw)
+                            _nombre = _extraer_nombre_producto(_nombre)
+                            _qty = int(_p.get("quantity", 1) or 1)
+                            _costo_tn = float(_p.get("cost") or 0)
+                            _matched_key = "(no match)"
+                            _nombre_norm = _normalizar(_nombre)
+                            _nombre_comp = _norm_compact(_nombre)
+                            _all_sources = []
+                            for k, v in (_costos_dbg or {}).items():
+                                if not k.startswith("_") and isinstance(v, dict):
+                                    _all_sources.append(("Sheets", k, v))
+                            for k, v in FOB_DEFAULTS.items():
+                                _all_sources.append(("Default", k, v))
+                            for src, k, v in _all_sources:
+                                if _normalizar(k) == _nombre_norm:
+                                    _matched_key = f"[{src}] {k} (exact)"
+                                    break
+                            else:
+                                for src, k, v in _all_sources:
+                                    if _norm_compact(k) and _norm_compact(k) == _nombre_comp:
+                                        _matched_key = f"[{src}] {k} (compact)"
+                                        break
+                                else:
+                                    _best_len = 0
+                                    for src, k, v in _all_sources:
+                                        if _normalizar(k) in _nombre_norm and len(_normalizar(k)) > _best_len:
+                                            _matched_key = f"[{src}] {k} (key in nombre)"
+                                            _best_len = len(_normalizar(k))
+                                    if _best_len == 0:
+                                        for src, k, v in _all_sources:
+                                            if _norm_compact(k) and _nombre_comp in _norm_compact(k) and len(_nombre_comp) > _best_len:
+                                                _matched_key = f"[{src}] {k} (nombre in key)"
+                                                _best_len = len(_nombre_comp)
+                            _fob_real, _imp_real, _total_real = _match_costo_entry(_nombre, _costos_dbg)
+                            _filas_costo_dbg.append({
+                                "Producto": _nombre,
+                                "Qty": _qty,
+                                "Match": _matched_key,
+                                "FOB USD": round(_fob_real, 2),
+                                "Imp USD": round(_imp_real, 2),
+                                "Tot USD": round(_total_real, 2),
+                                "Tot ARS": round(_total_real * _qty * _tc_dbg, 0),
+                                "TN cost": _costo_tn,
+                            })
+                        if _filas_costo_dbg:
+                            st.dataframe(pd.DataFrame(_filas_costo_dbg), use_container_width=True, hide_index=True)
+                        st.markdown("**payment_details:**")
+                        _pd_data = o.get("payment_details", {}) or {}
+                        if not _pd_data:
+                            st.warning("⚠️ Sin payment_details (efectivo o convenir manual).")
+                        else:
+                            st.json(_pd_data)
+                        with st.expander("Ver orden completa (JSON)", expanded=False):
+                            st.json(o)
 
-            # ── Desglose detallado de fees MP por operación ───────────────────
+            # ══════════════════════════════════════════════════════════════════
+            # 4) DESGLOSES — fila compacta de 2 columnas
+            # ══════════════════════════════════════════════════════════════════
+            _df_pn_det = st.session_state.get("df_pagos")
+            _has_pn = _df_pn_det is not None and not _df_pn_det.empty
+            _df_mp_det = pd.DataFrame()
             if MP_ACCESS_TOKEN:
                 _mp_raw_det = get_mp_payments(str(fecha_desde), str(fecha_hasta)) or []
                 if _mp_raw_det:
                     _montos_tn_det = {round(float(t)) for t in df_det["Total ($)"]} if not df_det.empty else set()
                     _df_mp_det = procesar_mp_payments(_mp_raw_det, montos_validos_tn=_montos_tn_det)
-                    if not _df_mp_det.empty:
-                        st.divider()
-                        with st.expander(
-                            f"💳 Desglose detallado de fees MP por operación ({len(_df_mp_det)} pagos)",
-                            expanded=False,
-                        ):
-                            st.caption(
-                                "Componentes que cobra MP en cada operación: cargo MP, "
-                                "intereses absorbidos (cuotas sin interés), impuestos, IIBB, plataforma de terceros."
-                            )
-                            _cols_mp = [
-                                "ID MP", "Fecha", "Tipo", "Cuotas", "Medio",
-                                "Bruto ($)", "Cargo MP ($)", "Cargo financiación ($)",
-                                "Impuestos ($)", "Cargo plataforma ($)",
-                                "Fee total ($)", "Costo %", "Neto ($)",
-                            ]
-                            _cols_mp = [c for c in _cols_mp if c in _df_mp_det.columns]
-                            _fmt_money = {c: "${:,.2f}" for c in _cols_mp if "($)" in c}
-                            _fmt_money["Costo %"] = "{:.2f}%"
-                            st.dataframe(
-                                _df_mp_det[_cols_mp].style.format(_fmt_money),
-                                use_container_width=True, hide_index=True,
-                            )
+            _has_mp = not _df_mp_det.empty
 
-            # Métricas resumen
-            st.divider()
-            total_bruto = df_det["Total ($)"].sum()
-            total_costo = df_det["Costo Productos ($)"].sum()
-            total_comis = df_det["Comision PN ($)"].sum()
-            total_margen = df_det["Margen ($)"].sum()
-            mg1, mg2, mg3, mg4 = st.columns(4)
-            mg1.metric("💰 Facturación bruta", fmt(total_bruto))
-            mg2.metric("📦 Costo productos", fmt(total_costo), delta=f"-{fmt(total_costo)}", delta_color="inverse")
-            mg3.metric("💳 Costo financiero", fmt(total_comis), delta=f"-{fmt(total_comis)}", delta_color="inverse")
-            mg4.metric(
-                f"{'🟢' if total_margen >= 0 else '🔴'} Margen neto",
-                fmt(total_margen),
-                delta=f"{round(total_margen / total_bruto * 100, 1)}% sobre bruto" if total_bruto > 0 else None,
-            )
+            if _has_pn or _has_mp:
+                _d1, _d2 = st.columns(2)
+                if _has_pn:
+                    with _d1.expander(f"🔵 Desglose Pago Nube ({len(_df_pn_det)})", expanded=False):
+                        st.caption("Costo de procesamiento (fee) + retenciones impositivas (IIBB, IVA).")
+                        _cols_pn = [
+                            "Orden TN", "Fecha", "Método", "Cuotas",
+                            "Monto ($)", "Fee ($)", "Retención ($)", "Costo total ($)", "Neto ($)",
+                        ]
+                        _cols_pn = [c for c in _cols_pn if c in _df_pn_det.columns]
+                        _fmt_pn = {c: "${:,.2f}" for c in _cols_pn if "($)" in c}
+                        st.dataframe(
+                            _df_pn_det[_cols_pn].style.format(_fmt_pn),
+                            use_container_width=True, hide_index=True,
+                        )
+                if _has_mp:
+                    with _d2.expander(f"💳 Desglose Mercado Pago ({len(_df_mp_det)})", expanded=False):
+                        st.caption("Cargo MP, financiación, impuestos, plataforma de terceros.")
+                        _cols_mp = [
+                            "ID MP", "Fecha", "Tipo", "Cuotas", "Medio",
+                            "Bruto ($)", "Cargo MP ($)", "Cargo financiación ($)",
+                            "Impuestos ($)", "Cargo plataforma ($)",
+                            "Fee total ($)", "Costo %", "Neto ($)",
+                        ]
+                        _cols_mp = [c for c in _cols_mp if c in _df_mp_det.columns]
+                        _fmt_money = {c: "${:,.2f}" for c in _cols_mp if "($)" in c}
+                        _fmt_money["Costo %"] = "{:.2f}%"
+                        st.dataframe(
+                            _df_mp_det[_cols_mp].style.format(_fmt_money),
+                            use_container_width=True, hide_index=True,
+                        )
 
             # Estado de costos
             st.divider()
