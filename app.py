@@ -3514,6 +3514,7 @@ if st.session_state.df_tn is not None:
                     productos_tn = get_tn_products()
                 if productos_tn:
                     prods_map = {}
+                    prods_urls = {}
                     for p in productos_tn:
                         nombre_raw = p.get("name", {})
                         nombre = nombre_raw.get("es", "") if isinstance(nombre_raw, dict) else str(nombre_raw)
@@ -3532,7 +3533,12 @@ if st.session_state.df_tn is not None:
                             except Exception:
                                 peso_kg = None
                         prods_map[nombre] = peso_kg
+                        handle_raw = p.get("handle", {})
+                        handle = handle_raw.get("es", "") if isinstance(handle_raw, dict) else str(handle_raw or "")
+                        if handle:
+                            prods_urls[nombre] = f"https://www.marketgamer.com.ar/productos/{handle}/"
                     st.session_state.productos_tn_map = prods_map
+                    st.session_state.productos_tn_urls = prods_urls
 
                     costos_actual = st.session_state.costos_consolas.copy()
                     nuevos = 0
@@ -3573,6 +3579,7 @@ if st.session_state.df_tn is not None:
         def _build_costos_df():
             _costos = st.session_state.costos_consolas.copy()
             _prods_map = st.session_state.get("productos_tn_map", {})
+            _prods_urls = st.session_state.get("productos_tn_urls", {})
             _all = set(_prods_map.keys())
             for k in _costos:
                 if not k.startswith("_"):
@@ -3590,19 +3597,23 @@ if st.session_state.df_tn is not None:
                 fob_def = FOB_DEFAULTS.get(prod, {}).get("fob_usd", 0.0)
                 fob_f = fob_s if fob_s > 0 else float(fob_def)
 
+                url_f = _prods_urls.get(prod, "")
+                row_data = {"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f, "URL": url_f}
                 nc = _norm_compact(prod)
                 if nc in _seen_compact:
                     # Ya existe: quedarse con el que tenga mejor FOB
                     _prev = _seen_compact[nc]
                     if fob_f > _prev["FOB (USD)"]:
-                        _seen_compact[nc] = {"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f}
+                        _seen_compact[nc] = row_data
                     elif fob_f == _prev["FOB (USD)"] and peso_f > _prev["Peso (kg)"]:
-                        _seen_compact[nc] = {"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f}
+                        _seen_compact[nc] = row_data
+                    elif url_f and not _prev.get("URL"):
+                        _seen_compact[nc] = row_data
                 else:
-                    _seen_compact[nc] = {"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f}
+                    _seen_compact[nc] = row_data
 
             rows = sorted(_seen_compact.values(), key=lambda r: r["Producto"])
-            return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Producto", "Peso (kg)", "FOB (USD)"])
+            return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Producto", "Peso (kg)", "FOB (USD)", "URL"])
 
         if "costos_df_editor" not in st.session_state:
             st.session_state.costos_df_editor = _build_costos_df()
@@ -3658,6 +3669,7 @@ if st.session_state.df_tn is not None:
                     "Import (USD)": st.column_config.NumberColumn("Import (USD)", disabled=True, format="$%.2f"),
                     "Total (USD)": st.column_config.NumberColumn("Total (USD)", disabled=True, format="$%.2f"),
                     "Total (ARS)": st.column_config.NumberColumn("Total (ARS)", disabled=True, format="$%.0f"),
+                    "URL": st.column_config.LinkColumn("Ver en TN", display_text="🔗 Abrir", disabled=True, help="Abre el producto en la tienda. Sin link = no encontrado en TN (posiblemente eliminado)."),
                 },
                 hide_index=True,
                 use_container_width=True,
@@ -3700,13 +3712,7 @@ if st.session_state.df_tn is not None:
                     nuevos_costos.pop(p, None)
 
                 st.session_state.costos_consolas = nuevos_costos
-                # Reconstruir base del editor con todos los datos (sin filtro)
-                _full = pd.DataFrame([
-                    {"Producto": name, "Peso (kg)": float(v.get("peso_kg", 0)), "FOB (USD)": float(v.get("fob_usd", 0))}
-                    for name, v in nuevos_costos.items()
-                    if not str(name).startswith("_") and isinstance(v, dict)
-                ]).sort_values("Producto").reset_index(drop=True)
-                st.session_state.costos_df_editor = _full
+                st.session_state._costos_needs_refresh = True
                 ok = gs_write("CostosConsolas", nuevos_costos)
                 st.success("✅ Guardado en Google Sheets" if ok else "⚠️ Solo en sesión")
                 st.rerun()
