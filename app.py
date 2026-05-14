@@ -930,7 +930,7 @@ def get_ga4_metrics(periodo="28d"):
         # Tiempo prom. por página en segundos = engagement total / vistas
         for p in paginas_raw:
             p["tiempo_prom_seg"] = (p["engagement_seg"] / p["vistas"]) if p["vistas"] > 0 else 0.0
-        top_paginas = paginas_raw[:5]
+        top_paginas = paginas_raw[:30]
 
         # Top productos: filtrar pagePath que empiece con /productos/
         top_productos = sorted(
@@ -938,34 +938,44 @@ def get_ga4_metrics(periodo="28d"):
             key=lambda x: x["vistas"], reverse=True,
         )[:5]
 
-        # Top categorías: agrupar por primer segmento del path
+        # Top categorías: agrupar por primer segmento del path + URL representativa
         def _bucket_categoria(path):
             if not path or path == "/":
                 return "Home"
             seg = path.strip("/").split("/", 1)[0].lower()
             mapping = {
-                "consolas-portatiles": "Consolas portátiles",
-                "consolas-de-mesa": "Consolas de mesa",
-                "accesorios": "Accesorios",
-                "juegos": "Juegos",
-                "productos": "Producto individual",
-                "categoria": "Categoría (legacy)",
+                "consolas-portatiles": "Consolas portátiles (URL custom)",
+                "consolas-de-mesa": "Consolas de mesa (URL custom)",
+                "accesorios": "Accesorios (URL custom)",
+                "juegos": "Juegos (URL custom)",
+                "productos": "Productos (fichas individuales)",
+                "categoria": "Páginas de marca (/categoria/*)",
                 "checkout": "Checkout",
                 "cuenta": "Cuenta",
                 "carrito": "Carrito",
                 "blog": "Blog",
+                "hotsale": "Hotsale (campaña)",
+                "search": "Búsqueda interna",
+                "consolas": "Consolas (URL custom)",
             }
             return mapping.get(seg, seg.replace("-", " ").title())
 
         cat_map = {}
         for p in paginas_raw:
             cat = _bucket_categoria(p["pagina"])
-            entry = cat_map.setdefault(cat, {"categoria": cat, "vistas": 0.0, "engagement_seg": 0.0})
+            entry = cat_map.setdefault(cat, {
+                "categoria": cat, "vistas": 0.0, "engagement_seg": 0.0,
+                "url_top": p["pagina"], "vistas_top": p["vistas"],
+            })
             entry["vistas"] += p["vistas"]
             entry["engagement_seg"] += p["engagement_seg"]
+            # Trackear la URL más vista del bucket como ejemplo
+            if p["vistas"] > entry["vistas_top"]:
+                entry["url_top"] = p["pagina"]
+                entry["vistas_top"] = p["vistas"]
         for c in cat_map.values():
             c["tiempo_prom_seg"] = (c["engagement_seg"] / c["vistas"]) if c["vistas"] > 0 else 0.0
-        top_categorias = sorted(cat_map.values(), key=lambda x: x["vistas"], reverse=True)[:8]
+        top_categorias = sorted(cat_map.values(), key=lambda x: x["vistas"], reverse=True)[:10]
 
         # Dispositivo (mobile/desktop/tablet)
         device_req = RunReportRequest(
@@ -1104,6 +1114,109 @@ def get_ga4_metrics(periodo="28d"):
                 "tiempo_prom_seg": (engagement / vistas) if vistas > 0 else 0.0,
             })
 
+        # Checkouts por canal (atribución básica): qué canal trae a los que inician checkout
+        checkouts_canal_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="sessionDefaultChannelGroup")],
+            metrics=[Metric(name="screenPageViews")],
+            date_ranges=[rango_actual],
+            dimension_filter=checkout_filter,
+            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
+        )
+        checkouts_canal_resp = client.run_report(checkouts_canal_req)
+        checkouts_por_canal = [
+            {"canal": row.dimension_values[0].value or "(sin dato)", "checkouts": _val(row, 0)}
+            for row in checkouts_canal_resp.rows
+        ]
+
+        # Tendencia diaria: sesiones + checkouts por día (rango actual)
+        tendencia_sesiones_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="date")],
+            metrics=[Metric(name="sessions")],
+            date_ranges=[rango_actual],
+            order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="date"))],
+        )
+        tendencia_sesiones_resp = client.run_report(tendencia_sesiones_req)
+        tendencia_sesiones = [
+            {"fecha": row.dimension_values[0].value, "sesiones": _val(row, 0)}
+            for row in tendencia_sesiones_resp.rows
+        ]
+
+        tendencia_checkouts_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="date")],
+            metrics=[Metric(name="screenPageViews")],
+            date_ranges=[rango_actual],
+            dimension_filter=checkout_filter,
+            order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="date"))],
+        )
+        tendencia_checkouts_resp = client.run_report(tendencia_checkouts_req)
+        tendencia_checkouts = {
+            row.dimension_values[0].value: _val(row, 0)
+            for row in tendencia_checkouts_resp.rows
+        }
+        # Mergear ambas series por fecha
+        for d in tendencia_sesiones:
+            d["checkouts"] = tendencia_checkouts.get(d["fecha"], 0.0)
+
+        # Búsquedas internas: páginas /buscar/* o /search/* con query string
+        try:
+            busqueda_filter = FilterExpression(
+                or_group=FilterExpression.FilterExpressionList(expressions=[
+                    FilterExpression(filter=Filter(
+                        field_name="pagePath",
+                        string_filter=Filter.StringFilter(
+                            value="/buscar",
+                            match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
+                        ),
+                    )),
+                    FilterExpression(filter=Filter(
+                        field_name="pagePath",
+                        string_filter=Filter.StringFilter(
+                            value="/search",
+                            match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
+                        ),
+                    )),
+                ])
+            )
+            busqueda_req = RunReportRequest(
+                property=prop,
+                dimensions=[Dimension(name="pagePathPlusQueryString")],
+                metrics=[Metric(name="screenPageViews")],
+                date_ranges=[rango_actual],
+                dimension_filter=busqueda_filter,
+                order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
+                limit=50,
+            )
+            busqueda_resp = client.run_report(busqueda_req)
+            busquedas_internas = []
+            import re as _re
+            import urllib.parse as _ulib
+            for row in busqueda_resp.rows:
+                path_q = row.dimension_values[0].value or ""
+                # Extraer el query param ?q= o ?query= o ?s=
+                m = _re.search(r"[?&](?:q|query|s)=([^&]+)", path_q)
+                if m:
+                    try:
+                        termino = _ulib.unquote_plus(m.group(1)).strip()
+                    except Exception:
+                        termino = m.group(1)
+                    if termino:
+                        busquedas_internas.append({
+                            "termino": termino.lower(),
+                            "vistas": _val(row, 0),
+                            "url": path_q,
+                        })
+            # Consolidar por término (varios URLs pueden tener el mismo q)
+            bmap = {}
+            for b in busquedas_internas:
+                e = bmap.setdefault(b["termino"], {"termino": b["termino"], "vistas": 0.0})
+                e["vistas"] += b["vistas"]
+            busquedas_internas = sorted(bmap.values(), key=lambda x: x["vistas"], reverse=True)[:20]
+        except Exception:
+            busquedas_internas = []
+
         # Top eventos GA4 (para investigar si TN dispara add_to_cart, view_item, etc.)
         eventos_req = RunReportRequest(
             property=prop,
@@ -1140,6 +1253,9 @@ def get_ga4_metrics(periodo="28d"):
             "landing_pages": landing_pages,
             "productos_full": productos_full,
             "marcas": marcas,
+            "checkouts_por_canal": checkouts_por_canal,
+            "tendencia_diaria": tendencia_sesiones,
+            "busquedas_internas": busquedas_internas,
             "eventos": eventos,
         }
 
@@ -5842,24 +5958,45 @@ if st.session_state.df_tn is not None:
                         "Sesiones",
                         f"{int(sesiones_act):,}".replace(",", "."),
                         _delta_str(_delta_pct(sesiones_act, sesiones_prev)),
+                        help=(
+                            "Cantidad de visitas al sitio. Una persona puede generar varias "
+                            "sesiones si vuelve después de 30 min de inactividad. Es la métrica "
+                            "base de volumen: si cae, llega menos gente; si sube, está "
+                            "funcionando algún canal de tráfico."
+                        ),
                     )
                 with c2:
                     st.metric(
                         "Usuarios activos",
                         f"{int(usuarios_act):,}".replace(",", "."),
                         _delta_str(_delta_pct(usuarios_act, usuarios_prev)),
+                        help=(
+                            "Personas únicas que entraron. Comparado con sesiones te dice si "
+                            "viene gente nueva (números parecidos) o si la misma gente vuelve "
+                            "varias veces (sesiones >> usuarios)."
+                        ),
                     )
                 with c3:
                     st.metric(
                         "Tasa de interacción",
                         f"{interaccion_act * 100:.1f}%",
                         _fmt_pp(interaccion_act * 100, interaccion_prev * 100),
+                        help=(
+                            "% de sesiones donde la persona se quedó +10s, vio +1 página o "
+                            "disparó algún evento. Es el inverso del bounce. Arriba de 50% "
+                            "está OK; abajo de 40% indica tráfico de baja calidad."
+                        ),
                     )
                 with c4:
                     st.metric(
                         "Checkouts iniciados",
                         f"{int(checkouts_act):,}".replace(",", "."),
                         _delta_str(_delta_pct(checkouts_act, checkouts_prev)),
+                        help=(
+                            "Personas que llegaron al paso de checkout (/checkout/v3/start). "
+                            "No mide ventas cerradas, mide INTENCIÓN de comprar. La caída de "
+                            "ventas con este número estable = problema en pago/envío."
+                        ),
                     )
 
                 # ── Fila 2: KPIs de comportamiento / conversión ──────────────────
@@ -5869,13 +6006,23 @@ if st.session_state.df_tn is not None:
                         "Conv. a checkout",
                         f"{conv_act:.2f}%",
                         _fmt_pp(conv_act, conv_prev),
-                        help="Checkouts iniciados ÷ sesiones. Caída acá = problema en el funnel.",
+                        help=(
+                            "Checkouts iniciados ÷ sesiones. El número más importante del "
+                            "funnel: dice qué % del tráfico llega a querer comprar. "
+                            "Benchmark e-commerce: 2-3% es OK, 4-5% es muy bueno. Caída acá "
+                            "antes que en ventas = problema upstream (pauta mala, UX rota)."
+                        ),
                     )
                 with c6:
                     st.metric(
                         "Tiempo prom. sesión",
                         _fmt_seg(duracion_act),
                         _delta_str(_delta_pct(duracion_act, duracion_prev)),
+                        help=(
+                            "Cuánto tiempo total pasa la persona en el sitio por visita. "
+                            "Suma todas las páginas que vio. >2 min indica interés real; "
+                            "<30s suele ser tráfico de pauta mal segmentada."
+                        ),
                     )
                 with c7:
                     st.metric(
@@ -5883,31 +6030,102 @@ if st.session_state.df_tn is not None:
                         f"{bounce_act * 100:.1f}%",
                         _fmt_pp(bounce_act * 100, bounce_prev * 100),
                         delta_color="inverse",
-                        help="% de sesiones que rebotan sin interactuar. Menos es mejor.",
+                        help=(
+                            "% de sesiones que rebotan sin interactuar (1 página, <10s, "
+                            "ningún evento). Menos es mejor. Abajo de 50% está OK; arriba "
+                            "de 70% señal de tráfico que cae por error o landing no convence."
+                        ),
                     )
                 with c8:
                     ppu = (sesiones_act / max(usuarios_act, 1))
                     st.metric(
                         "Sesiones / usuario",
                         f"{ppu:.2f}",
-                        help="Cuántas veces vuelve el mismo usuario en promedio.",
+                        help=(
+                            "Cuántas veces vuelve la misma persona en el período. >1.5 "
+                            "indica buena recurrencia (te están considerando varias veces); "
+                            "≈1.0 es tráfico de descubrimiento puro (no vuelven)."
+                        ),
                     )
 
                 st.divider()
+
+                # ── Tendencia diaria de sesiones + checkouts ────────────────────
+                st.subheader("Tendencia diaria")
+                st.caption(
+                    "Sesiones y checkouts iniciados día a día. Detecta el día exacto "
+                    "donde se rompió o despegó algo (lo que el promedio agregado esconde)."
+                )
+                tendencia = ga4.get("tendencia_diaria") or []
+                if not tendencia:
+                    st.info("Sin datos de tendencia.")
+                else:
+                    df_tend = pd.DataFrame(tendencia)
+                    df_tend["fecha_dt"] = pd.to_datetime(df_tend["fecha"], format="%Y%m%d", errors="coerce")
+                    df_tend = df_tend.sort_values("fecha_dt")
+                    import plotly.graph_objects as _go
+                    fig_tend = _go.Figure()
+                    fig_tend.add_trace(_go.Scatter(
+                        x=df_tend["fecha_dt"], y=df_tend["sesiones"],
+                        name="Sesiones", mode="lines+markers",
+                        line=dict(color=MG_RED, width=2),
+                        marker=dict(size=5),
+                    ))
+                    fig_tend.add_trace(_go.Scatter(
+                        x=df_tend["fecha_dt"], y=df_tend["checkouts"],
+                        name="Checkouts iniciados", mode="lines+markers",
+                        line=dict(color="#4ade80", width=2),
+                        marker=dict(size=5),
+                        yaxis="y2",
+                    ))
+                    fig_tend.update_layout(
+                        height=320,
+                        margin=dict(l=0, r=0, t=20, b=0),
+                        paper_bgcolor=MG_BG, plot_bgcolor=MG_BG,
+                        font=dict(color=MG_TEXT, family="Hanken Grotesk"),
+                        yaxis=dict(title="Sesiones", gridcolor=MG_BORDER, zerolinecolor=MG_BORDER),
+                        yaxis2=dict(
+                            title="Checkouts", overlaying="y", side="right",
+                            gridcolor=MG_BORDER, zerolinecolor=MG_BORDER, showgrid=False,
+                        ),
+                        xaxis=dict(gridcolor=MG_BORDER, zerolinecolor=MG_BORDER),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig_tend, use_container_width=True)
+
+                st.divider()
+
+                # ── Glosario de canales (texto explicativo previo a las tablas) ─
+                with st.expander("ℹ️ Qué significa cada canal de tráfico"):
+                    st.markdown("""
+- **Direct** — entraron escribiendo la URL directo, desde bookmark, o desde apps de mensajería sin link rastreable (WhatsApp, IG DM). Suelen ser clientes que ya te conocen.
+- **Organic Search** — vinieron desde Google, Bing, etc. SIN haber hecho click en un anuncio. SEO puro.
+- **Paid Search** — Google Ads, Bing Ads (anuncios en buscadores).
+- **Organic Social** — posts orgánicos de IG, Facebook, TikTok (no pauta).
+- **Paid Social** — Meta Ads, TikTok Ads, anuncios de pauta en redes. Acá cae tu inversión de pauta.
+- **Email** — clicks desde campañas de mail marketing.
+- **Referral** — link desde otro sitio web (blog, foro, listing).
+- **Affiliates** — programas de afiliados.
+- **Display** — banners en la red de Google Display u otras.
+- **Unassigned** — GA4 no pudo clasificar la fuente. Suele ser tracking incompleto o links sin UTMs.
+                    """.strip())
 
                 # ── Sesiones por canal + Dispositivo (lado a lado) ──────────────
                 col_canal, col_device = st.columns([2, 1])
                 with col_canal:
                     st.subheader("Sesiones por canal")
-                    st.caption("De dónde viene el tráfico.")
+                    st.caption("De dónde viene el tráfico, con % sobre el total.")
                     canales = ga4["canales"]
                     if not canales:
                         st.info("Sin datos de canales en el período.")
                     else:
+                        total_canales = sum(c["sesiones_act"] for c in canales) or 1
                         df_canales = pd.DataFrame([
                             {
                                 "Canal": c["canal"] or "(sin dato)",
-                                "Sesiones (7d)": int(c["sesiones_act"]),
+                                "Sesiones": int(c["sesiones_act"]),
+                                "%": f"{c['sesiones_act'] / total_canales * 100:.1f}%",
                                 "Variación": _delta_str(_delta_pct(c["sesiones_act"], c["sesiones_prev"])),
                             }
                             for c in canales
@@ -5972,21 +6190,59 @@ if st.session_state.df_tn is not None:
 
                 st.divider()
 
-                # ── Top categorías ──────────────────────────────────────────────
-                st.subheader("Top categorías")
+                # ── Checkouts por canal (atribución) ─────────────────────────────
+                st.subheader("Checkouts iniciados por canal")
                 st.caption(
-                    "Vistas agrupadas por sección de la web. "
-                    "Engagement prom. = tiempo activo en esa página antes de pasar a la siguiente."
+                    "Qué canal trae a la gente que LLEGA al checkout. "
+                    "Comparalo con 'Sesiones por canal': si Paid Social tiene 60% del tráfico "
+                    "pero 20% de los checkouts, estás pagando tráfico que no convierte."
+                )
+                checkouts_canal = ga4.get("checkouts_por_canal") or []
+                if not checkouts_canal:
+                    st.info("Sin checkouts en el período.")
+                else:
+                    total_checkouts_canal = sum(c["checkouts"] for c in checkouts_canal) or 1
+                    # Mapear sesiones por canal para poder calcular tasa de conversión por canal
+                    sesiones_por_canal = {c["canal"]: c["sesiones_act"] for c in ga4["canales"]}
+                    df_cc = pd.DataFrame([
+                        {
+                            "Canal": c["canal"],
+                            "Checkouts": int(c["checkouts"]),
+                            "% del total": f"{c['checkouts'] / total_checkouts_canal * 100:.1f}%",
+                            "Tasa conv.": (
+                                f"{c['checkouts'] / sesiones_por_canal[c['canal']] * 100:.2f}%"
+                                if sesiones_por_canal.get(c["canal"], 0) > 0 else "—"
+                            ),
+                        }
+                        for c in checkouts_canal
+                    ])
+                    st.dataframe(df_cc, hide_index=True, use_container_width=True)
+                    st.caption(
+                        "💡 La columna 'Tasa conv.' = checkouts ÷ sesiones de ese canal. "
+                        "El canal con tasa más alta es el que mejor convierte (no el que más tráfico trae)."
+                    )
+
+                st.divider()
+
+                # ── Top categorías ──────────────────────────────────────────────
+                st.subheader("Top categorías (secciones del sitio)")
+                st.caption(
+                    "Agrupado por primer segmento del path. La columna 'URL ejemplo' "
+                    "te muestra cuál es la página más visitada de cada bucket — útil para "
+                    "entender qué cae adentro."
                 )
                 top_cats = ga4["top_categorias"]
                 if not top_cats:
                     st.info("Sin datos.")
                 else:
+                    total_cats = sum(c["vistas"] for c in top_cats) or 1
                     df_cats = pd.DataFrame([
                         {
                             "Categoría": c["categoria"],
                             "Vistas": int(c["vistas"]),
+                            "%": f"{c['vistas'] / total_cats * 100:.1f}%",
                             "Engagement prom.": _fmt_seg(c["tiempo_prom_seg"]),
+                            "URL ejemplo": c.get("url_top", ""),
                         }
                         for c in top_cats
                     ])
@@ -6015,7 +6271,7 @@ if st.session_state.df_tn is not None:
 
                 with col_pag:
                     st.subheader("Top páginas")
-                    st.caption("Las 5 URLs más vistas (cualquier tipo).")
+                    st.caption("Top 30 URLs más vistas (cualquier tipo). Scrolleable.")
                     top = ga4["top_paginas"]
                     if not top:
                         st.info("Sin datos.")
@@ -6028,7 +6284,7 @@ if st.session_state.df_tn is not None:
                             }
                             for p in top
                         ])
-                        st.dataframe(df_top, hide_index=True, use_container_width=True)
+                        st.dataframe(df_top, hide_index=True, use_container_width=True, height=300)
 
                 st.divider()
 
@@ -6043,10 +6299,12 @@ if st.session_state.df_tn is not None:
                     st.info("Sin vistas a páginas de marca en el período.")
                     _marca_seleccionada = None
                 else:
+                    total_marcas = sum(m["vistas"] for m in marcas_lista) or 1
                     df_marcas = pd.DataFrame([
                         {
                             "Marca": m["marca"].capitalize(),
                             "Vistas": int(m["vistas"]),
+                            "% del total": f"{m['vistas'] / total_marcas * 100:.1f}%",
                             "Engagement prom.": _fmt_seg(m["tiempo_prom_seg"]),
                             "Engagement total": _fmt_seg(m["engagement_seg"]),
                         }
@@ -6095,6 +6353,10 @@ if st.session_state.df_tn is not None:
                                     "Producto": p["path"].replace("/productos/", "").rstrip("/"),
                                     "Título": p.get("titulo", ""),
                                     "Vistas": int(p["vistas"]),
+                                    "% de la marca": (
+                                        f"{p['vistas'] / total_vistas_marca * 100:.1f}%"
+                                        if total_vistas_marca > 0 else "—"
+                                    ),
                                     "Engagement prom.": _fmt_seg(p["tiempo_prom_seg"]),
                                 }
                                 for p in productos_marca
@@ -6161,6 +6423,34 @@ if st.session_state.df_tn is not None:
                             f"(productos por debajo de este tiempo con tráfico ≥ mediana = 🚨)"
                         )
                         st.dataframe(df_pf, hide_index=True, use_container_width=True, height=400)
+
+                st.divider()
+
+                # ── Búsquedas internas en el sitio ──────────────────────────────
+                st.subheader("Búsquedas internas")
+                st.caption(
+                    "Qué buscan los usuarios DENTRO del sitio (buscador interno). "
+                    "Oro puro: si buscan algo seguido que no tenés bien ranqueado, "
+                    "te falta SEO interno o directamente el producto."
+                )
+                busquedas = ga4.get("busquedas_internas") or []
+                if not busquedas:
+                    st.info(
+                        "No detectamos búsquedas internas en el período (o el buscador de TN "
+                        "no las trackea con `?q=`). Si Tiendanube genera URLs como `/buscar?q=...` "
+                        "deberían aparecer acá."
+                    )
+                else:
+                    total_busq = sum(b["vistas"] for b in busquedas) or 1
+                    df_busq = pd.DataFrame([
+                        {
+                            "Término buscado": b["termino"],
+                            "Búsquedas": int(b["vistas"]),
+                            "% del total": f"{b['vistas'] / total_busq * 100:.1f}%",
+                        }
+                        for b in busquedas
+                    ])
+                    st.dataframe(df_busq, hide_index=True, use_container_width=True, height=320)
 
                 st.divider()
 
