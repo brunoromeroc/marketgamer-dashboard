@@ -981,6 +981,48 @@ def get_ga4_metrics(periodo="28d"):
             for row in device_resp.rows
         ]
 
+        # Marcas: cada /categoria/<marca> con vistas + engagement
+        marca_filter = FilterExpression(
+            filter=Filter(
+                field_name="pagePath",
+                string_filter=Filter.StringFilter(
+                    value="/categoria/",
+                    match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
+                ),
+            )
+        )
+        marcas_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="pagePath")],
+            metrics=[
+                Metric(name="screenPageViews"),
+                Metric(name="userEngagementDuration"),
+            ],
+            date_ranges=[rango_actual],
+            dimension_filter=marca_filter,
+            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
+            limit=50,
+        )
+        marcas_resp = client.run_report(marcas_req)
+        marcas_map = {}
+        for row in marcas_resp.rows:
+            path = row.dimension_values[0].value or ""
+            # /categoria/powkiddy/ o /categoria/powkiddy/pagina-2 → "powkiddy"
+            partes = path.strip("/").split("/")
+            if len(partes) < 2 or partes[0] != "categoria":
+                continue
+            marca = partes[1].lower()
+            if not marca:
+                continue
+            vistas = _val(row, 0)
+            engagement = _val(row, 1)
+            entry = marcas_map.setdefault(marca, {"marca": marca, "vistas": 0.0, "engagement_seg": 0.0})
+            entry["vistas"] += vistas
+            entry["engagement_seg"] += engagement
+        for m in marcas_map.values():
+            m["tiempo_prom_seg"] = (m["engagement_seg"] / m["vistas"]) if m["vistas"] > 0 else 0.0
+        marcas = sorted(marcas_map.values(), key=lambda x: x["vistas"], reverse=True)
+
         # Sistema operativo (Android/iOS/Windows/Mac)
         os_req = RunReportRequest(
             property=prop,
@@ -1097,6 +1139,7 @@ def get_ga4_metrics(periodo="28d"):
             "resoluciones": resoluciones,
             "landing_pages": landing_pages,
             "productos_full": productos_full,
+            "marcas": marcas,
             "eventos": eventos,
         }
 
@@ -5986,6 +6029,77 @@ if st.session_state.df_tn is not None:
                             for p in top
                         ])
                         st.dataframe(df_top, hide_index=True, use_container_width=True)
+
+                st.divider()
+
+                # ── Marcas (drill-down de /categoria/<marca>) ───────────────────
+                st.subheader("Marcas")
+                st.caption(
+                    "Tráfico a cada landing de marca (`/categoria/<marca>`). "
+                    "Elegí una marca para ver qué productos miran dentro."
+                )
+                marcas_lista = ga4.get("marcas") or []
+                if not marcas_lista:
+                    st.info("Sin vistas a páginas de marca en el período.")
+                    _marca_seleccionada = None
+                else:
+                    df_marcas = pd.DataFrame([
+                        {
+                            "Marca": m["marca"].capitalize(),
+                            "Vistas": int(m["vistas"]),
+                            "Engagement prom.": _fmt_seg(m["tiempo_prom_seg"]),
+                            "Engagement total": _fmt_seg(m["engagement_seg"]),
+                        }
+                        for m in marcas_lista
+                    ])
+                    st.dataframe(df_marcas, hide_index=True, use_container_width=True)
+
+                    _opciones_marca = ["(Ver todas)"] + [m["marca"].capitalize() for m in marcas_lista]
+                    _marca_sel = st.selectbox(
+                        "Drill-down: productos de la marca",
+                        _opciones_marca,
+                        index=0,
+                        key="ga4_marca_drill",
+                    )
+                    _marca_seleccionada = (
+                        None if _marca_sel == "(Ver todas)" else _marca_sel.lower()
+                    )
+
+                    if _marca_seleccionada:
+                        # Filtrar productos cuyo slug empieza con la marca
+                        productos_marca = [
+                            p for p in (ga4.get("productos_full") or [])
+                            if p["path"].replace("/productos/", "").lower().startswith(_marca_seleccionada)
+                        ]
+                        productos_marca.sort(key=lambda x: x["vistas"], reverse=True)
+                        if not productos_marca:
+                            st.info(
+                                f"No detectamos productos cuyo slug empiece con `{_marca_seleccionada}`. "
+                                "Si los productos de esta marca no llevan el nombre de marca en el slug, "
+                                "usá el buscador de la tabla de abajo."
+                            )
+                        else:
+                            total_vistas_marca = sum(p["vistas"] for p in productos_marca)
+                            engagement_total_marca = sum(p["engagement_seg"] for p in productos_marca)
+                            tiempo_prom_marca = (
+                                engagement_total_marca / total_vistas_marca
+                                if total_vistas_marca > 0 else 0.0
+                            )
+                            st.caption(
+                                f"**{len(productos_marca)} productos** de **{_marca_sel}** · "
+                                f"Vistas totales: **{int(total_vistas_marca):,}** · "
+                                f"Engagement prom.: **{_fmt_seg(tiempo_prom_marca)}**".replace(",", ".")
+                            )
+                            df_prod_marca = pd.DataFrame([
+                                {
+                                    "Producto": p["path"].replace("/productos/", "").rstrip("/"),
+                                    "Título": p.get("titulo", ""),
+                                    "Vistas": int(p["vistas"]),
+                                    "Engagement prom.": _fmt_seg(p["tiempo_prom_seg"]),
+                                }
+                                for p in productos_marca
+                            ])
+                            st.dataframe(df_prod_marca, hide_index=True, use_container_width=True, height=350)
 
                 st.divider()
 
