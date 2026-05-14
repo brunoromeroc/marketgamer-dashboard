@@ -1160,62 +1160,51 @@ def get_ga4_metrics(periodo="28d"):
         for d in tendencia_sesiones:
             d["checkouts"] = tendencia_checkouts.get(d["fecha"], 0.0)
 
-        # Búsquedas internas: páginas /buscar/* o /search/* con query string
+        # Búsquedas internas: cualquier URL con ?q= ?_q= ?query= ?s= (TN puede usar varios formatos)
+        busquedas_internas = []
+        urls_con_query = []  # fallback de debug: top URLs con query string
         try:
-            busqueda_filter = FilterExpression(
-                or_group=FilterExpression.FilterExpressionList(expressions=[
-                    FilterExpression(filter=Filter(
-                        field_name="pagePath",
-                        string_filter=Filter.StringFilter(
-                            value="/buscar",
-                            match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
-                        ),
-                    )),
-                    FilterExpression(filter=Filter(
-                        field_name="pagePath",
-                        string_filter=Filter.StringFilter(
-                            value="/search",
-                            match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
-                        ),
-                    )),
-                ])
-            )
-            busqueda_req = RunReportRequest(
+            import re as _re
+            import urllib.parse as _ulib
+
+            # Pedimos top URLs con query string (sin filtro restrictivo) y filtramos local
+            urlq_req = RunReportRequest(
                 property=prop,
                 dimensions=[Dimension(name="pagePathPlusQueryString")],
                 metrics=[Metric(name="screenPageViews")],
                 date_ranges=[rango_actual],
-                dimension_filter=busqueda_filter,
                 order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
-                limit=50,
+                limit=500,
             )
-            busqueda_resp = client.run_report(busqueda_req)
-            busquedas_internas = []
-            import re as _re
-            import urllib.parse as _ulib
-            for row in busqueda_resp.rows:
+            urlq_resp = client.run_report(urlq_req)
+            for row in urlq_resp.rows:
                 path_q = row.dimension_values[0].value or ""
-                # Extraer el query param ?q= o ?query= o ?s=
-                m = _re.search(r"[?&](?:q|query|s)=([^&]+)", path_q)
+                if "?" not in path_q:
+                    continue
+                vistas = _val(row, 0)
+                urls_con_query.append({"url": path_q, "vistas": vistas})
+                # Detectar parámetros de búsqueda comunes (TN: _q es el más típico)
+                m = _re.search(r"[?&](?:_q|q|query|s|busqueda|buscar)=([^&]+)", path_q)
                 if m:
                     try:
                         termino = _ulib.unquote_plus(m.group(1)).strip()
                     except Exception:
                         termino = m.group(1)
-                    if termino:
-                        busquedas_internas.append({
-                            "termino": termino.lower(),
-                            "vistas": _val(row, 0),
-                            "url": path_q,
-                        })
-            # Consolidar por término (varios URLs pueden tener el mismo q)
+                    if termino and len(termino) >= 2:
+                        busquedas_internas.append({"termino": termino.lower(), "vistas": vistas})
+
+            # Consolidar por término
             bmap = {}
             for b in busquedas_internas:
                 e = bmap.setdefault(b["termino"], {"termino": b["termino"], "vistas": 0.0})
                 e["vistas"] += b["vistas"]
-            busquedas_internas = sorted(bmap.values(), key=lambda x: x["vistas"], reverse=True)[:20]
+            busquedas_internas = sorted(bmap.values(), key=lambda x: x["vistas"], reverse=True)[:30]
+
+            # Quedarnos solo con top 30 URLs con query para el debug
+            urls_con_query = sorted(urls_con_query, key=lambda x: x["vistas"], reverse=True)[:30]
         except Exception:
             busquedas_internas = []
+            urls_con_query = []
 
         # Top eventos GA4 (para investigar si TN dispara add_to_cart, view_item, etc.)
         eventos_req = RunReportRequest(
@@ -1256,6 +1245,7 @@ def get_ga4_metrics(periodo="28d"):
             "checkouts_por_canal": checkouts_por_canal,
             "tendencia_diaria": tendencia_sesiones,
             "busquedas_internas": busquedas_internas,
+            "urls_con_query": urls_con_query,
             "eventos": eventos,
         }
 
@@ -5951,6 +5941,73 @@ if st.session_state.df_tn is not None:
                     d = act - prev
                     return f"{'+' if d >= 0 else ''}{d:.1f} pp"
 
+                def _calidad_y_score(items, vistas_key="vistas", tiempo_key="tiempo_prom_seg"):
+                    """Calcula score (Bayesian del tiempo) y cuadrante de calidad.
+
+                    Idea: el promedio bayesiano arrastra a los items con pocas vistas
+                    hacia el promedio global, evitando falsos positivos (1 vista de 5min)
+                    y falsos negativos (volumen alto con engagement bajo).
+                    Modifica items in-place agregando 'score_seg' y 'calidad'.
+                    """
+                    if not items:
+                        return
+                    import statistics as _stats
+                    vistas_validas = [it[vistas_key] for it in items if it[vistas_key] > 0]
+                    if not vistas_validas:
+                        for it in items:
+                            it["score_seg"] = 0.0
+                            it["calidad"] = "⏸ Sin data"
+                        return
+                    # Tiempo promedio global ponderado por vistas
+                    total_eng = sum(it[tiempo_key] * it[vistas_key] for it in items)
+                    total_v = sum(vistas_validas)
+                    tiempo_global = (total_eng / total_v) if total_v > 0 else 0.0
+                    mediana_vistas = _stats.median(vistas_validas)
+                    # Peso del prior bayesiano = mediana de vistas (productos por debajo
+                    # de la mediana son arrastrados al promedio global; los que están
+                    # encima conservan su tiempo real)
+                    C = max(mediana_vistas, 1)
+                    # Calcular score para todos
+                    scores = []
+                    for it in items:
+                        n = it[vistas_key]
+                        t = it[tiempo_key]
+                        bayes = (n * t + C * tiempo_global) / (n + C) if (n + C) > 0 else 0.0
+                        it["score_seg"] = bayes
+                        scores.append(bayes)
+                    mediana_score = _stats.median(scores) if scores else 0.0
+                    # Threshold mínimo para no clasificar ruido
+                    min_vistas = max(3, mediana_vistas / 4)
+                    for it in items:
+                        n = it[vistas_key]
+                        b = it["score_seg"]
+                        if n < min_vistas:
+                            it["calidad"] = "⏸ Sin data"
+                        elif n >= mediana_vistas and b >= mediana_score:
+                            it["calidad"] = "🟢 Ganador"
+                        elif n < mediana_vistas and b >= mediana_score:
+                            it["calidad"] = "🔵 Subdetectado"
+                        elif n >= mediana_vistas and b < mediana_score:
+                            it["calidad"] = "🟡 Desperdiciado"
+                        else:
+                            it["calidad"] = "⚫ Bajo perfil"
+
+                # ── Calcular score y calidad para productos y páginas ──────────
+                # productos_full es el set grande y representativo para clasificar productos
+                _calidad_y_score(ga4.get("productos_full") or [])
+                # Map de lookup por path: para enriquecer top_productos (5)
+                _quality_by_path = {
+                    p["path"]: (p.get("calidad", "⏸ Sin data"), p.get("score_seg", 0.0))
+                    for p in (ga4.get("productos_full") or [])
+                }
+                # Aplicar mismo lookup a top_productos (que vienen con key 'pagina')
+                for p in (ga4.get("top_productos") or []):
+                    cal, sc = _quality_by_path.get(p["pagina"], ("⏸ Sin data", 0.0))
+                    p["calidad"] = cal
+                    p["score_seg"] = sc
+                # top_paginas (30 items mixtos): clasificar contra sí mismo
+                _calidad_y_score(ga4.get("top_paginas") or [], tiempo_key="tiempo_prom_seg")
+
                 # ── Fila 1: KPIs de tráfico ─────────────────────────────────────
                 c1, c2, c3, c4 = st.columns(4)
                 with c1:
@@ -6254,16 +6311,22 @@ if st.session_state.df_tn is not None:
                 col_prod, col_pag = st.columns(2)
                 with col_prod:
                     st.subheader("Top productos vistos")
-                    st.caption("Páginas /productos/* más miradas.")
+                    st.caption(
+                        "Páginas /productos/* más miradas, con clasificación de calidad. "
+                        "La calidad se calcula contra TODO el catálogo de productos vistos, "
+                        "no solo el top 5."
+                    )
                     top_prod = ga4["top_productos"]
                     if not top_prod:
                         st.info("Sin vistas de productos en el período.")
                     else:
                         df_prod = pd.DataFrame([
                             {
+                                "Calidad": p.get("calidad", "—"),
                                 "Producto": p["pagina"].replace("/productos/", "").rstrip("/"),
                                 "Vistas": int(p["vistas"]),
                                 "Engagement prom.": _fmt_seg(p["tiempo_prom_seg"]),
+                                "Score": _fmt_seg(p.get("score_seg", 0.0)),
                             }
                             for p in top_prod
                         ])
@@ -6278,13 +6341,32 @@ if st.session_state.df_tn is not None:
                     else:
                         df_top = pd.DataFrame([
                             {
+                                "Calidad": p.get("calidad", "—"),
                                 "Página": p["pagina"],
                                 "Vistas": int(p["vistas"]),
                                 "Engagement prom.": _fmt_seg(p["tiempo_prom_seg"]),
+                                "Score": _fmt_seg(p.get("score_seg", 0.0)),
                             }
                             for p in top
                         ])
                         st.dataframe(df_top, hide_index=True, use_container_width=True, height=300)
+
+                # Leyenda de calidad (común a las tablas de arriba y a la tabla larga)
+                with st.expander("ℹ️ Qué significa cada nivel de Calidad / Score"):
+                    st.markdown("""
+**Score** = promedio bayesiano del engagement (tiempo prom. corregido por sample size).
+Los items con pocas vistas son arrastrados al promedio global del sitio para evitar
+ruido. Resultado: ítems con 1 vista y 5min NO se rankean como ganadores, y los de
+mucho tráfico con engagement bajo NO zafan por volumen.
+
+**Calidad — cuadrantes** (cruz de vistas vs score, mediana del set como umbral):
+
+- 🟢 **Ganador** — mucho tráfico + buen engagement. Hacé MÁS de esto: más stock, pauta enfocada, destacar en home.
+- 🔵 **Subdetectado** — poco tráfico + buen engagement. Producto que cuando lo encuentran les gusta. Falta visibilidad: subilo en home, pautalo, mejorá su SEO.
+- 🟡 **Desperdiciado** — mucho tráfico + bajo engagement. La gente llega pero no engancha. Revisá foto, descripción, precio, comparativas. Si pautás este producto, estás regando dinero.
+- ⚫ **Bajo perfil** — poco de ambas. No hay señal clara, no prioritario.
+- ⏸ **Sin data** — vistas debajo del umbral mínimo. La muestra no alcanza para juzgar.
+                    """.strip())
 
                 st.divider()
 
@@ -6365,38 +6447,32 @@ if st.session_state.df_tn is not None:
 
                 st.divider()
 
-                # ── Tabla larga de productos buscable + flag de "no engancha" ──
+                # ── Tabla larga de productos buscable, con calidad y filtros ───
                 st.subheader("Explorar productos vistos")
                 st.caption(
-                    "Tabla completa de productos con tráfico. "
-                    "🚨 marca productos con muchas vistas pero engagement bajo "
-                    "(tráfico desperdiciado: la gente entra y se va sin mirar)."
+                    "Tabla completa de productos con tráfico. La columna Calidad clasifica "
+                    "cada producto en uno de 5 cuadrantes accionables (ver leyenda más arriba)."
                 )
                 productos_full = ga4.get("productos_full") or []
                 if not productos_full:
                     st.info("Sin productos vistos en el período.")
                 else:
-                    # Umbrales para flag "no engancha":
-                    # vistas >= mediana de vistas Y tiempo_prom < cuartil inferior de tiempos
-                    import statistics as _stats
-                    _vistas_list = [p["vistas"] for p in productos_full]
-                    _tiempos_list = [p["tiempo_prom_seg"] for p in productos_full if p["vistas"] >= 3]
-                    _mediana_vistas = _stats.median(_vistas_list) if _vistas_list else 0
-                    _q1_tiempo = (
-                        _stats.quantiles(_tiempos_list, n=4)[0]
-                        if len(_tiempos_list) >= 4 else 0
-                    )
-
-                    def _flag(p):
-                        if p["vistas"] >= _mediana_vistas and p["vistas"] >= 5 and p["tiempo_prom_seg"] < _q1_tiempo:
-                            return "🚨"
-                        return ""
-
-                    _filtro = st.text_input(
-                        "Buscar producto (slug o título)",
-                        placeholder="ej: anbernic, rg40, switch...",
-                        key="ga4_prod_filtro",
-                    ).strip().lower()
+                    # Calidad ya fue computada arriba en _quality_by_path
+                    col_f1, col_f2 = st.columns([2, 1])
+                    with col_f1:
+                        _filtro = st.text_input(
+                            "Buscar producto (slug o título)",
+                            placeholder="ej: anbernic, rg40, switch...",
+                            key="ga4_prod_filtro",
+                        ).strip().lower()
+                    with col_f2:
+                        _filtro_calidad = st.multiselect(
+                            "Filtrar por calidad",
+                            ["🟢 Ganador", "🔵 Subdetectado", "🟡 Desperdiciado", "⚫ Bajo perfil", "⏸ Sin data"],
+                            default=[],
+                            key="ga4_prod_calidad_filtro",
+                            help="Vacío = todos. Tip: filtrá '🟡 Desperdiciado' para ver dónde corregir fichas, '🔵 Subdetectado' para detectar joyas ocultas.",
+                        )
 
                     rows = []
                     for p in productos_full:
@@ -6404,25 +6480,33 @@ if st.session_state.df_tn is not None:
                         titulo = p.get("titulo", "")
                         if _filtro and _filtro not in slug.lower() and _filtro not in titulo.lower():
                             continue
+                        if _filtro_calidad and p.get("calidad") not in _filtro_calidad:
+                            continue
                         rows.append({
-                            "": _flag(p),
+                            "Calidad": p.get("calidad", "—"),
                             "Producto": slug,
                             "Título": titulo,
                             "Vistas": int(p["vistas"]),
                             "Engagement prom.": _fmt_seg(p["tiempo_prom_seg"]),
+                            "Score": _fmt_seg(p.get("score_seg", 0.0)),
                             "Engagement total": _fmt_seg(p["engagement_seg"]),
                         })
                     if not rows:
-                        st.info("Ningún producto matchea el filtro.")
+                        st.info("Ningún producto matchea los filtros.")
                     else:
                         df_pf = pd.DataFrame(rows)
-                        st.caption(
-                            f"{len(rows)} producto{'s' if len(rows) != 1 else ''} • "
-                            f"Mediana vistas: {int(_mediana_vistas)} • "
-                            f"Q1 engagement: {_fmt_seg(_q1_tiempo)} "
-                            f"(productos por debajo de este tiempo con tráfico ≥ mediana = 🚨)"
+                        # Resumen del set actual (con filtros aplicados)
+                        from collections import Counter as _Counter
+                        _conteo = _Counter(r["Calidad"] for r in rows)
+                        _resumen = " · ".join(
+                            f"{c} {_conteo.get(c, 0)}" for c in
+                            ["🟢 Ganador", "🔵 Subdetectado", "🟡 Desperdiciado", "⚫ Bajo perfil", "⏸ Sin data"]
+                            if _conteo.get(c, 0) > 0
                         )
-                        st.dataframe(df_pf, hide_index=True, use_container_width=True, height=400)
+                        st.caption(
+                            f"**{len(rows)} producto{'s' if len(rows) != 1 else ''}** · {_resumen}"
+                        )
+                        st.dataframe(df_pf, hide_index=True, use_container_width=True, height=420)
 
                 st.divider()
 
@@ -6434,13 +6518,8 @@ if st.session_state.df_tn is not None:
                     "te falta SEO interno o directamente el producto."
                 )
                 busquedas = ga4.get("busquedas_internas") or []
-                if not busquedas:
-                    st.info(
-                        "No detectamos búsquedas internas en el período (o el buscador de TN "
-                        "no las trackea con `?q=`). Si Tiendanube genera URLs como `/buscar?q=...` "
-                        "deberían aparecer acá."
-                    )
-                else:
+                urls_query = ga4.get("urls_con_query") or []
+                if busquedas:
                     total_busq = sum(b["vistas"] for b in busquedas) or 1
                     df_busq = pd.DataFrame([
                         {
@@ -6451,6 +6530,29 @@ if st.session_state.df_tn is not None:
                         for b in busquedas
                     ])
                     st.dataframe(df_busq, hide_index=True, use_container_width=True, height=320)
+                else:
+                    st.info(
+                        "No detectamos búsquedas internas con los formatos comunes "
+                        "(`?q=`, `?_q=`, `?query=`, `?s=`). Abajo te muestro los top URLs "
+                        "con query string que sí están llegando a GA4 — si ves algún patrón "
+                        "que parezca búsqueda, decime el formato y lo agrego."
+                    )
+
+                # Fallback de debug: top URLs con query string (siempre visible si hay data)
+                if urls_query:
+                    with st.expander(
+                        "🔬 Debug: top URLs con query string en el sitio "
+                        f"({len(urls_query)} URLs detectadas)"
+                    ):
+                        st.caption(
+                            "Te muestro las primeras URLs con `?` para identificar cómo trackea "
+                            "TN tu buscador, paginación, filtros, etc."
+                        )
+                        df_urlq = pd.DataFrame([
+                            {"URL": u["url"], "Vistas": int(u["vistas"])}
+                            for u in urls_query
+                        ])
+                        st.dataframe(df_urlq, hide_index=True, use_container_width=True, height=300)
 
                 st.divider()
 
