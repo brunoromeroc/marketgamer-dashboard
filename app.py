@@ -743,6 +743,153 @@ def gs_write(sheet_name, data_dict):
     except Exception:
         return False
 
+# ── Google Analytics 4 ─────────────────────────────────────────────────────────
+@st.cache_resource
+def get_ga4_client():
+    try:
+        from google.analytics.data_v1beta import BetaAnalyticsDataClient
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_info(
+            dict(GCP_CREDS),
+            scopes=["https://www.googleapis.com/auth/analytics.readonly"],
+        )
+        return BetaAnalyticsDataClient(credentials=creds)
+    except Exception as e:
+        st.warning(f"⚠️ Error conectando a GA4: {e}")
+        return None
+
+@st.cache_data(ttl=1800)
+def get_ga4_metrics():
+    """KPIs, sesiones por canal y top páginas (últimos 7 días vs 7 previos)."""
+    property_id = st.secrets.get("GA4_PROPERTY_ID")
+    if not property_id:
+        return None
+    client = get_ga4_client()
+    if not client:
+        return None
+
+    try:
+        from google.analytics.data_v1beta.types import (
+            RunReportRequest, Dimension, Metric, DateRange, OrderBy,
+            FilterExpression, Filter,
+        )
+    except Exception as e:
+        st.warning(f"⚠️ Falta dependencia google-analytics-data: {e}")
+        return None
+
+    prop = f"properties/{property_id}"
+    rango_actual = DateRange(start_date="7daysAgo", end_date="yesterday")
+    rango_previo = DateRange(start_date="14daysAgo", end_date="8daysAgo")
+
+    def _val(row, idx):
+        try:
+            return float(row.metric_values[idx].value or 0)
+        except Exception:
+            return 0.0
+
+    try:
+        # KPIs (sessions, activeUsers, engagementRate) por rango
+        kpi_req = RunReportRequest(
+            property=prop,
+            metrics=[
+                Metric(name="sessions"),
+                Metric(name="activeUsers"),
+                Metric(name="engagementRate"),
+            ],
+            date_ranges=[rango_actual, rango_previo],
+        )
+        kpi_resp = client.run_report(kpi_req)
+        # Con dos date_ranges, cada fila trae dimensión "dateRange" → "date_range_0/1"
+        sesiones_act = usuarios_act = interaccion_act = 0.0
+        sesiones_prev = usuarios_prev = interaccion_prev = 0.0
+        for row in kpi_resp.rows:
+            etiqueta = row.dimension_values[0].value if row.dimension_values else ""
+            if etiqueta == "date_range_0":
+                sesiones_act = _val(row, 0)
+                usuarios_act = _val(row, 1)
+                interaccion_act = _val(row, 2)
+            else:
+                sesiones_prev = _val(row, 0)
+                usuarios_prev = _val(row, 1)
+                interaccion_prev = _val(row, 2)
+
+        # Checkouts iniciados: pageviews donde pagePath contiene /checkout/v3/start
+        checkout_filter = FilterExpression(
+            filter=Filter(
+                field_name="pagePath",
+                string_filter=Filter.StringFilter(
+                    value="/checkout/v3/start",
+                    match_type=Filter.StringFilter.MatchType.CONTAINS,
+                ),
+            )
+        )
+        checkout_req = RunReportRequest(
+            property=prop,
+            metrics=[Metric(name="screenPageViews")],
+            date_ranges=[rango_actual, rango_previo],
+            dimension_filter=checkout_filter,
+        )
+        checkout_resp = client.run_report(checkout_req)
+        checkouts_act = checkouts_prev = 0.0
+        for row in checkout_resp.rows:
+            etiqueta = row.dimension_values[0].value if row.dimension_values else ""
+            if etiqueta == "date_range_0":
+                checkouts_act = _val(row, 0)
+            else:
+                checkouts_prev = _val(row, 0)
+
+        # Sesiones por canal (con variación entre rangos)
+        canal_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="sessionDefaultChannelGroup")],
+            metrics=[Metric(name="sessions")],
+            date_ranges=[rango_actual, rango_previo],
+            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True)],
+        )
+        canal_resp = client.run_report(canal_req)
+        canales_map = {}
+        for row in canal_resp.rows:
+            # dimensions: [canal, dateRange]
+            canal = row.dimension_values[0].value if len(row.dimension_values) > 0 else "(sin dato)"
+            etiqueta = row.dimension_values[1].value if len(row.dimension_values) > 1 else ""
+            sesiones = _val(row, 0)
+            entry = canales_map.setdefault(canal, {"canal": canal, "sesiones_act": 0.0, "sesiones_prev": 0.0})
+            if etiqueta == "date_range_0":
+                entry["sesiones_act"] = sesiones
+            else:
+                entry["sesiones_prev"] = sesiones
+        canales = sorted(canales_map.values(), key=lambda x: x["sesiones_act"], reverse=True)
+
+        # Top 5 páginas (solo rango actual)
+        paginas_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="pagePath")],
+            metrics=[Metric(name="screenPageViews")],
+            date_ranges=[rango_actual],
+            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
+            limit=5,
+        )
+        paginas_resp = client.run_report(paginas_req)
+        top_paginas = [
+            {"pagina": row.dimension_values[0].value, "vistas": _val(row, 0)}
+            for row in paginas_resp.rows
+        ]
+
+        return {
+            "kpis": {
+                "sesiones": (sesiones_act, sesiones_prev),
+                "usuarios": (usuarios_act, usuarios_prev),
+                "interaccion": (interaccion_act, interaccion_prev),
+                "checkouts": (checkouts_act, checkouts_prev),
+            },
+            "canales": canales,
+            "top_paginas": top_paginas,
+        }
+
+    except Exception as e:
+        st.warning(f"⚠️ Error consultando GA4: {e}")
+        return None
+
 # ── API Tienda Nube ────────────────────────────────────────────────────────────
 def get_tn_headers():
     return {
@@ -1754,6 +1901,7 @@ SECCIONES = [
     "💚 Salud Financiera",
     "📦 Stock",
     "🔥 Velocidad de ventas",
+    "🌐 Web / Analytics",
     "🏗️ Gastos fijos",
     "💻 Costos de consolas",
     "📐 Margen teórico",
@@ -5347,6 +5495,111 @@ if st.session_state.df_tn is not None:
             )
             fig_heat.update_layout(height=300, margin=dict(t=40, b=0), coloraxis_showscale=False)
             st.plotly_chart(fig_heat, use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB: WEB / ANALYTICS (Google Analytics 4)
+    # ══════════════════════════════════════════════════════════════════════════
+    elif seccion == "🌐 Web / Analytics":
+        st.subheader("🌐 Web / Analytics")
+        st.caption(
+            "Comportamiento del tráfico de la web — últimos 7 días vs 7 días previos. "
+            "Fuente: Google Analytics 4."
+        )
+
+        if not st.secrets.get("GA4_PROPERTY_ID"):
+            st.warning(
+                "⚠️ Falta configurar `GA4_PROPERTY_ID` en `secrets.toml`. "
+                "Cargá el ID de propiedad GA4 (numérico, no el measurement ID `G-XXXX`) "
+                "para activar esta solapa."
+            )
+        else:
+            with st.spinner("Consultando Google Analytics..."):
+                ga4 = get_ga4_metrics()
+
+            if not ga4:
+                st.warning(
+                    "⚠️ No se pudieron obtener datos de GA4. Revisá que el service account "
+                    "tenga permiso de Lector en la propiedad y que la Data API esté habilitada."
+                )
+            else:
+                def _delta_pct(act, prev):
+                    if prev <= 0:
+                        return None
+                    return (act - prev) / prev * 100
+
+                def _delta_str(d):
+                    if d is None:
+                        return "—"
+                    signo = "+" if d >= 0 else ""
+                    return f"{signo}{d:.1f}%"
+
+                k = ga4["kpis"]
+                sesiones_act, sesiones_prev = k["sesiones"]
+                usuarios_act, usuarios_prev = k["usuarios"]
+                # engagementRate viene como ratio (0-1) y es promedio: usamos rango actual
+                interaccion_act, interaccion_prev = k["interaccion"]
+                checkouts_act, checkouts_prev = k["checkouts"]
+
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric(
+                        "Sesiones",
+                        f"{int(sesiones_act):,}".replace(",", "."),
+                        _delta_str(_delta_pct(sesiones_act, sesiones_prev)),
+                    )
+                with c2:
+                    st.metric(
+                        "Usuarios activos",
+                        f"{int(usuarios_act):,}".replace(",", "."),
+                        _delta_str(_delta_pct(usuarios_act, usuarios_prev)),
+                    )
+                with c3:
+                    delta_int = (
+                        (interaccion_act - interaccion_prev) * 100
+                        if interaccion_prev > 0 else None
+                    )
+                    st.metric(
+                        "Tasa de interacción",
+                        f"{interaccion_act * 100:.1f}%",
+                        f"{'+' if delta_int and delta_int >= 0 else ''}{delta_int:.1f} pp"
+                        if delta_int is not None else "—",
+                    )
+                with c4:
+                    st.metric(
+                        "Checkouts iniciados",
+                        f"{int(checkouts_act):,}".replace(",", "."),
+                        _delta_str(_delta_pct(checkouts_act, checkouts_prev)),
+                    )
+
+                st.divider()
+                st.subheader("Sesiones por canal")
+                st.caption("De dónde viene el tráfico.")
+                canales = ga4["canales"]
+                if not canales:
+                    st.info("Sin datos de canales en el período.")
+                else:
+                    df_canales = pd.DataFrame([
+                        {
+                            "Canal": c["canal"] or "(sin dato)",
+                            "Sesiones (7d)": int(c["sesiones_act"]),
+                            "Variación": _delta_str(_delta_pct(c["sesiones_act"], c["sesiones_prev"])),
+                        }
+                        for c in canales
+                    ])
+                    st.dataframe(df_canales, hide_index=True, use_container_width=True)
+
+                st.divider()
+                st.subheader("Páginas más vistas")
+                st.caption("Qué están mirando ahora.")
+                top = ga4["top_paginas"]
+                if not top:
+                    st.info("Sin datos de páginas en el período.")
+                else:
+                    df_top = pd.DataFrame([
+                        {"Página": p["pagina"], "Vistas (7d)": int(p["vistas"])}
+                        for p in top
+                    ])
+                    st.dataframe(df_top, hide_index=True, use_container_width=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 12: ANALISTA IA
