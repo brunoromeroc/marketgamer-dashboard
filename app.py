@@ -758,9 +758,50 @@ def get_ga4_client():
         st.warning(f"⚠️ Error conectando a GA4: {e}")
         return None
 
+def _ga4_date_ranges(periodo, DateRange):
+    """Devuelve (rango_actual, rango_previo, label_actual, label_previo) según período."""
+    hoy = date.today()
+    ayer = hoy - timedelta(days=1)
+    if periodo == "7d":
+        return (
+            DateRange(start_date="7daysAgo", end_date="yesterday"),
+            DateRange(start_date="14daysAgo", end_date="8daysAgo"),
+            "7d", "7d previos",
+        )
+    if periodo == "28d":
+        return (
+            DateRange(start_date="28daysAgo", end_date="yesterday"),
+            DateRange(start_date="56daysAgo", end_date="29daysAgo"),
+            "28d", "28d previos",
+        )
+    if periodo == "MoM":
+        inicio_mes = hoy.replace(day=1)
+        dias_transcurridos = (ayer - inicio_mes).days  # 0..30
+        inicio_mes_ant = (inicio_mes - timedelta(days=1)).replace(day=1)
+        fin_mes_ant_equiv = inicio_mes_ant + timedelta(days=dias_transcurridos)
+        return (
+            DateRange(start_date=inicio_mes.isoformat(), end_date=ayer.isoformat()),
+            DateRange(start_date=inicio_mes_ant.isoformat(), end_date=fin_mes_ant_equiv.isoformat()),
+            f"Mes actual ({inicio_mes.strftime('%d/%m')}–{ayer.strftime('%d/%m')})",
+            f"Mes anterior (mismos días)",
+        )
+    if periodo == "YoY":
+        inicio = hoy - timedelta(days=28)
+        inicio_yoy = inicio.replace(year=inicio.year - 1)
+        ayer_yoy = ayer.replace(year=ayer.year - 1)
+        return (
+            DateRange(start_date=inicio.isoformat(), end_date=ayer.isoformat()),
+            DateRange(start_date=inicio_yoy.isoformat(), end_date=ayer_yoy.isoformat()),
+            "Últimos 28d", f"Mismos 28d {inicio_yoy.year}",
+        )
+    # fallback
+    return _ga4_date_ranges("28d", DateRange)
+
+
 @st.cache_data(ttl=1800)
-def get_ga4_metrics():
-    """KPIs, sesiones por canal y top páginas (últimos 7 días vs 7 previos)."""
+def get_ga4_metrics(periodo="28d"):
+    """KPIs, canales, páginas, productos, categorías, devices, OS, resolución, landing.
+    Comparativo: 7d / 28d / MoM / YoY."""
     property_id = st.secrets.get("GA4_PROPERTY_ID")
     if not property_id:
         return None
@@ -778,8 +819,7 @@ def get_ga4_metrics():
         return None
 
     prop = f"properties/{property_id}"
-    rango_actual = DateRange(start_date="7daysAgo", end_date="yesterday")
-    rango_previo = DateRange(start_date="14daysAgo", end_date="8daysAgo")
+    rango_actual, rango_previo, label_act, label_prev = _ga4_date_ranges(periodo, DateRange)
 
     def _val(row, idx):
         try:
@@ -941,6 +981,35 @@ def get_ga4_metrics():
             for row in device_resp.rows
         ]
 
+        # Sistema operativo (Android/iOS/Windows/Mac)
+        os_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="operatingSystem")],
+            metrics=[Metric(name="sessions")],
+            date_ranges=[rango_actual],
+            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True)],
+        )
+        os_resp = client.run_report(os_req)
+        sistemas_op = [
+            {"os": row.dimension_values[0].value or "(sin dato)", "sesiones": _val(row, 0)}
+            for row in os_resp.rows
+        ]
+
+        # Resolución de pantalla (para decisiones de breakpoints)
+        res_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="screenResolution")],
+            metrics=[Metric(name="sessions")],
+            date_ranges=[rango_actual],
+            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True)],
+            limit=10,
+        )
+        res_resp = client.run_report(res_req)
+        resoluciones = [
+            {"resolucion": row.dimension_values[0].value or "(sin dato)", "sesiones": _val(row, 0)}
+            for row in res_resp.rows
+        ]
+
         # Landing pages: por dónde entran
         landing_req = RunReportRequest(
             property=prop,
@@ -956,7 +1025,61 @@ def get_ga4_metrics():
             for row in landing_resp.rows
         ]
 
+        # Productos vistos (todos, para tabla larga buscable)
+        productos_filter = FilterExpression(
+            filter=Filter(
+                field_name="pagePath",
+                string_filter=Filter.StringFilter(
+                    value="/productos/",
+                    match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
+                ),
+            )
+        )
+        productos_full_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="pagePath"), Dimension(name="pageTitle")],
+            metrics=[
+                Metric(name="screenPageViews"),
+                Metric(name="userEngagementDuration"),
+            ],
+            date_ranges=[rango_actual],
+            dimension_filter=productos_filter,
+            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
+            limit=500,
+        )
+        productos_full_resp = client.run_report(productos_full_req)
+        productos_full = []
+        for row in productos_full_resp.rows:
+            path = row.dimension_values[0].value
+            titulo = row.dimension_values[1].value if len(row.dimension_values) > 1 else ""
+            vistas = _val(row, 0)
+            engagement = _val(row, 1)
+            productos_full.append({
+                "path": path,
+                "titulo": titulo,
+                "vistas": vistas,
+                "engagement_seg": engagement,
+                "tiempo_prom_seg": (engagement / vistas) if vistas > 0 else 0.0,
+            })
+
+        # Top eventos GA4 (para investigar si TN dispara add_to_cart, view_item, etc.)
+        eventos_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="eventName")],
+            metrics=[Metric(name="eventCount")],
+            date_ranges=[rango_actual],
+            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="eventCount"), desc=True)],
+            limit=20,
+        )
+        eventos_resp = client.run_report(eventos_req)
+        eventos = [
+            {"evento": row.dimension_values[0].value, "count": _val(row, 0)}
+            for row in eventos_resp.rows
+        ]
+
         return {
+            "label_actual": label_act,
+            "label_previo": label_prev,
             "kpis": {
                 "sesiones": (sesiones_act, sesiones_prev),
                 "usuarios": (usuarios_act, usuarios_prev),
@@ -970,7 +1093,11 @@ def get_ga4_metrics():
             "top_productos": top_productos,
             "top_categorias": top_categorias,
             "dispositivos": dispositivos,
+            "sistemas_op": sistemas_op,
+            "resoluciones": resoluciones,
             "landing_pages": landing_pages,
+            "productos_full": productos_full,
+            "eventos": eventos,
         }
 
     except Exception as e:
@@ -5588,10 +5715,7 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     elif seccion == "🌐 Web / Analytics":
         st.subheader("🌐 Web / Analytics")
-        st.caption(
-            "Comportamiento del tráfico de la web — últimos 7 días vs 7 días previos. "
-            "Fuente: Google Analytics 4."
-        )
+        st.caption("Comportamiento del tráfico de la web. Fuente: Google Analytics 4.")
 
         if not st.secrets.get("GA4_PROPERTY_ID"):
             st.warning(
@@ -5600,8 +5724,29 @@ if st.session_state.df_tn is not None:
                 "para activar esta solapa."
             )
         else:
+            # ── Selector de período comparativo ──
+            ga4_periodos = {
+                "28d vs 28d previos": "28d",
+                "7d vs 7d previos": "7d",
+                "Mes actual vs mes anterior (MoM)": "MoM",
+                "Últimos 28d vs mismo período año anterior (YoY)": "YoY",
+            }
+            _periodo_label = st.radio(
+                "Período comparativo",
+                list(ga4_periodos.keys()),
+                index=0,
+                horizontal=True,
+                help=(
+                    "7d: detección rápida pero ruidoso. "
+                    "28d: la 'verdad' de la tendencia. "
+                    "MoM: alineado con cómo opera el resto del dashboard. "
+                    "YoY: estacionalidad (HotSale, Navidad, Día del Padre)."
+                ),
+            )
+            ga4_periodo_key = ga4_periodos[_periodo_label]
+
             with st.spinner("Consultando Google Analytics..."):
-                ga4 = get_ga4_metrics()
+                ga4 = get_ga4_metrics(ga4_periodo_key)
 
             if not ga4:
                 st.warning(
@@ -5744,11 +5889,52 @@ if st.session_state.df_tn is not None:
                         ])
                         st.dataframe(df_dev, hide_index=True, use_container_width=True)
 
+                # ── Sistema operativo + Resolución (para iterar UI) ─────────────
+                col_os, col_res = st.columns(2)
+                with col_os:
+                    st.subheader("Sistema operativo")
+                    st.caption("Android / iOS / Windows / Mac — útil para compatibilidad.")
+                    sistemas = ga4["sistemas_op"]
+                    if not sistemas:
+                        st.info("Sin datos.")
+                    else:
+                        total_os = sum(s["sesiones"] for s in sistemas) or 1
+                        df_os = pd.DataFrame([
+                            {
+                                "OS": s["os"],
+                                "Sesiones": int(s["sesiones"]),
+                                "%": f"{s['sesiones'] / total_os * 100:.1f}%",
+                            }
+                            for s in sistemas[:8]
+                        ])
+                        st.dataframe(df_os, hide_index=True, use_container_width=True)
+
+                with col_res:
+                    st.subheader("Resolución de pantalla")
+                    st.caption("Top resoluciones — guía los breakpoints CSS.")
+                    resoluciones = ga4["resoluciones"]
+                    if not resoluciones:
+                        st.info("Sin datos.")
+                    else:
+                        total_res = sum(r["sesiones"] for r in resoluciones) or 1
+                        df_res = pd.DataFrame([
+                            {
+                                "Resolución": r["resolucion"],
+                                "Sesiones": int(r["sesiones"]),
+                                "%": f"{r['sesiones'] / total_res * 100:.1f}%",
+                            }
+                            for r in resoluciones
+                        ])
+                        st.dataframe(df_res, hide_index=True, use_container_width=True)
+
                 st.divider()
 
                 # ── Top categorías ──────────────────────────────────────────────
                 st.subheader("Top categorías")
-                st.caption("Vistas agrupadas por sección de la web.")
+                st.caption(
+                    "Vistas agrupadas por sección de la web. "
+                    "Engagement prom. = tiempo activo en esa página antes de pasar a la siguiente."
+                )
                 top_cats = ga4["top_categorias"]
                 if not top_cats:
                     st.info("Sin datos.")
@@ -5756,8 +5942,8 @@ if st.session_state.df_tn is not None:
                     df_cats = pd.DataFrame([
                         {
                             "Categoría": c["categoria"],
-                            "Vistas (7d)": int(c["vistas"]),
-                            "Tiempo prom.": _fmt_seg(c["tiempo_prom_seg"]),
+                            "Vistas": int(c["vistas"]),
+                            "Engagement prom.": _fmt_seg(c["tiempo_prom_seg"]),
                         }
                         for c in top_cats
                     ])
@@ -5778,7 +5964,7 @@ if st.session_state.df_tn is not None:
                             {
                                 "Producto": p["pagina"].replace("/productos/", "").rstrip("/"),
                                 "Vistas": int(p["vistas"]),
-                                "Tiempo prom.": _fmt_seg(p["tiempo_prom_seg"]),
+                                "Engagement prom.": _fmt_seg(p["tiempo_prom_seg"]),
                             }
                             for p in top_prod
                         ])
@@ -5795,11 +5981,72 @@ if st.session_state.df_tn is not None:
                             {
                                 "Página": p["pagina"],
                                 "Vistas": int(p["vistas"]),
-                                "Tiempo prom.": _fmt_seg(p["tiempo_prom_seg"]),
+                                "Engagement prom.": _fmt_seg(p["tiempo_prom_seg"]),
                             }
                             for p in top
                         ])
                         st.dataframe(df_top, hide_index=True, use_container_width=True)
+
+                st.divider()
+
+                # ── Tabla larga de productos buscable + flag de "no engancha" ──
+                st.subheader("Explorar productos vistos")
+                st.caption(
+                    "Tabla completa de productos con tráfico. "
+                    "🚨 marca productos con muchas vistas pero engagement bajo "
+                    "(tráfico desperdiciado: la gente entra y se va sin mirar)."
+                )
+                productos_full = ga4.get("productos_full") or []
+                if not productos_full:
+                    st.info("Sin productos vistos en el período.")
+                else:
+                    # Umbrales para flag "no engancha":
+                    # vistas >= mediana de vistas Y tiempo_prom < cuartil inferior de tiempos
+                    import statistics as _stats
+                    _vistas_list = [p["vistas"] for p in productos_full]
+                    _tiempos_list = [p["tiempo_prom_seg"] for p in productos_full if p["vistas"] >= 3]
+                    _mediana_vistas = _stats.median(_vistas_list) if _vistas_list else 0
+                    _q1_tiempo = (
+                        _stats.quantiles(_tiempos_list, n=4)[0]
+                        if len(_tiempos_list) >= 4 else 0
+                    )
+
+                    def _flag(p):
+                        if p["vistas"] >= _mediana_vistas and p["vistas"] >= 5 and p["tiempo_prom_seg"] < _q1_tiempo:
+                            return "🚨"
+                        return ""
+
+                    _filtro = st.text_input(
+                        "Buscar producto (slug o título)",
+                        placeholder="ej: anbernic, rg40, switch...",
+                        key="ga4_prod_filtro",
+                    ).strip().lower()
+
+                    rows = []
+                    for p in productos_full:
+                        slug = p["path"].replace("/productos/", "").rstrip("/")
+                        titulo = p.get("titulo", "")
+                        if _filtro and _filtro not in slug.lower() and _filtro not in titulo.lower():
+                            continue
+                        rows.append({
+                            "": _flag(p),
+                            "Producto": slug,
+                            "Título": titulo,
+                            "Vistas": int(p["vistas"]),
+                            "Engagement prom.": _fmt_seg(p["tiempo_prom_seg"]),
+                            "Engagement total": _fmt_seg(p["engagement_seg"]),
+                        })
+                    if not rows:
+                        st.info("Ningún producto matchea el filtro.")
+                    else:
+                        df_pf = pd.DataFrame(rows)
+                        st.caption(
+                            f"{len(rows)} producto{'s' if len(rows) != 1 else ''} • "
+                            f"Mediana vistas: {int(_mediana_vistas)} • "
+                            f"Q1 engagement: {_fmt_seg(_q1_tiempo)} "
+                            f"(productos por debajo de este tiempo con tráfico ≥ mediana = 🚨)"
+                        )
+                        st.dataframe(df_pf, hide_index=True, use_container_width=True, height=400)
 
                 st.divider()
 
@@ -5811,10 +6058,29 @@ if st.session_state.df_tn is not None:
                     st.info("Sin datos.")
                 else:
                     df_land = pd.DataFrame([
-                        {"Página de entrada": l["pagina"], "Sesiones (7d)": int(l["sesiones"])}
+                        {"Página de entrada": l["pagina"], "Sesiones": int(l["sesiones"])}
                         for l in landing
                     ])
                     st.dataframe(df_land, hide_index=True, use_container_width=True)
+
+                # ── Eventos GA4 (investigación de add_to_cart / view_item) ──
+                with st.expander("🔬 Eventos GA4 disponibles (investigación)"):
+                    st.caption(
+                        "Top 20 eventos que está disparando el sitio en GA4. "
+                        "Si ves `add_to_cart`, `view_item` o `begin_checkout` con volumen real, "
+                        "Tiendanube está enviando los eventos de ecommerce y podemos atribuir "
+                        "interés real por producto (no solo vistas). Si solo ves `page_view`, "
+                        "`session_start`, `user_engagement`, falta configurar el datalayer de TN."
+                    )
+                    eventos = ga4.get("eventos") or []
+                    if not eventos:
+                        st.info("Sin eventos en el período.")
+                    else:
+                        df_ev = pd.DataFrame([
+                            {"Evento": e["evento"], "Count": int(e["count"])}
+                            for e in eventos
+                        ])
+                        st.dataframe(df_ev, hide_index=True, use_container_width=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 12: ANALISTA IA
