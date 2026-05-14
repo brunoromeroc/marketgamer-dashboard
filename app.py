@@ -3533,10 +3533,22 @@ if st.session_state.df_tn is not None:
                             except Exception:
                                 peso_kg = None
                         prods_map[nombre] = peso_kg
-                        handle_raw = p.get("handle", {})
-                        handle = handle_raw.get("es", "") if isinstance(handle_raw, dict) else str(handle_raw or "")
+                        handle_raw = p.get("handle") or {}
+                        if isinstance(handle_raw, dict):
+                            handle = handle_raw.get("es") or handle_raw.get("pt") or handle_raw.get("en") or ""
+                        else:
+                            handle = str(handle_raw or "")
+                        url = ""
                         if handle:
-                            prods_urls[nombre] = f"https://www.marketgamer.com.ar/productos/{handle}/"
+                            url = f"https://www.marketgamer.com.ar/productos/{handle}/"
+                        else:
+                            permalink = p.get("permalink") or p.get("canonical_url") or ""
+                            if permalink:
+                                url = str(permalink)
+                            elif p.get("id"):
+                                url = f"https://marketgamer.mitiendanube.com/admin/v2/products/{p.get('id')}"
+                        if url:
+                            prods_urls[nombre] = url
                     st.session_state.productos_tn_map = prods_map
                     st.session_state.productos_tn_urls = prods_urls
 
@@ -3559,6 +3571,10 @@ if st.session_state.df_tn is not None:
                     st.session_state.costos_consolas = costos_actual
                     st.session_state._costos_needs_refresh = True
                     st.success(f"✅ {len(prods_map)} productos cargados ({nuevos} nuevos agregados, existentes conservados)")
+                    try:
+                        st.rerun(scope="app")
+                    except TypeError:
+                        st.rerun()
                 else:
                     st.warning("No se pudieron cargar productos.")
 
