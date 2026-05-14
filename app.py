@@ -2028,7 +2028,20 @@ if st.session_state.df_tn is not None:
             order_total = float(o.get("total", 0))
             n_products = len(o.get("products", []))
             costo_envio = float(o.get("shipping_cost_owner", 0) or 0)
+            shipping_customer = float(o.get("shipping_cost_customer", 0) or 0)
             tasa = tasa_pasarela(gateway, metodo, cuotas)
+
+            # Calcular subtotal real de productos (precio de lista * qty)
+            order_subtotal = 0.0
+            for _p in o.get("products", []):
+                try:
+                    order_subtotal += float(_p.get("price", 0) or 0) * int(_p.get("quantity", 1) or 1)
+                except Exception:
+                    pass
+            # Revenue real de productos = total pagado por el cliente - lo que pagó por envío
+            # Esto absorbe descuentos por medio de pago, cupones y promos
+            product_revenue = order_total - shipping_customer
+            ratio_neto = (product_revenue / order_subtotal) if order_subtotal > 0 else 1.0
 
             for p in o.get("products", []):
                 nombre = _extraer_nombre_producto(p.get("name", ""))
@@ -2038,6 +2051,10 @@ if st.session_state.df_tn is not None:
                 # Si el precio individual es 0, fallback a dividir total
                 if precio_unit <= 0 and n_products > 0:
                     precio_unit = order_total / n_products
+
+                # Precio neto post-descuentos prorrateado por participación en subtotal
+                precio_neto_unit = round(precio_unit * ratio_neto, 2)
+                descuento_unit = round(precio_unit - precio_neto_unit, 2)
 
                 # Comisión proporcional al precio del producto respecto al total
                 if order_total > 0:
@@ -2051,6 +2068,8 @@ if st.session_state.df_tn is not None:
                     product_rows.append({
                         "Producto": nombre,
                         "Precio ($)": round(precio_unit, 0),
+                        "Precio neto ($)": round(precio_neto_unit, 0),
+                        "Descuento ($)": round(descuento_unit, 0),
                         "Medio de Pago": label_medio,
                         "Cuotas": cuotas,
                         "Comisión PN ($)": round(comision_unit, 0),
@@ -4113,25 +4132,30 @@ if st.session_state.df_tn is not None:
                 rows_real = []
                 for pr in product_rows_mr:
                     prod = pr["Producto"]
-                    precio = pr["Precio ($)"]
+                    precio_lista = pr["Precio ($)"]
+                    precio_neto = pr.get("Precio neto ($)", precio_lista)
+                    descuento = pr.get("Descuento ($)", 0)
                     comision = pr["Comisión PN ($)"]
                     envio = pr["Envío ($)"]
 
                     _fob_usd, _import_usd, costo_total_usd = _match_costo_entry(prod, _costos_gs_mr)
                     costo_total_ars = costo_total_usd * _tc_mr
-                    costo_iva = round(precio * (iva_mr / 100), 0)
+                    # IVA se calcula sobre el precio neto (lo que efectivamente se factura)
+                    costo_iva = round(precio_neto * (iva_mr / 100), 0)
                     costo_full = round(costo_total_ars + packaging_mr + costo_iva, 0)
 
-                    neto = precio - comision
+                    neto = precio_neto - comision
                     margen = round(neto - costo_full - envio, 0)
 
                     rows_real.append({
                         "Producto": prod,
                         "Medio de Pago": pr["Medio de Pago"],
                         "Cuotas": pr["Cuotas"],
-                        "Precio ($)": round(precio, 0),
+                        "Precio lista ($)": round(precio_lista, 0),
+                        "Descuento ($)": round(descuento, 0),
+                        "Precio neto ($)": round(precio_neto, 0),
                         "Comisión PN ($)": round(comision, 0),
-                        "Costo PN (%)": round(comision / precio * 100, 2) if precio > 0 else 0,
+                        "Costo PN (%)": round(comision / precio_neto * 100, 2) if precio_neto > 0 else 0,
                         "FOB (USD)": round(_fob_usd, 2),
                         "Import (USD)": round(_import_usd, 2),
                         "← Costo prod ($)": round(costo_total_ars, 0),
@@ -4139,7 +4163,7 @@ if st.session_state.df_tn is not None:
                         f"IVA ({iva_mr}%)": costo_iva,
                         "Envío ($)": round(envio, 0),
                         "Margen ($)": margen,
-                        "Margen (%)": round(margen / precio * 100, 1) if precio > 0 else 0,
+                        "Margen (%)": round(margen / precio_neto * 100, 1) if precio_neto > 0 else 0,
                     })
 
                 df_real = pd.DataFrame(rows_real)
@@ -4151,8 +4175,10 @@ if st.session_state.df_tn is not None:
                     st.markdown("### Margen promedio real por consola")
                     col_iva_mr = f"IVA ({iva_mr}%)"
                     df_avg = df_real.groupby("Producto").agg(
-                        Ventas=("Precio ($)", "count"),
-                        Precio_prom=("Precio ($)", "mean"),
+                        Ventas=("Precio neto ($)", "count"),
+                        Precio_lista_prom=("Precio lista ($)", "mean"),
+                        Descuento_prom=("Descuento ($)", "mean"),
+                        Precio_prom=("Precio neto ($)", "mean"),
                         Comision_prom=("Comisión PN ($)", "mean"),
                         FOB_prom=("FOB (USD)", "mean"),
                         Import_prom=("Import (USD)", "mean"),
@@ -4164,7 +4190,8 @@ if st.session_state.df_tn is not None:
                         Margen_pct_prom=("Margen (%)", "mean"),
                     ).reset_index()
                     df_avg.columns = [
-                        "Producto", "Ventas", "Precio prom ($)", "Comisión prom ($)",
+                        "Producto", "Ventas", "Precio lista prom ($)", "Descuento prom ($)",
+                        "Precio neto prom ($)", "Comisión prom ($)",
                         "FOB (USD)", "Import (USD)", "← Costo prod ($)",
                         "Packaging ($)", col_iva_mr, "Envío ($)",
                         "Margen prom ($)", "Margen (%)",
@@ -4188,7 +4215,7 @@ if st.session_state.df_tn is not None:
                     st.plotly_chart(fig_mr, use_container_width=True)
 
                     # ── Margen promedio ponderado del total ──
-                    _total_revenue = df_avg["Precio prom ($)"].mul(df_avg["Ventas"]).sum()
+                    _total_revenue = df_avg["Precio neto prom ($)"].mul(df_avg["Ventas"]).sum()
                     _total_margen = df_avg["Margen prom ($)"].mul(df_avg["Ventas"]).sum()
                     _total_ventas = df_avg["Ventas"].sum()
                     _margen_pct_pond = (_total_margen / _total_revenue * 100) if _total_revenue > 0 else 0
@@ -4204,7 +4231,9 @@ if st.session_state.df_tn is not None:
 
                     st.dataframe(
                         df_avg.style.format({
-                            "Precio prom ($)": "${:,.0f}",
+                            "Precio lista prom ($)": "${:,.0f}",
+                            "Descuento prom ($)": "${:,.0f}",
+                            "Precio neto prom ($)": "${:,.0f}",
                             "Comisión prom ($)": "${:,.0f}",
                             "FOB (USD)": "${:,.2f}",
                             "Import (USD)": "${:,.2f}",
@@ -4236,16 +4265,19 @@ if st.session_state.df_tn is not None:
                     if prod_sel_mr:
                         df_prod = df_real[df_real["Producto"] == prod_sel_mr]
                         df_by_medio = df_prod.groupby("Medio de Pago").agg(
-                            Ventas=("Precio ($)", "count"),
-                            Precio_prom=("Precio ($)", "mean"),
+                            Ventas=("Precio neto ($)", "count"),
+                            Precio_lista_prom=("Precio lista ($)", "mean"),
+                            Descuento_prom=("Descuento ($)", "mean"),
+                            Precio_prom=("Precio neto ($)", "mean"),
                             Comision_prom=("Comisión PN ($)", "mean"),
                             Costo_PN_pct=("Costo PN (%)", "mean"),
                             Margen_prom=("Margen ($)", "mean"),
                             Margen_pct=("Margen (%)", "mean"),
                         ).reset_index().sort_values("Margen_pct", ascending=False)
                         df_by_medio.columns = [
-                            "Medio de Pago", "Ventas", "Precio prom ($)",
-                            "Comisión prom ($)", "Costo PN (%)", "Margen prom ($)", "Margen (%)",
+                            "Medio de Pago", "Ventas", "Precio lista ($)", "Descuento ($)",
+                            "Precio neto ($)", "Comisión prom ($)", "Costo PN (%)",
+                            "Margen prom ($)", "Margen (%)",
                         ]
 
                         col_mr1, col_mr2 = st.columns(2)
@@ -4272,7 +4304,9 @@ if st.session_state.df_tn is not None:
 
                         st.dataframe(
                             df_by_medio.style.format({
-                                "Precio prom ($)": "${:,.0f}",
+                                "Precio lista ($)": "${:,.0f}",
+                                "Descuento ($)": "${:,.0f}",
+                                "Precio neto ($)": "${:,.0f}",
                                 "Comisión prom ($)": "${:,.0f}",
                                 "Costo PN (%)": "{:.2f}%",
                                 "Margen prom ($)": "${:,.0f}",
