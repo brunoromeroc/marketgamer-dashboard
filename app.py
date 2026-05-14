@@ -3515,11 +3515,18 @@ if st.session_state.df_tn is not None:
                 if productos_tn:
                     prods_map = {}
                     prods_urls = {}
+                    multi_variant_skipped = 0
                     for p in productos_tn:
                         nombre_raw = p.get("name", {})
                         nombre = nombre_raw.get("es", "") if isinstance(nombre_raw, dict) else str(nombre_raw)
+                        variants_list = p.get("variants", []) or []
+                        # Productos con multiples variantes: no agregar la fila padre
+                        # — el usuario gestiona cada variante con nombre propio en la sheet.
+                        if len(variants_list) > 1:
+                            multi_variant_skipped += 1
+                            continue
                         peso_kg = None
-                        for v in p.get("variants", []):
+                        for v in variants_list:
                             w = v.get("weight")
                             if w:
                                 try:
@@ -3570,7 +3577,10 @@ if st.session_state.df_tn is not None:
                                     existing["peso_kg"] = peso
                     st.session_state.costos_consolas = costos_actual
                     st.session_state._costos_needs_refresh = True
-                    st.success(f"✅ {len(prods_map)} productos cargados ({nuevos} nuevos agregados, existentes conservados)")
+                    msg = f"✅ {len(prods_map)} productos cargados ({nuevos} nuevos agregados, existentes conservados)"
+                    if multi_variant_skipped:
+                        msg += f" · {multi_variant_skipped} con múltiples variantes omitidos (cargá cada variante a mano)"
+                    st.success(msg)
                     try:
                         st.rerun(scope="app")
                     except TypeError:
