@@ -134,6 +134,91 @@ def test_dias_con_stock_sin_ventas_devuelve_1():
     assert d == 1
 
 
+from velocidad_restock import calcular_velocidad_restock
+
+PARAMS = {
+    "lead_time": 7, "colchon": 7, "cobertura": 30,
+    "ventana_reciente": 90, "min_unidades_conf": 5, "min_dias_conf": 3,
+}
+
+
+def _df_items(rows):
+    # rows: list de (fecha, [(prod, qty, costo), ...])
+    data = []
+    for fecha, items in rows:
+        data.append({"Fecha": fecha, "Items": [
+            {"producto": p, "cantidad": q, "costo": c} for p, q, c in items
+        ]})
+    return pd.DataFrame(data)
+
+
+def test_producto_que_se_quiebra_tiene_vel_alta_y_pide_restock():
+    # 8u entre 01/03 y 20/03, sin stock ahora -> vel ~ 8/20 = 0.4
+    rows = [(f"2026-03-{d:02d}", [("Anbernic", 1, 100.0)]) for d in range(1, 21)
+            if d in (1, 3, 5, 7, 9, 11, 13, 20)]  # 8 ventas
+    df = _df_items(rows)
+    out = calcular_velocidad_restock(
+        df, stock_map={"Anbernic": 0}, historial={},
+        precio_map={"Anbernic": 1000.0}, params=PARAMS, hoy_iso="2026-05-17",
+    )
+    r = out[out["Producto"] == "Anbernic"].iloc[0]
+    assert round(r["Vel. reciente"], 2) >= 0.1  # no diluido por 229 días
+    assert r["Restock sugerido"] > 0
+    assert bool(r["_necesita_restock"]) is True
+
+
+def test_producto_zombie_no_es_critico():
+    # vendió hace 8 meses, nada reciente, ventana reciente 90d
+    rows = [("2025-09-01", [("Viejo", 50, 10.0)])]
+    df = _df_items(rows)
+    out = calcular_velocidad_restock(
+        df, stock_map={"Viejo": 0}, historial={},
+        precio_map={"Viejo": 500.0}, params=PARAMS, hoy_iso="2026-05-17",
+    )
+    r = out[out["Producto"] == "Viejo"].iloc[0]
+    assert r["Vel. reciente"] == 0
+    assert bool(r["_necesita_restock"]) is False
+
+
+def test_orden_multiproducto_cuenta_unidades_correctas():
+    rows = [("2026-05-10", [("A", 2, 10.0), ("B", 1, 5.0)])]
+    df = _df_items(rows)
+    out = calcular_velocidad_restock(
+        df, stock_map={"A": 0, "B": 0}, historial={},
+        precio_map={"A": 100.0, "B": 100.0}, params=PARAMS, hoy_iso="2026-05-17",
+    )
+    a = out[out["Producto"] == "A"].iloc[0]
+    b = out[out["Producto"] == "B"].iloc[0]
+    assert a["Unidades"] == 2
+    assert b["Unidades"] == 1
+
+
+def test_baja_confianza_no_dispara_restock():
+    rows = [("2026-05-10", [("Raro", 1, 10.0)])]  # 1 unidad, 1 día
+    df = _df_items(rows)
+    out = calcular_velocidad_restock(
+        df, stock_map={"Raro": 0}, historial={},
+        precio_map={"Raro": 100.0}, params=PARAMS, hoy_iso="2026-05-17",
+    )
+    r = out[out["Producto"] == "Raro"].iloc[0]
+    assert r["Confianza"] == "baja"
+    assert bool(r["_necesita_restock"]) is False
+
+
+def test_orden_por_facturacion_en_riesgo_desc():
+    rows = (
+        [(f"2026-05-{d:02d}", [("Caro", 1, 10.0)]) for d in range(1, 11)] +
+        [(f"2026-05-{d:02d}", [("Barato", 1, 10.0)]) for d in range(1, 11)]
+    )
+    df = _df_items(rows)
+    out = calcular_velocidad_restock(
+        df, stock_map={"Caro": 1, "Barato": 1}, historial={},
+        precio_map={"Caro": 100000.0, "Barato": 100.0},
+        params=PARAMS, hoy_iso="2026-05-17",
+    )
+    assert out.iloc[0]["Producto"] == "Caro"
+
+
 def _run():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

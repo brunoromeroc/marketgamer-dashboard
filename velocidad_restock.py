@@ -83,3 +83,79 @@ def dias_con_stock(fechas_venta, hoy_iso, tiene_stock_ahora, historial,
 
     proxy_dias = total_dias - snap_cubiertos
     return max(1, snap_con_stock + proxy_dias)
+
+
+def calcular_velocidad_restock(df_tn, stock_map, historial, precio_map,
+                                params, hoy_iso):
+    """Calcula velocidad histórica/reciente, ROP, restock y riesgo por producto."""
+    lt = params["lead_time"]
+    colchon = params["colchon"]
+    cobertura = params["cobertura"]
+    vent = params["ventana_reciente"]
+    min_u = params["min_unidades_conf"]
+    min_d = params["min_dias_conf"]
+
+    df_items = explotar_items(df_tn)
+    hoy = _d(hoy_iso)
+    corte_reciente = (hoy - timedelta(days=vent)).isoformat()
+
+    filas = []
+    for prod, g in df_items.groupby("Producto"):
+        fechas_all = sorted(str(f) for f in g["Fecha"] if f)
+        unid_hist = int(g["Cantidad"].sum())
+
+        g_rec = g[g["Fecha"] >= corte_reciente]
+        fechas_rec = sorted(str(f) for f in g_rec["Fecha"] if f)
+        unid_rec = int(g_rec["Cantidad"].sum())
+
+        stock_actual = stock_map.get(prod)
+        sin_limite = stock_actual is None
+        tiene_stock = (not sin_limite) and stock_actual > 0
+
+        dias_hist = dias_con_stock(fechas_all, hoy_iso, tiene_stock,
+                                   historial, prod, None)
+        dias_rec = dias_con_stock(fechas_rec, hoy_iso, tiene_stock,
+                                  historial, prod, corte_reciente)
+
+        vel_hist = round(unid_hist / dias_hist, 3) if unid_hist else 0.0
+        vel_rec = round(unid_rec / dias_rec, 3) if unid_rec else 0.0
+
+        precio = float(precio_map.get(prod, 0) or 0)
+
+        if vel_rec > 0 and not sin_limite:
+            rop = round(vel_rec * lt + vel_rec * colchon, 2)
+            dias_rest = round((stock_actual or 0) / vel_rec, 1)
+            if (stock_actual or 0) <= rop:
+                pedir = max(0, round(vel_rec * (lt + cobertura) - (stock_actual or 0)))
+            else:
+                pedir = 0
+            dias_quiebre = max(0, lt - dias_rest)
+            fact_riesgo = round(vel_rec * precio * dias_quiebre)
+        else:
+            rop = 0.0
+            dias_rest = "—"
+            pedir = 0
+            fact_riesgo = 0
+
+        dias_distintos = len(set(fechas_rec))
+        confianza = "baja" if (unid_rec < min_u or dias_distintos < min_d) else "ok"
+        necesita = (confianza == "ok") and pedir > 0
+
+        filas.append({
+            "Producto": prod,
+            "Unidades": unid_rec,
+            "Vel. histórica": vel_hist,
+            "Vel. reciente": vel_rec,
+            "Stock actual": "Sin límite" if sin_limite else (stock_actual if stock_actual is not None else "—"),
+            "ROP": rop,
+            "Días restantes": dias_rest,
+            "Restock sugerido": pedir if pedir > 0 else "—",
+            "Facturación en riesgo": fact_riesgo,
+            "Confianza": confianza,
+            "_necesita_restock": necesita,
+        })
+
+    df = pd.DataFrame(filas)
+    if df.empty:
+        return df
+    return df.sort_values("Facturación en riesgo", ascending=False).reset_index(drop=True)
