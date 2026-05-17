@@ -3982,6 +3982,32 @@ if st.session_state.df_tn is not None:
                     df_vel[cols_show].to_csv(index=False).encode("utf-8"),
                     "restock_analysis.csv", "text/csv")
 
+                with st.expander("🗂️ Historial de snapshots de stock", expanded=False):
+                    if not historial:
+                        st.caption("Todavía no hay snapshots. Se generan al cargar stock o al tocar 'Actualizar datos' con stock ya cargado.")
+                    else:
+                        _fechas_snap = sorted(historial.keys())
+                        st.caption(
+                            f"{len(_fechas_snap)} días capturados · "
+                            f"{_fechas_snap[0]} → {_fechas_snap[-1]} · retención 180 días"
+                        )
+                        _filtro_snap = st.text_input(
+                            "Filtrar producto", "", key="filtro_hist_snap"
+                        )
+                        _rows_snap = []
+                        for _f in reversed(_fechas_snap):
+                            for _p, _s in historial[_f].items():
+                                if _filtro_snap and _filtro_snap.lower() not in str(_p).lower():
+                                    continue
+                                _rows_snap.append({"Fecha": _f, "Producto": _p, "Stock": _s})
+                        if _rows_snap:
+                            st.dataframe(
+                                pd.DataFrame(_rows_snap),
+                                use_container_width=True, hide_index=True,
+                            )
+                        else:
+                            st.caption("Sin resultados para ese filtro.")
+
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 6: GASTOS FIJOS
     # ══════════════════════════════════════════════════════════════════════════
