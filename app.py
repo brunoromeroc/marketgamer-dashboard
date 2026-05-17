@@ -1233,6 +1233,66 @@ def get_ga4_metrics(periodo="28d"):
             for row in eventos_resp.rows
         ]
 
+        # Origen de entrada por producto: cómo llegó quien aterrizó directo en /productos/
+        def _bucket_canal(c):
+            c = (c or "").strip().lower()
+            if "paid" in c or c in ("display", "cross-network"):
+                return "pauta"
+            if c == "organic search":
+                return "busco"
+            if c == "direct":
+                return "directo"
+            return "navego"
+
+        origen_filter = FilterExpression(
+            filter=Filter(
+                field_name="landingPage",
+                string_filter=Filter.StringFilter(
+                    value="/productos/",
+                    match_type=Filter.StringFilter.MatchType.BEGINS_WITH,
+                ),
+            )
+        )
+        origen_req = RunReportRequest(
+            property=prop,
+            dimensions=[
+                Dimension(name="landingPage"),
+                Dimension(name="sessionDefaultChannelGroup"),
+            ],
+            metrics=[Metric(name="sessions")],
+            date_ranges=[rango_actual],
+            dimension_filter=origen_filter,
+            order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True)],
+            limit=2000,
+        )
+        origen_resp = client.run_report(origen_req)
+        _orig_acc = {}
+        for row in origen_resp.rows:
+            lp = row.dimension_values[0].value or ""
+            canal = row.dimension_values[1].value or ""
+            d = _orig_acc.setdefault(
+                lp, {"pauta": 0.0, "busco": 0.0, "navego": 0.0, "directo": 0.0}
+            )
+            d[_bucket_canal(canal)] += _val(row, 0)
+        _titulo_por_path = {p["path"]: p.get("titulo", "") for p in productos_full}
+        origen_productos = []
+        for path, b in _orig_acc.items():
+            total = b["pauta"] + b["busco"] + b["navego"] + b["directo"]
+            if total <= 0:
+                continue
+            dominante = max(
+                ("pauta", "busco", "navego", "directo"), key=lambda k: b[k]
+            )
+            origen_productos.append({
+                "path": path,
+                "titulo": _titulo_por_path.get(path, "") or "",
+                "aterrizajes": total,
+                "pauta": b["pauta"], "busco": b["busco"],
+                "navego": b["navego"], "directo": b["directo"],
+                "dominante": dominante,
+            })
+        origen_productos.sort(key=lambda x: x["aterrizajes"], reverse=True)
+
         return {
             "label_actual": label_act,
             "label_previo": label_prev,
@@ -1259,6 +1319,7 @@ def get_ga4_metrics(periodo="28d"):
             "busquedas_internas": busquedas_internas,
             "urls_con_query": urls_con_query,
             "eventos": eventos,
+            "origen_productos": origen_productos,
         }
 
     except Exception as e:
@@ -6574,6 +6635,53 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                             f"**{len(rows)} producto{'s' if len(rows) != 1 else ''}** · {_resumen}"
                         )
                         st.dataframe(df_pf, hide_index=True, use_container_width=True, height=420)
+
+                st.divider()
+
+                # ── Origen de entrada por producto ──────────────────────────────
+                st.subheader("🧭 Origen de entrada por producto")
+                st.caption(
+                    "De cada producto: cómo llegó la gente que **aterrizó directo** en su "
+                    "página (no navegación interna). 🟥 Pauta · 🟩 Lo buscó (Google) · "
+                    "🟦 Vino navegando (redes/referidos) · ⬜ Directo (ya lo conocía). "
+                    "Podado al 80% de los aterrizajes para enfocar lo que mueve la aguja."
+                )
+                origen_prod = ga4.get("origen_productos") or []
+                if not origen_prod:
+                    st.info("Sin aterrizajes en páginas de producto en el período.")
+                else:
+                    _tot_at = sum(o["aterrizajes"] for o in origen_prod) or 1
+                    _LBL = {"pauta": "🟥 Pauta", "busco": "🟩 Lo buscó",
+                            "navego": "🟦 Vino navegando", "directo": "⬜ Directo"}
+                    _acum = 0.0
+                    _filas_o = []
+                    for o in origen_prod:
+                        if len(_filas_o) >= 5 and _acum / _tot_at >= 0.80:
+                            break
+                        if len(_filas_o) >= 30:
+                            break
+                        _acum += o["aterrizajes"]
+                        _t = o["aterrizajes"] or 1
+                        _filas_o.append({
+                            "Producto": o["titulo"] or o["path"].replace("/productos/", "").rstrip("/"),
+                            "Aterrizajes": int(o["aterrizajes"]),
+                            "Origen dominante": _LBL.get(o["dominante"], o["dominante"]),
+                            "Pauta %": round(o["pauta"] / _t * 100),
+                            "Buscó %": round(o["busco"] / _t * 100),
+                            "Navegó %": round(o["navego"] / _t * 100),
+                            "Directo %": round(o["directo"] / _t * 100),
+                        })
+                    st.caption(
+                        f"**{len(_filas_o)} producto{'s' if len(_filas_o) != 1 else ''}** "
+                        f"= {round(_acum / _tot_at * 100)}% de los aterrizajes a producto"
+                    )
+                    st.dataframe(
+                        pd.DataFrame(_filas_o).style.format({
+                            "Pauta %": "{:.0f}%", "Buscó %": "{:.0f}%",
+                            "Navegó %": "{:.0f}%", "Directo %": "{:.0f}%",
+                        }),
+                        hide_index=True, use_container_width=True, height=420,
+                    )
 
                 st.divider()
 
