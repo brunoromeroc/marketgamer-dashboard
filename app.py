@@ -3232,6 +3232,10 @@ if st.session_state.df_tn is not None:
             df_calc["Margen ($)"] = (
                 df_calc["Neto cobrado ($)"] - df_calc["Costo Productos ($)"] - df_calc["Envio costo ($)"]
             )
+            df_calc["Margen (%)"] = df_calc.apply(
+                lambda r: round((r["Margen ($)"] / r["Total ($)"] * 100) if r["Total ($)"] > 0 else 0, 2),
+                axis=1,
+            )
 
             facturacion_bruta = df_calc["Total ($)"].sum()
             comisiones_pn = df_calc["Comision PN ($)"].sum()
