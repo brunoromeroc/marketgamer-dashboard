@@ -2137,36 +2137,12 @@ def get_meta_gasto_por_producto(dias=30):
     url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
     params = {
         "access_token": meta_token,
-        "fields": "spend,impressions,account_currency,actions,action_values",
+        "fields": "spend,impressions,account_currency",
         "breakdowns": "product_id",
         "time_range": json.dumps({"since": desde.isoformat(), "until": hasta.isoformat()}),
         "level": "account",
         "limit": 500,
     }
-    _PURCH = (
-        "omni_purchase", "offsite_conversion.fb_pixel_purchase",
-        "purchase", "onsite_web_purchase",
-    )
-
-    def _pick_purchase(lst):
-        if not lst:
-            return 0.0
-        m = {a.get("action_type"): a.get("value") for a in lst}
-        for t in _PURCH:
-            if t in m:
-                try:
-                    return float(m[t] or 0)
-                except Exception:
-                    return 0.0
-        # Fallback: cualquier action_type que mencione "purchase"
-        for k, val in m.items():
-            if k and "purchase" in k:
-                try:
-                    return float(val or 0)
-                except Exception:
-                    return 0.0
-        return 0.0
-
     try:
         acc = {}
         cur = "ARS"
@@ -2181,14 +2157,9 @@ def get_meta_gasto_por_producto(dias=30):
                 if not pid:
                     continue
                 cur = row.get("account_currency", cur) or cur
-                a = acc.setdefault(
-                    pid,
-                    {"gasto": 0.0, "impresiones": 0, "compras": 0.0, "revenue": 0.0},
-                )
+                a = acc.setdefault(pid, {"gasto": 0.0, "impresiones": 0})
                 a["gasto"] += float(row.get("spend", 0) or 0)
                 a["impresiones"] += int(float(row.get("impressions", 0) or 0))
-                a["compras"] += _pick_purchase(row.get("actions"))
-                a["revenue"] += _pick_purchase(row.get("action_values"))
             url = (j.get("paging") or {}).get("next")
             params = None
             pages += 1
@@ -2225,9 +2196,6 @@ def get_meta_gasto_por_producto(dias=30):
                 "product_id": pid,
                 "gasto": v["gasto"],
                 "impresiones": v["impresiones"],
-                "compras": int(round(v["compras"])),
-                "revenue": v["revenue"],
-                "roas": (v["revenue"] / v["gasto"]) if v["gasto"] > 0 else 0.0,
                 "currency": cur,
             })
         out.sort(key=lambda x: x["gasto"], reverse=True)
@@ -2235,40 +2203,16 @@ def get_meta_gasto_por_producto(dias=30):
     except Exception:
         return None
 
-@st.cache_data(ttl=1800)
-def get_meta_action_types(dias=30):
-    """Diagnóstico: lista los action_type que devuelve la cuenta en el período.
-
-    Sirve para mapear correctamente las compras cuando vienen con un tipo no
-    estándar (conversión personalizada, etc.). None si no hay config / falla.
-    """
-    meta_token = st.secrets.get("META_TOKEN", "")
-    meta_account = st.secrets.get("META_AD_ACCOUNT_ID", "")
-    if not meta_token or not meta_account:
-        return None
-    account_id = meta_account.replace("act_", "")
-    hasta = date.today()
-    desde = hasta - timedelta(days=dias)
-    url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
-    params = {
-        "access_token": meta_token,
-        "fields": "actions",
-        "time_range": json.dumps({"since": desde.isoformat(), "until": hasta.isoformat()}),
-        "level": "account",
-    }
-    try:
-        r = requests.get(url, params=params, timeout=20)
-        if r.status_code != 200:
-            return None
-        tipos = set()
-        for row in r.json().get("data", []):
-            for a in row.get("actions", []) or []:
-                t = a.get("action_type")
-                if t:
-                    tipos.add(t)
-        return sorted(tipos)
-    except Exception:
-        return None
+def _norm_nombre(s):
+    """Normaliza un nombre de producto para matchear entre Meta y Tiendanube."""
+    import re as _re
+    import unicodedata as _ud
+    s = str(s or "").strip().lower()
+    s = "".join(
+        c for c in _ud.normalize("NFKD", s) if not _ud.combining(c)
+    )
+    s = _re.sub(r"[^a-z0-9]+", " ", s)
+    return _re.sub(r"\s+", " ", s).strip()
 
 def get_dolar_blue():
     try:
@@ -6929,18 +6873,18 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                 st.divider()
 
                 # ── Gasto de pauta por producto (catálogo Meta) ─────────────────
-                st.subheader("💸 Gasto de pauta por producto (Meta, 30 días)")
+                st.subheader("💸 Gasto Meta vs ventas reales (por producto, 30 días)")
                 st.caption(
-                    "Cuánto le metés a cada producto vía campañas de catálogo "
-                    "(Advantage+/retargeting), últimos 30 días. Cruzalo con la columna "
-                    "🟥 Pauta de arriba: acá ves *cuánto* y *a qué* producto va la plata."
+                    "Gasto en campañas de catálogo (Advantage+/retargeting) cruzado con "
+                    "**ventas reales de Tiendanube** del mismo período. **Unidades** y "
+                    "**CPA** son exactos (datos TN). **Ingreso aprox.** y **ROAS** usan el "
+                    "precio actual del producto → orientativos, no contables."
                 )
                 _meta_gp = get_meta_gasto_por_producto(30)
                 if _meta_gp is None:
                     st.caption(
                         "💡 Requiere `META_TOKEN` + `META_AD_ACCOUNT_ID`. Para ver nombres "
-                        "en vez de IDs, agregá `META_CATALOG_ID` en secrets (lo sacás de "
-                        "Commerce Manager → Catálogo)."
+                        "en vez de IDs, agregá `META_CATALOG_ID` (Commerce Manager → Catálogo)."
                     )
                 elif not _meta_gp:
                     st.info(
@@ -6948,47 +6892,68 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                         "(las campañas activas pueden no ser de catálogo)."
                     )
                 else:
+                    from velocidad_restock import explotar_items as _expl
+                    _u_norm = {}
+                    _df_h = _cargar_ordenes_historico(30)
+                    if _df_h is not None and not _df_h.empty:
+                        _li = _expl(_df_h)
+                        if not _li.empty:
+                            for _p, _g in _li.groupby("Producto"):
+                                _k = _norm_nombre(_p)
+                                _u_norm[_k] = _u_norm.get(_k, 0) + int(_g["Cantidad"].sum())
+                    _precio_norm = {}
+                    _sdf = st.session_state.get("stock_tn")
+                    if _sdf is not None:
+                        for _, _sr in _sdf.iterrows():
+                            _k = _norm_nombre(_sr["Producto"])
+                            _pp = _sr.get("Precio ($)", 0)
+                            if _pp and _k not in _precio_norm:
+                                _precio_norm[_k] = float(_pp)
+
+                    def _match(nrm, tabla):
+                        if nrm in tabla:
+                            return tabla[nrm]
+                        cand = [
+                            (k, val) for k, val in tabla.items()
+                            if nrm and (nrm in k or k in nrm)
+                        ]
+                        return max(cand, key=lambda kv: kv[1])[1] if cand else None
+
                     _curp = _meta_gp[0]["currency"]
                     _tgp = sum(x["gasto"] for x in _meta_gp)
-                    _hay_nombres = any(not x["producto"].startswith("[id ") for x in _meta_gp)
+                    _con_match = 0
+                    _filas_mp = []
+                    for x in _meta_gp:
+                        _nrm = _norm_nombre(x["producto"])
+                        _u = _match(_nrm, _u_norm)
+                        _pr = _match(_nrm, _precio_norm)
+                        if _u:
+                            _con_match += 1
+                        _ing = (_u * _pr) if (_u and _pr) else None
+                        _roas = (_ing / x["gasto"]) if (_ing and x["gasto"] > 0) else None
+                        _cpa = (x["gasto"] / _u) if _u else None
+                        _filas_mp.append({
+                            "Producto": x["producto"],
+                            "Gasto 30d": f"{x['currency']} {x['gasto']:,.0f}",
+                            "Unid. TN 30d": int(_u) if _u else 0,
+                            "CPA real": f"{x['currency']} {_cpa:,.0f}" if _cpa else "—",
+                            "Ingreso aprox.": f"{x['currency']} {_ing:,.0f}" if _ing else "—",
+                            "ROAS aprox.": f"{_roas:.1f}x" if _roas is not None else "—",
+                        })
                     st.caption(
-                        f"**{len(_meta_gp)} productos pauteados** · gasto 30d: {_curp} {_tgp:,.0f}"
-                        + ("" if _hay_nombres else " · agregá `META_CATALOG_ID` para ver nombres")
+                        f"**{len(_meta_gp)} productos pauteados** · gasto 30d: "
+                        f"{_curp} {_tgp:,.0f} · {_con_match} con ventas TN matcheadas por nombre"
                     )
                     st.dataframe(
-                        pd.DataFrame([
-                            {
-                                "Producto": x["producto"],
-                                "Gasto 30d": f"{x['currency']} {x['gasto']:,.0f}",
-                                "Impresiones": x["impresiones"],
-                                "Compras (Meta)": x.get("compras", 0),
-                                "ROAS": f"{x.get('roas', 0):.1f}x",
-                            }
-                            for x in _meta_gp
-                        ]),
+                        pd.DataFrame(_filas_mp),
                         hide_index=True, use_container_width=True, height=420,
                     )
                     st.caption(
-                        "⚠️ Compras/ROAS son atribución *de Meta* (sobrestima vs ventas "
-                        "reales de Tiendanube). Sirve para comparar productos entre sí y "
-                        "ver si el algoritmo gasta donde convierte, no como número absoluto."
+                        "Lectura: **CPA alto o 0 unidades** = el algoritmo gasta ahí y no "
+                        "convierte (candidato a excluir del catálogo). **CPA bajo / ROAS "
+                        "alto** = caballo, protegé stock y dale. Productos sin match de "
+                        "nombre quedan con Unid. en 0 — revisalos a mano si el gasto es alto."
                     )
-                    if sum(x.get("compras", 0) for x in _meta_gp) == 0:
-                        _tipos = get_meta_action_types(30)
-                        with st.expander("🔧 Compras en 0 — diagnóstico de atribución", expanded=False):
-                            if not _tipos:
-                                st.write(
-                                    "Meta no devolvió ninguna acción de conversión en el "
-                                    "período (puede no haber pixel/CAPI de compra atribuido "
-                                    "a estas campañas de catálogo, o el token no tiene "
-                                    "permiso de conversiones)."
-                                )
-                            else:
-                                st.write(
-                                    "Estos son los `action_type` que devuelve tu cuenta. "
-                                    "Pasámelos y mapeo el de compra correcto:"
-                                )
-                                st.code("\n".join(_tipos))
 
                 st.divider()
 
