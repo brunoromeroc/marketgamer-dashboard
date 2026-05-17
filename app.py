@@ -6294,102 +6294,33 @@ if st.session_state.df_tn is not None:
                 # top_paginas (30 items mixtos): clasificar contra sí mismo
                 _calidad_y_score(ga4.get("top_paginas") or [], tiempo_key="tiempo_prom_seg")
 
-                # ── Fila 1: KPIs de tráfico ─────────────────────────────────────
-                c1, c2, c3, c4 = st.columns(4)
-                with c1:
-                    st.metric(
-                        "Sesiones",
-                        f"{int(sesiones_act):,}".replace(",", "."),
-                        _delta_str(_delta_pct(sesiones_act, sesiones_prev)),
-                        help=(
-                            "Cantidad de visitas al sitio. Una persona puede generar varias "
-                            "sesiones si vuelve después de 30 min de inactividad. Es la métrica "
-                            "base de volumen: si cae, llega menos gente; si sube, está "
-                            "funcionando algún canal de tráfico."
-                        ),
-                    )
-                with c2:
-                    st.metric(
-                        "Usuarios activos",
-                        f"{int(usuarios_act):,}".replace(",", "."),
-                        _delta_str(_delta_pct(usuarios_act, usuarios_prev)),
-                        help=(
-                            "Personas únicas que entraron. Comparado con sesiones te dice si "
-                            "viene gente nueva (números parecidos) o si la misma gente vuelve "
-                            "varias veces (sesiones >> usuarios)."
-                        ),
-                    )
-                with c3:
-                    st.metric(
-                        "Tasa de interacción",
-                        f"{interaccion_act * 100:.1f}%",
-                        _fmt_pp(interaccion_act * 100, interaccion_prev * 100),
-                        help=(
-                            "% de sesiones donde la persona se quedó +10s, vio +1 página o "
-                            "disparó algún evento. Es el inverso del bounce. Arriba de 50% "
-                            "está OK; abajo de 40% indica tráfico de baja calidad."
-                        ),
-                    )
-                with c4:
-                    st.metric(
-                        "Checkouts iniciados",
-                        f"{int(checkouts_act):,}".replace(",", "."),
-                        _delta_str(_delta_pct(checkouts_act, checkouts_prev)),
-                        help=(
-                            "Personas que llegaron al paso de checkout (/checkout/v3/start). "
-                            "No mide ventas cerradas, mide INTENCIÓN de comprar. La caída de "
-                            "ventas con este número estable = problema en pago/envío."
-                        ),
-                    )
-
-                # ── Fila 2: KPIs de comportamiento / conversión ──────────────────
-                c5, c6, c7, c8 = st.columns(4)
-                with c5:
-                    st.metric(
-                        "Conv. a checkout",
-                        f"{conv_act:.2f}%",
-                        _fmt_pp(conv_act, conv_prev),
-                        help=(
-                            "Checkouts iniciados ÷ sesiones. El número más importante del "
-                            "funnel: dice qué % del tráfico llega a querer comprar. "
-                            "Benchmark e-commerce: 2-3% es OK, 4-5% es muy bueno. Caída acá "
-                            "antes que en ventas = problema upstream (pauta mala, UX rota)."
-                        ),
-                    )
-                with c6:
-                    st.metric(
-                        "Tiempo prom. sesión",
-                        _fmt_seg(duracion_act),
-                        _delta_str(_delta_pct(duracion_act, duracion_prev)),
-                        help=(
-                            "Cuánto tiempo total pasa la persona en el sitio por visita. "
-                            "Suma todas las páginas que vio. >2 min indica interés real; "
-                            "<30s suele ser tráfico de pauta mal segmentada."
-                        ),
-                    )
-                with c7:
-                    st.metric(
-                        "Bounce rate",
-                        f"{bounce_act * 100:.1f}%",
-                        _fmt_pp(bounce_act * 100, bounce_prev * 100),
-                        delta_color="inverse",
-                        help=(
-                            "% de sesiones que rebotan sin interactuar (1 página, <10s, "
-                            "ningún evento). Menos es mejor. Abajo de 50% está OK; arriba "
-                            "de 70% señal de tráfico que cae por error o landing no convence."
-                        ),
-                    )
-                with c8:
-                    ppu = (sesiones_act / max(usuarios_act, 1))
-                    st.metric(
-                        "Sesiones / usuario",
-                        f"{ppu:.2f}",
-                        help=(
-                            "Cuántas veces vuelve la misma persona en el período. >1.5 "
-                            "indica buena recurrencia (te están considerando varias veces); "
-                            "≈1.0 es tráfico de descubrimiento puro (no vuelven)."
-                        ),
-                    )
+                # ── KPIs de tráfico (una sola línea compacta) ───────────────────
+                ppu = (sesiones_act / max(usuarios_act, 1))
+                _kc = st.columns(8)
+                _kc[0].metric("Sesiones", f"{int(sesiones_act):,}".replace(",", "."),
+                              _delta_str(_delta_pct(sesiones_act, sesiones_prev)),
+                              help="Visitas al sitio. Métrica base de volumen.")
+                _kc[1].metric("Usuarios", f"{int(usuarios_act):,}".replace(",", "."),
+                              _delta_str(_delta_pct(usuarios_act, usuarios_prev)),
+                              help="Personas únicas. Vs sesiones: recurrencia.")
+                _kc[2].metric("Interacción", f"{interaccion_act * 100:.1f}%",
+                              _fmt_pp(interaccion_act * 100, interaccion_prev * 100),
+                              help="% sesiones con engagement. >50% OK.")
+                _kc[3].metric("Checkouts", f"{int(checkouts_act):,}".replace(",", "."),
+                              _delta_str(_delta_pct(checkouts_act, checkouts_prev)),
+                              help="Llegaron al checkout (intención de compra).")
+                _kc[4].metric("Conv. checkout", f"{conv_act:.2f}%",
+                              _fmt_pp(conv_act, conv_prev),
+                              help="Checkouts ÷ sesiones. 2-3% OK, 4-5% muy bueno.")
+                _kc[5].metric("Tiempo sesión", _fmt_seg(duracion_act),
+                              _delta_str(_delta_pct(duracion_act, duracion_prev)),
+                              help=">2 min interés real; <30s pauta mal segmentada.")
+                _kc[6].metric("Bounce", f"{bounce_act * 100:.1f}%",
+                              _fmt_pp(bounce_act * 100, bounce_prev * 100),
+                              delta_color="inverse",
+                              help="% que rebota sin interactuar. Menos es mejor.")
+                _kc[7].metric("Ses./usuario", f"{ppu:.2f}",
+                              help=">1.5 recurrencia; ≈1.0 descubrimiento puro.")
 
                 st.divider()
 
@@ -6454,26 +6385,54 @@ if st.session_state.df_tn is not None:
 - **Unassigned** — GA4 no pudo clasificar la fuente. Suele ser tracking incompleto o links sin UTMs.
                     """.strip())
 
-                # ── Sesiones por canal + Dispositivo (lado a lado) ──────────────
+                # ── Canales (sesiones + checkouts) + Dispositivo ────────────────
+                def _top80(items, valf, minrows=3):
+                    tot = sum(valf(i) for i in items) or 1
+                    kept, acc = [], 0.0
+                    for it in sorted(items, key=valf, reverse=True):
+                        if acc / tot >= 0.80 and len(kept) >= minrows:
+                            break
+                        kept.append(it)
+                        acc += valf(it)
+                    return kept, len(items) - len(kept), tot - acc, tot
+
                 col_canal, col_device = st.columns([2, 1])
                 with col_canal:
-                    st.subheader("Sesiones por canal")
-                    st.caption("De dónde viene el tráfico, con % sobre el total.")
+                    st.subheader("Canales: sesiones + checkouts")
+                    st.caption(
+                        "De dónde viene el tráfico y cuántos llegan al checkout. "
+                        "Tasa conv. alta = el canal que mejor convierte (no el que más "
+                        "trae). Se muestra el ~80%; el resto agrupado en 'Otros'."
+                    )
                     canales = ga4["canales"]
                     if not canales:
                         st.info("Sin datos de canales en el período.")
                     else:
-                        total_canales = sum(c["sesiones_act"] for c in canales) or 1
-                        df_canales = pd.DataFrame([
-                            {
-                                "Canal": c["canal"] or "(sin dato)",
-                                "Sesiones": int(c["sesiones_act"]),
-                                "%": f"{c['sesiones_act'] / total_canales * 100:.1f}%",
-                                "Variación": _delta_str(_delta_pct(c["sesiones_act"], c["sesiones_prev"])),
+                        _ckm = {
+                            c["canal"]: c["checkouts"]
+                            for c in (ga4.get("checkouts_por_canal") or [])
+                        }
+                        _kc2, _rn, _rv, _tot = _top80(canales, lambda c: c["sesiones_act"])
+
+                        def _fc(nombre, ses, chk):
+                            return {
+                                "Canal": nombre or "(sin dato)",
+                                "Sesiones": int(ses),
+                                "% ses.": f"{ses / _tot * 100:.1f}%",
+                                "Checkouts": int(chk),
+                                "Tasa conv.": f"{chk / ses * 100:.2f}%" if ses > 0 else "—",
                             }
-                            for c in canales
-                        ])
-                        st.dataframe(df_canales, hide_index=True, use_container_width=True)
+
+                        _rows = [
+                            _fc(c["canal"], c["sesiones_act"], _ckm.get(c["canal"], 0))
+                            for c in _kc2
+                        ]
+                        if _rn > 0:
+                            _rchk = sum(
+                                _ckm.get(c["canal"], 0) for c in canales if c not in _kc2
+                            )
+                            _rows.append(_fc(f"Otros ({_rn})", _rv, _rchk))
+                        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
 
                 with col_device:
                     st.subheader("Dispositivo")
@@ -6482,88 +6441,55 @@ if st.session_state.df_tn is not None:
                     if not dispositivos:
                         st.info("Sin datos.")
                     else:
-                        total_dev = sum(d["sesiones"] for d in dispositivos) or 1
-                        df_dev = pd.DataFrame([
-                            {
-                                "Device": d["device"].title(),
-                                "Sesiones": int(d["sesiones"]),
-                                "%": f"{d['sesiones'] / total_dev * 100:.1f}%",
-                            }
-                            for d in dispositivos
-                        ])
-                        st.dataframe(df_dev, hide_index=True, use_container_width=True)
+                        _kd, _rn, _rv, _td = _top80(dispositivos, lambda d: d["sesiones"])
+                        _rows = [
+                            {"Device": d["device"].title(), "Sesiones": int(d["sesiones"]),
+                             "%": f"{d['sesiones'] / _td * 100:.1f}%"}
+                            for d in _kd
+                        ]
+                        if _rn > 0:
+                            _rows.append({"Device": f"Otros ({_rn})",
+                                          "Sesiones": int(_rv),
+                                          "%": f"{_rv / _td * 100:.1f}%"})
+                        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
 
-                # ── Sistema operativo + Resolución (para iterar UI) ─────────────
                 col_os, col_res = st.columns(2)
                 with col_os:
                     st.subheader("Sistema operativo")
-                    st.caption("Android / iOS / Windows / Mac — útil para compatibilidad.")
+                    st.caption("Android / iOS / Windows / Mac — ~80% del tráfico.")
                     sistemas = ga4["sistemas_op"]
                     if not sistemas:
                         st.info("Sin datos.")
                     else:
-                        total_os = sum(s["sesiones"] for s in sistemas) or 1
-                        df_os = pd.DataFrame([
-                            {
-                                "OS": s["os"],
-                                "Sesiones": int(s["sesiones"]),
-                                "%": f"{s['sesiones'] / total_os * 100:.1f}%",
-                            }
-                            for s in sistemas[:8]
-                        ])
-                        st.dataframe(df_os, hide_index=True, use_container_width=True)
+                        _ko, _rn, _rv, _to = _top80(sistemas, lambda s: s["sesiones"])
+                        _rows = [
+                            {"OS": s["os"], "Sesiones": int(s["sesiones"]),
+                             "%": f"{s['sesiones'] / _to * 100:.1f}%"}
+                            for s in _ko
+                        ]
+                        if _rn > 0:
+                            _rows.append({"OS": f"Otros ({_rn})", "Sesiones": int(_rv),
+                                          "%": f"{_rv / _to * 100:.1f}%"})
+                        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
 
                 with col_res:
                     st.subheader("Resolución de pantalla")
-                    st.caption("Top resoluciones — guía los breakpoints CSS.")
+                    st.caption("Top resoluciones (~80%) — guía los breakpoints CSS.")
                     resoluciones = ga4["resoluciones"]
                     if not resoluciones:
                         st.info("Sin datos.")
                     else:
-                        total_res = sum(r["sesiones"] for r in resoluciones) or 1
-                        df_res = pd.DataFrame([
-                            {
-                                "Resolución": r["resolucion"],
-                                "Sesiones": int(r["sesiones"]),
-                                "%": f"{r['sesiones'] / total_res * 100:.1f}%",
-                            }
-                            for r in resoluciones
-                        ])
-                        st.dataframe(df_res, hide_index=True, use_container_width=True)
-
-                st.divider()
-
-                # ── Checkouts por canal (atribución) ─────────────────────────────
-                st.subheader("Checkouts iniciados por canal")
-                st.caption(
-                    "Qué canal trae a la gente que LLEGA al checkout. "
-                    "Comparalo con 'Sesiones por canal': si Paid Social tiene 60% del tráfico "
-                    "pero 20% de los checkouts, estás pagando tráfico que no convierte."
-                )
-                checkouts_canal = ga4.get("checkouts_por_canal") or []
-                if not checkouts_canal:
-                    st.info("Sin checkouts en el período.")
-                else:
-                    total_checkouts_canal = sum(c["checkouts"] for c in checkouts_canal) or 1
-                    # Mapear sesiones por canal para poder calcular tasa de conversión por canal
-                    sesiones_por_canal = {c["canal"]: c["sesiones_act"] for c in ga4["canales"]}
-                    df_cc = pd.DataFrame([
-                        {
-                            "Canal": c["canal"],
-                            "Checkouts": int(c["checkouts"]),
-                            "% del total": f"{c['checkouts'] / total_checkouts_canal * 100:.1f}%",
-                            "Tasa conv.": (
-                                f"{c['checkouts'] / sesiones_por_canal[c['canal']] * 100:.2f}%"
-                                if sesiones_por_canal.get(c["canal"], 0) > 0 else "—"
-                            ),
-                        }
-                        for c in checkouts_canal
-                    ])
-                    st.dataframe(df_cc, hide_index=True, use_container_width=True)
-                    st.caption(
-                        "💡 La columna 'Tasa conv.' = checkouts ÷ sesiones de ese canal. "
-                        "El canal con tasa más alta es el que mejor convierte (no el que más tráfico trae)."
-                    )
+                        _kr, _rn, _rv, _tr = _top80(resoluciones, lambda r: r["sesiones"])
+                        _rows = [
+                            {"Resolución": r["resolucion"], "Sesiones": int(r["sesiones"]),
+                             "%": f"{r['sesiones'] / _tr * 100:.1f}%"}
+                            for r in _kr
+                        ]
+                        if _rn > 0:
+                            _rows.append({"Resolución": f"Otros ({_rn})",
+                                          "Sesiones": int(_rv),
+                                          "%": f"{_rv / _tr * 100:.1f}%"})
+                        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
 
                 st.divider()
 
