@@ -24,3 +24,23 @@ def recortar_historial(historial, max_dias=180):
         return {f: historial[f] for f in fechas}
     keep = fechas[-max_dias:]
     return {f: historial[f] for f in keep}
+
+
+def explotar_items(df_tn):
+    """Convierte df_tn (con columna Items) a long-form: una fila por línea de venta.
+
+    Devuelve columnas: Fecha, Producto, Cantidad, Costo.
+    """
+    filas = []
+    for _, row in df_tn.iterrows():
+        items = row.get("Items")
+        if not items:
+            continue
+        for it in items:
+            filas.append({
+                "Fecha": row.get("Fecha", ""),
+                "Producto": it["producto"],
+                "Cantidad": int(it["cantidad"]),
+                "Costo": float(it["costo"]),
+            })
+    return pd.DataFrame(filas, columns=["Fecha", "Producto", "Cantidad", "Costo"])
