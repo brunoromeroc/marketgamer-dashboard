@@ -2158,6 +2158,13 @@ def get_meta_gasto_por_producto(dias=30):
                     return float(m[t] or 0)
                 except Exception:
                     return 0.0
+        # Fallback: cualquier action_type que mencione "purchase"
+        for k, val in m.items():
+            if k and "purchase" in k:
+                try:
+                    return float(val or 0)
+                except Exception:
+                    return 0.0
         return 0.0
 
     try:
@@ -2225,6 +2232,41 @@ def get_meta_gasto_por_producto(dias=30):
             })
         out.sort(key=lambda x: x["gasto"], reverse=True)
         return out
+    except Exception:
+        return None
+
+@st.cache_data(ttl=1800)
+def get_meta_action_types(dias=30):
+    """Diagnóstico: lista los action_type que devuelve la cuenta en el período.
+
+    Sirve para mapear correctamente las compras cuando vienen con un tipo no
+    estándar (conversión personalizada, etc.). None si no hay config / falla.
+    """
+    meta_token = st.secrets.get("META_TOKEN", "")
+    meta_account = st.secrets.get("META_AD_ACCOUNT_ID", "")
+    if not meta_token or not meta_account:
+        return None
+    account_id = meta_account.replace("act_", "")
+    hasta = date.today()
+    desde = hasta - timedelta(days=dias)
+    url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
+    params = {
+        "access_token": meta_token,
+        "fields": "actions",
+        "time_range": json.dumps({"since": desde.isoformat(), "until": hasta.isoformat()}),
+        "level": "account",
+    }
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code != 200:
+            return None
+        tipos = set()
+        for row in r.json().get("data", []):
+            for a in row.get("actions", []) or []:
+                t = a.get("action_type")
+                if t:
+                    tipos.add(t)
+        return sorted(tipos)
     except Exception:
         return None
 
@@ -6931,6 +6973,22 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                         "reales de Tiendanube). Sirve para comparar productos entre sí y "
                         "ver si el algoritmo gasta donde convierte, no como número absoluto."
                     )
+                    if sum(x.get("compras", 0) for x in _meta_gp) == 0:
+                        _tipos = get_meta_action_types(30)
+                        with st.expander("🔧 Compras en 0 — diagnóstico de atribución", expanded=False):
+                            if not _tipos:
+                                st.write(
+                                    "Meta no devolvió ninguna acción de conversión en el "
+                                    "período (puede no haber pixel/CAPI de compra atribuido "
+                                    "a estas campañas de catálogo, o el token no tiene "
+                                    "permiso de conversiones)."
+                                )
+                            else:
+                                st.write(
+                                    "Estos son los `action_type` que devuelve tu cuenta. "
+                                    "Pasámelos y mapeo el de compra correcto:"
+                                )
+                                st.code("\n".join(_tipos))
 
                 st.divider()
 
