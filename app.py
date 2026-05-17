@@ -2118,6 +2118,91 @@ def get_meta_campanas_activas(dias=7):
     except Exception:
         return None
 
+@st.cache_data(ttl=1800)
+def get_meta_gasto_por_producto(dias=30):
+    """Gasto/impresiones por producto de catálogo (Advantage+/DPA) últimos `dias`.
+
+    Devuelve lista [{producto, product_id, gasto, impresiones, currency}] ordenada
+    por gasto, [] si no hay campañas de catálogo, o None si falta config / falla.
+    """
+    meta_token = st.secrets.get("META_TOKEN", "")
+    meta_account = st.secrets.get("META_AD_ACCOUNT_ID", "")
+    if not meta_token or not meta_account:
+        return None
+    account_id = meta_account.replace("act_", "")
+    catalog_id = st.secrets.get("META_CATALOG_ID", "")
+    hasta = date.today()
+    desde = hasta - timedelta(days=dias)
+
+    url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
+    params = {
+        "access_token": meta_token,
+        "fields": "spend,impressions,account_currency",
+        "breakdowns": "product_id",
+        "time_range": json.dumps({"since": desde.isoformat(), "until": hasta.isoformat()}),
+        "level": "account",
+        "limit": 500,
+    }
+    try:
+        acc = {}
+        cur = "ARS"
+        pages = 0
+        while url and pages < 20:
+            r = requests.get(url, params=params, timeout=20)
+            if r.status_code != 200:
+                return None
+            j = r.json()
+            for row in j.get("data", []):
+                pid = row.get("product_id")
+                if not pid:
+                    continue
+                cur = row.get("account_currency", cur) or cur
+                a = acc.setdefault(pid, {"gasto": 0.0, "impresiones": 0})
+                a["gasto"] += float(row.get("spend", 0) or 0)
+                a["impresiones"] += int(float(row.get("impressions", 0) or 0))
+            url = (j.get("paging") or {}).get("next")
+            params = None
+            pages += 1
+        if not acc:
+            return []
+
+        nombre_por = {}
+        if catalog_id:
+            cu = f"https://graph.facebook.com/v21.0/{catalog_id}/products"
+            cp = {"access_token": meta_token, "fields": "id,retailer_id,name", "limit": 500}
+            try:
+                cpages = 0
+                while cu and cpages < 10:
+                    rc = requests.get(cu, params=cp, timeout=20)
+                    if rc.status_code != 200:
+                        break
+                    jc = rc.json()
+                    for p in jc.get("data", []):
+                        nm = p.get("name") or ""
+                        if p.get("id"):
+                            nombre_por[str(p["id"])] = nm
+                        if p.get("retailer_id"):
+                            nombre_por[str(p["retailer_id"])] = nm
+                    cu = (jc.get("paging") or {}).get("next")
+                    cp = None
+                    cpages += 1
+            except Exception:
+                pass
+
+        out = []
+        for pid, v in acc.items():
+            out.append({
+                "producto": nombre_por.get(str(pid)) or f"[id {pid}]",
+                "product_id": pid,
+                "gasto": v["gasto"],
+                "impresiones": v["impresiones"],
+                "currency": cur,
+            })
+        out.sort(key=lambda x: x["gasto"], reverse=True)
+        return out
+    except Exception:
+        return None
+
 def get_dolar_blue():
     try:
         r = requests.get("https://api.bluelytics.com.ar/v2/latest", timeout=5)
@@ -6773,6 +6858,47 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                         },
                     )
                     st.caption("Tocá **Abrir ↗** para ver los anuncios y productos de esa campaña directamente en Meta.")
+
+                st.divider()
+
+                # ── Gasto de pauta por producto (catálogo Meta) ─────────────────
+                st.subheader("💸 Gasto de pauta por producto (Meta, 30 días)")
+                st.caption(
+                    "Cuánto le metés a cada producto vía campañas de catálogo "
+                    "(Advantage+/retargeting), últimos 30 días. Cruzalo con la columna "
+                    "🟥 Pauta de arriba: acá ves *cuánto* y *a qué* producto va la plata."
+                )
+                _meta_gp = get_meta_gasto_por_producto(30)
+                if _meta_gp is None:
+                    st.caption(
+                        "💡 Requiere `META_TOKEN` + `META_AD_ACCOUNT_ID`. Para ver nombres "
+                        "en vez de IDs, agregá `META_CATALOG_ID` en secrets (lo sacás de "
+                        "Commerce Manager → Catálogo)."
+                    )
+                elif not _meta_gp:
+                    st.info(
+                        "No hay gasto por producto de catálogo en los últimos 30 días "
+                        "(las campañas activas pueden no ser de catálogo)."
+                    )
+                else:
+                    _curp = _meta_gp[0]["currency"]
+                    _tgp = sum(x["gasto"] for x in _meta_gp)
+                    _hay_nombres = any(not x["producto"].startswith("[id ") for x in _meta_gp)
+                    st.caption(
+                        f"**{len(_meta_gp)} productos pauteados** · gasto 30d: {_curp} {_tgp:,.0f}"
+                        + ("" if _hay_nombres else " · agregá `META_CATALOG_ID` para ver nombres")
+                    )
+                    st.dataframe(
+                        pd.DataFrame([
+                            {
+                                "Producto": x["producto"],
+                                "Gasto 30d": f"{x['currency']} {x['gasto']:,.0f}",
+                                "Impresiones": x["impresiones"],
+                            }
+                            for x in _meta_gp
+                        ]),
+                        hide_index=True, use_container_width=True, height=420,
+                    )
 
                 st.divider()
 
