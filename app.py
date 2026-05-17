@@ -2068,6 +2068,50 @@ def get_meta_spend(fecha_desde_str, fecha_hasta_str):
     except Exception:
         return None
 
+@st.cache_data(ttl=1800)
+def get_meta_campanas_activas(dias=7):
+    """Campañas con entrega en los últimos `dias` días (= efectivamente activas).
+
+    Devuelve lista [{campaña, gasto, impresiones, currency}] ordenada por gasto,
+    o None si no hay credenciales / falla.
+    """
+    meta_token = st.secrets.get("META_TOKEN", "")
+    meta_account = st.secrets.get("META_AD_ACCOUNT_ID", "")
+    if not meta_token or not meta_account:
+        return None
+    account_id = meta_account.replace("act_", "")
+    hasta = date.today()
+    desde = hasta - timedelta(days=dias)
+    url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
+    params = {
+        "access_token": meta_token,
+        "fields": "campaign_name,spend,impressions,account_currency",
+        "time_range": json.dumps({"since": desde.isoformat(), "until": hasta.isoformat()}),
+        "level": "campaign",
+        "limit": 200,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code != 200:
+            return None
+        data = r.json().get("data", [])
+        out = []
+        for d in data:
+            gasto = float(d.get("spend", 0) or 0)
+            impr = int(float(d.get("impressions", 0) or 0))
+            if gasto <= 0 and impr <= 0:
+                continue
+            out.append({
+                "campaña": d.get("campaign_name", "(sin nombre)"),
+                "gasto": gasto,
+                "impresiones": impr,
+                "currency": d.get("account_currency", "USD"),
+            })
+        out.sort(key=lambda x: x["gasto"], reverse=True)
+        return out
+    except Exception:
+        return None
+
 def get_dolar_blue():
     try:
         r = requests.get("https://api.bluelytics.com.ar/v2/latest", timeout=5)
@@ -6681,6 +6725,40 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                             "Navegó %": "{:.0f}%", "Directo %": "{:.0f}%",
                         }),
                         hide_index=True, use_container_width=True, height=420,
+                    )
+
+                st.divider()
+
+                # ── Campañas activas en Meta ────────────────────────────────────
+                st.subheader("📡 Campañas activas en Meta (últimos 7 días)")
+                st.caption(
+                    "Qué está corriendo *ahora* en Meta Ads. Cruzalo con la columna "
+                    "🟥 Pauta de arriba: si un producto es casi todo pauta y su campaña "
+                    "no figura acá, ese tráfico ya murió — no le pongas más balas."
+                )
+                _meta_camp = get_meta_campanas_activas(7)
+                if _meta_camp is None:
+                    st.caption("💡 Agregá `META_TOKEN` + `META_AD_ACCOUNT_ID` en secrets para ver campañas activas.")
+                elif not _meta_camp:
+                    st.info("No hay campañas con entrega en los últimos 7 días.")
+                else:
+                    _cur = _meta_camp[0]["currency"]
+                    _tot_g = sum(c["gasto"] for c in _meta_camp)
+                    _n = len(_meta_camp)
+                    st.caption(
+                        f"**{_n} campaña{'s' if _n != 1 else ''} activa{'s' if _n != 1 else ''}** "
+                        f"· gasto 7d: {_cur} {_tot_g:,.0f}"
+                    )
+                    st.dataframe(
+                        pd.DataFrame([
+                            {
+                                "Campaña": c["campaña"],
+                                "Gasto 7d": f"{c['currency']} {c['gasto']:,.0f}",
+                                "Impresiones": c["impresiones"],
+                            }
+                            for c in _meta_camp
+                        ]),
+                        hide_index=True, use_container_width=True, height=320,
                     )
 
                 st.divider()
