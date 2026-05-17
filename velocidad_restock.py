@@ -44,3 +44,42 @@ def explotar_items(df_tn):
                 "Costo": float(it["costo"]),
             })
     return pd.DataFrame(filas, columns=["Fecha", "Producto", "Cantidad", "Costo"])
+
+
+def _d(iso):
+    return date.fromisoformat(iso)
+
+
+def dias_con_stock(fechas_venta, hoy_iso, tiene_stock_ahora, historial,
+                   producto, ventana_inicio_iso):
+    """Días en que el producto estuvo disponible, dentro de la ventana de análisis.
+
+    Híbrido: usa snapshot real donde exista, proxy (asume disponible) donde no.
+    """
+    fechas = sorted(f for f in fechas_venta if f)
+    if not fechas:
+        return 1
+
+    inicio = _d(fechas[0])
+    if ventana_inicio_iso:
+        vi = _d(ventana_inicio_iso)
+        if vi > inicio:
+            inicio = vi
+
+    fin = _d(hoy_iso) if tiene_stock_ahora else _d(fechas[-1])
+    if fin < inicio:
+        return 1
+
+    total_dias = (fin - inicio).days + 1
+
+    snap_cubiertos = 0
+    snap_con_stock = 0
+    for fecha_iso, mapa in historial.items():
+        f = _d(fecha_iso)
+        if inicio <= f <= fin:
+            snap_cubiertos += 1
+            if mapa.get(producto, 0) and mapa.get(producto, 0) > 0:
+                snap_con_stock += 1
+
+    proxy_dias = total_dias - snap_cubiertos
+    return max(1, snap_con_stock + proxy_dias)
