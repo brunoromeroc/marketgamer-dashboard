@@ -2085,7 +2085,7 @@ def get_meta_campanas_activas(dias=7):
     url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
     params = {
         "access_token": meta_token,
-        "fields": "campaign_name,spend,impressions,account_currency",
+        "fields": "campaign_id,campaign_name,spend,impressions,account_currency",
         "time_range": json.dumps({"since": desde.isoformat(), "until": hasta.isoformat()}),
         "level": "campaign",
         "limit": 200,
@@ -2101,11 +2101,17 @@ def get_meta_campanas_activas(dias=7):
             impr = int(float(d.get("impressions", 0) or 0))
             if gasto <= 0 and impr <= 0:
                 continue
+            cid = d.get("campaign_id", "")
+            link = (
+                f"https://business.facebook.com/adsmanager/manage/ads"
+                f"?act={account_id}&selected_campaign_ids={cid}"
+            ) if cid else ""
             out.append({
                 "campaña": d.get("campaign_name", "(sin nombre)"),
                 "gasto": gasto,
                 "impresiones": impr,
                 "currency": d.get("account_currency", "USD"),
+                "link": link,
             })
         out.sort(key=lambda x: x["gasto"], reverse=True)
         return out
@@ -6755,11 +6761,18 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                                 "Campaña": c["campaña"],
                                 "Gasto 7d": f"{c['currency']} {c['gasto']:,.0f}",
                                 "Impresiones": c["impresiones"],
+                                "Ver en Meta": c["link"],
                             }
                             for c in _meta_camp
                         ]),
                         hide_index=True, use_container_width=True, height=320,
+                        column_config={
+                            "Ver en Meta": st.column_config.LinkColumn(
+                                "Ver en Meta", display_text="Abrir ↗"
+                            ),
+                        },
                     )
+                    st.caption("Tocá **Abrir ↗** para ver los anuncios y productos de esa campaña directamente en Meta.")
 
                 st.divider()
 
