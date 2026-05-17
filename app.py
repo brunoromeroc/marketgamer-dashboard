@@ -2023,12 +2023,14 @@ def procesar_orders(orders):
     for o in orders:
         prods = []
         costo_productos = 0.0
+        items_linea = []
         for p in o.get("products", []):
             nombre = _extraer_nombre_producto(p.get("name", ""))
             prods.append(nombre)
             qty = int(p.get("quantity", 1) or 1)
             cost = float(p.get("cost", 0) or 0)
             costo_productos += cost * qty
+            items_linea.append({"producto": nombre, "cantidad": qty, "costo": cost})
         productos = " / ".join(prods)
         cantidad = sum(int(p.get("quantity", 1) or 1) for p in o.get("products", []))
 
@@ -2105,6 +2107,7 @@ def procesar_orders(orders):
             "Provincia": province,
             "Gateway raw": gateway,
             "Metodo raw": str(metodo),
+            "Items": items_linea,
         })
     return pd.DataFrame(filas)
 
