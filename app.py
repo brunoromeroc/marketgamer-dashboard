@@ -2505,9 +2505,33 @@ def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
     elif mostrar_success:
         st.info("No se encontraron órdenes en el período.")
 
+@st.cache_data(ttl=1800, show_spinner="Cargando histórico de ventas...")
+def _cargar_ordenes_historico(dias_historia):
+    """Órdenes sobre una ventana amplia, independiente del período del sidebar.
+
+    Cacheado por dias_historia (TTL 30 min) para no refetchear en cada rerun.
+    Liviano: solo fetch + procesar_orders (sin matching PN/MP, innecesario para velocidad).
+    """
+    desde = (date.today() - timedelta(days=dias_historia)).isoformat()
+    hasta = date.today().isoformat()
+    try:
+        orders = get_tn_orders(desde, hasta)
+    except Exception:
+        return pd.DataFrame()
+    return procesar_orders(orders) if orders else pd.DataFrame()
+
 # ── Búsqueda ───────────────────────────────────────────────────────────────────
 if buscar:
     _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=True)
+    _sd = st.session_state.get("stock_tn")
+    if _sd is not None:
+        _sm = {}
+        for _, _r in _sd.iterrows():
+            _sv = _r["Stock"]
+            if isinstance(_sv, (int, float)):
+                _sm[_r["Producto"]] = _sm.get(_r["Producto"], 0) + int(_sv)
+        if _sm:
+            gs_append_snapshot(_sm)
 
 # ── Auto-carga del mes actual en primera visita ──────────────────────────────
 if st.session_state.df_tn is None:
@@ -3823,10 +3847,23 @@ if st.session_state.df_tn is not None:
     elif seccion == "🔥 Velocidad de ventas":
         from velocidad_restock import calcular_velocidad_restock
         st.subheader("🔥 Velocidad de ventas y planificación de restock")
+        st.caption("📌 Esta solapa usa su propia ventana histórica, independiente del período del panel lateral.")
 
-        df_full = st.session_state.get("df_tn")
+        with st.expander("⚙️ Configuración de alertas", expanded=False):
+            cg, ch = st.columns(2)
+            p_hist = cg.slider("📚 Historia a analizar (días)", 90, 1095, 365)
+            p_vent = ch.slider("🕐 Ventana reciente (días)", 14, 180, 90)
+            ca, cb, cc = st.columns(3)
+            p_lead = ca.slider("📦 Lead time (días)", 1, 45, 7)
+            p_colchon = cb.slider("🛟 Colchón de seguridad (días)", 0, 30, 7)
+            p_cob = cc.slider("🎯 Cobertura objetivo (días)", 7, 90, 30)
+            ce, cf = st.columns(2)
+            p_minu = ce.slider("Mín. unidades p/ confianza", 1, 20, 5)
+            p_mind = cf.slider("Mín. días distintos p/ confianza", 1, 10, 3)
+
+        df_full = _cargar_ordenes_historico(p_hist)
         if df_full is None or df_full.empty:
-            st.info("Buscá primero para ver los datos.")
+            st.info("No hay órdenes en el rango histórico seleccionado.")
         else:
             stock_map = {}
             precio_map = {}
@@ -3841,17 +3878,14 @@ if st.session_state.df_tn is not None:
                     if pr and pn not in precio_map:
                         precio_map[pn] = float(pr)
 
-            historial = gs_read("HistorialStock") or {}
+            if not stock_map:
+                st.warning(
+                    "📦 No cargaste el stock todavía. Andá a la solapa **Stock** y tocá "
+                    "**'Cargar stock desde Tienda Nube'**. Sin stock no se puede calcular el "
+                    "restock: todos los productos figuran como 'Sin límite'."
+                )
 
-            with st.expander("⚙️ Configuración de alertas", expanded=False):
-                ca, cb, cc = st.columns(3)
-                p_lead = ca.slider("📦 Lead time (días)", 1, 45, 7)
-                p_colchon = cb.slider("🛟 Colchón de seguridad (días)", 0, 30, 7)
-                p_cob = cc.slider("🎯 Cobertura objetivo (días)", 7, 90, 30)
-                cd, ce, cf = st.columns(3)
-                p_vent = cd.slider("🕐 Ventana reciente (días)", 14, 180, 90)
-                p_minu = ce.slider("Mín. unidades p/ confianza", 1, 20, 5)
-                p_mind = cf.slider("Mín. días distintos p/ confianza", 1, 10, 3)
+            historial = gs_read("HistorialStock") or {}
 
             params = {
                 "lead_time": p_lead, "colchon": p_colchon, "cobertura": p_cob,
