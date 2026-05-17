@@ -2137,12 +2137,29 @@ def get_meta_gasto_por_producto(dias=30):
     url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
     params = {
         "access_token": meta_token,
-        "fields": "spend,impressions,account_currency",
+        "fields": "spend,impressions,account_currency,actions,action_values",
         "breakdowns": "product_id",
         "time_range": json.dumps({"since": desde.isoformat(), "until": hasta.isoformat()}),
         "level": "account",
         "limit": 500,
     }
+    _PURCH = (
+        "omni_purchase", "offsite_conversion.fb_pixel_purchase",
+        "purchase", "onsite_web_purchase",
+    )
+
+    def _pick_purchase(lst):
+        if not lst:
+            return 0.0
+        m = {a.get("action_type"): a.get("value") for a in lst}
+        for t in _PURCH:
+            if t in m:
+                try:
+                    return float(m[t] or 0)
+                except Exception:
+                    return 0.0
+        return 0.0
+
     try:
         acc = {}
         cur = "ARS"
@@ -2157,9 +2174,14 @@ def get_meta_gasto_por_producto(dias=30):
                 if not pid:
                     continue
                 cur = row.get("account_currency", cur) or cur
-                a = acc.setdefault(pid, {"gasto": 0.0, "impresiones": 0})
+                a = acc.setdefault(
+                    pid,
+                    {"gasto": 0.0, "impresiones": 0, "compras": 0.0, "revenue": 0.0},
+                )
                 a["gasto"] += float(row.get("spend", 0) or 0)
                 a["impresiones"] += int(float(row.get("impressions", 0) or 0))
+                a["compras"] += _pick_purchase(row.get("actions"))
+                a["revenue"] += _pick_purchase(row.get("action_values"))
             url = (j.get("paging") or {}).get("next")
             params = None
             pages += 1
@@ -2196,6 +2218,9 @@ def get_meta_gasto_por_producto(dias=30):
                 "product_id": pid,
                 "gasto": v["gasto"],
                 "impresiones": v["impresiones"],
+                "compras": int(round(v["compras"])),
+                "revenue": v["revenue"],
+                "roas": (v["revenue"] / v["gasto"]) if v["gasto"] > 0 else 0.0,
                 "currency": cur,
             })
         out.sort(key=lambda x: x["gasto"], reverse=True)
@@ -6894,10 +6919,17 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                                 "Producto": x["producto"],
                                 "Gasto 30d": f"{x['currency']} {x['gasto']:,.0f}",
                                 "Impresiones": x["impresiones"],
+                                "Compras (Meta)": x.get("compras", 0),
+                                "ROAS": f"{x.get('roas', 0):.1f}x",
                             }
                             for x in _meta_gp
                         ]),
                         hide_index=True, use_container_width=True, height=420,
+                    )
+                    st.caption(
+                        "⚠️ Compras/ROAS son atribución *de Meta* (sobrestima vs ventas "
+                        "reales de Tiendanube). Sirve para comparar productos entre sí y "
+                        "ver si el algoritmo gasta donde convierte, no como número absoluto."
                     )
 
                 st.divider()
