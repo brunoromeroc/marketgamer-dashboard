@@ -3821,132 +3821,113 @@ if st.session_state.df_tn is not None:
     # TAB 5: VELOCIDAD DE VENTAS
     # ══════════════════════════════════════════════════════════════════════════
     elif seccion == "🔥 Velocidad de ventas":
+        from velocidad_restock import calcular_velocidad_restock
         st.subheader("🔥 Velocidad de ventas y planificación de restock")
-        if df_tn.empty:
+
+        df_full = st.session_state.get("df_tn")
+        if df_full is None or df_full.empty:
             st.info("Buscá primero para ver los datos.")
         else:
-            dias_periodo = max((fecha_hasta - fecha_desde).days + 1, 1)
-            ventas_por_prod = {}
-            for _, row in df_tn.iterrows():
-                prods_list = [p.strip() for p in str(row.get("Productos", "")).split(" / ") if p.strip()]
-                n_prods = max(len(prods_list), 1)
-                for p in prods_list:
-                    if p not in ventas_por_prod:
-                        ventas_por_prod[p] = {"unidades": 0, "revenue": 0.0, "ordenes": 0}
-                    ventas_por_prod[p]["unidades"] += int(row.get("Cantidad", 1) or 1)
-                    ventas_por_prod[p]["revenue"] += row.get("Total ($)", 0) / n_prods
-                    ventas_por_prod[p]["ordenes"] += 1
+            stock_map = {}
+            precio_map = {}
+            stock_df = st.session_state.get("stock_tn")
+            if stock_df is not None:
+                for _, srow in stock_df.iterrows():
+                    pn = srow["Producto"]
+                    sv = srow["Stock"]
+                    if isinstance(sv, (int, float)):
+                        stock_map[pn] = stock_map.get(pn, 0) + int(sv)
+                    pr = srow.get("Precio ($)", 0)
+                    if pr and pn not in precio_map:
+                        precio_map[pn] = float(pr)
 
-            if not ventas_por_prod:
+            historial = gs_read("HistorialStock") or {}
+
+            with st.expander("⚙️ Configuración de alertas", expanded=False):
+                ca, cb, cc = st.columns(3)
+                p_lead = ca.slider("📦 Lead time (días)", 1, 45, 7)
+                p_colchon = cb.slider("🛟 Colchón de seguridad (días)", 0, 30, 7)
+                p_cob = cc.slider("🎯 Cobertura objetivo (días)", 7, 90, 30)
+                cd, ce, cf = st.columns(3)
+                p_vent = cd.slider("🕐 Ventana reciente (días)", 14, 180, 90)
+                p_minu = ce.slider("Mín. unidades p/ confianza", 1, 20, 5)
+                p_mind = cf.slider("Mín. días distintos p/ confianza", 1, 10, 3)
+
+            params = {
+                "lead_time": p_lead, "colchon": p_colchon, "cobertura": p_cob,
+                "ventana_reciente": p_vent, "min_unidades_conf": p_minu,
+                "min_dias_conf": p_mind,
+            }
+
+            df_vel = calcular_velocidad_restock(
+                df_full, stock_map, historial, precio_map, params,
+                date.today().isoformat(),
+            )
+
+            if df_vel.empty:
                 st.info("No hay datos de productos.")
             else:
-                stock_map = {}
-                if "stock_tn" in st.session_state and st.session_state.stock_tn is not None:
-                    for _, srow in st.session_state.stock_tn.iterrows():
-                        pn = srow["Producto"]
-                        sv = srow["Stock"]
-                        if isinstance(sv, (int, float)):
-                            stock_map[pn] = stock_map.get(pn, 0) + int(sv)
-
-                with st.expander("⚙️ Configuración de alertas", expanded=False):
-                    ca, cb = st.columns(2)
-                    dias_alerta = ca.slider("⚠️ Alertar si queda stock para menos de X días", 1, 60, 14)
-                    dias_restock = cb.slider("📦 Lead time restock (días)", 1, 45, 7)
-
-                rows_vel = []
-                for prod, data in ventas_por_prod.items():
-                    vel_dia = round(data["unidades"] / dias_periodo, 3)
-                    stock_actual = stock_map.get(prod)
-                    dias_restantes = None
-                    fecha_agot_str = "Sin stock cargado"
-                    necesita_restock = False
-                    restock_units = 0
-
-                    if stock_actual is not None and vel_dia > 0:
-                        dias_restantes = round(stock_actual / vel_dia, 0)
-                        fecha_agot_str = (pd.Timestamp.now() + pd.Timedelta(days=dias_restantes)).strftime("%d/%m/%Y")
-                        necesita_restock = dias_restantes <= (dias_alerta + dias_restock)
-                        restock_units = max(0, round(vel_dia * 30 - stock_actual + vel_dia * dias_restock))
-                    elif stock_actual is not None:
-                        fecha_agot_str = "—"
-
-                    urgencia = 0
-                    if dias_restantes is not None and vel_dia > 0:
-                        urgencia = min(100, round((vel_dia * 10) + max(0, (30 - dias_restantes) * 2)))
-                    else:
-                        urgencia = round(vel_dia * 10)
-
-                    rows_vel.append({
-                        "Producto": prod,
-                        "Unidades vendidas": data["unidades"],
-                        "Vel. diaria": vel_dia,
-                        "Vel. semanal": round(vel_dia * 7, 2),
-                        "Vel. mensual": round(vel_dia * 30, 1),
-                        "Revenue ($)": round(data["revenue"]),
-                        "Stock actual": stock_actual if stock_actual is not None else "—",
-                        "Días restantes": int(dias_restantes) if dias_restantes is not None else "—",
-                        "Se agota": fecha_agot_str,
-                        "Restock sugerido": restock_units if restock_units > 0 else "—",
-                        "Urgencia": urgencia,
-                        "_necesita_restock": necesita_restock,
-                    })
-
-                df_vel = pd.DataFrame(rows_vel).sort_values("Urgencia", ascending=False)
-                criticos = df_vel[df_vel["_necesita_restock"]]
+                df_ok = df_vel[df_vel["Confianza"] == "ok"]
+                df_baja = df_vel[df_vel["Confianza"] == "baja"]
+                criticos = df_ok[df_ok["_necesita_restock"]]
 
                 v1, v2, v3, v4 = st.columns(4)
                 v1.metric("Productos", len(df_vel))
-                v2.metric("🔴 Críticos", len(criticos))
-                v3.metric("Período", f"{dias_periodo} días")
-                v4.metric("Vel. media", f"{df_vel['Vel. diaria'].mean():.2f} u/día")
+                v2.metric("🔴 A reponer", len(criticos))
+                v3.metric("Ventana reciente", f"{p_vent} días")
+                v4.metric("Snapshots", len(historial))
 
                 if not criticos.empty:
                     st.divider()
                     st.error(f"⚠️ {len(criticos)} producto(s) necesitan restock")
                     for _, crow in criticos.iterrows():
-                        dr = crow["Días restantes"]
                         st.warning(
-                            f"🔴 **{crow['Producto']}** — stock para **{dr} días** | "
-                            f"vel. {crow['Vel. diaria']} u/día | restock: **{crow['Restock sugerido']} u**"
+                            f"🔴 **{crow['Producto']}** — vel. reciente "
+                            f"{crow['Vel. reciente']} u/día | stock {crow['Stock actual']} "
+                            f"| ROP {crow['ROP']} | pedir **{crow['Restock sugerido']} u** "
+                            f"| riesgo ${crow['Facturación en riesgo']:,.0f}"
                         )
 
                 st.divider()
-                df_chart = df_vel[["Producto", "Vel. diaria"]].sort_values("Vel. diaria", ascending=True).tail(15)
-                fig_vel = px.bar(df_chart, x="Vel. diaria", y="Producto", orientation="h",
-                    title="Velocidad de venta (u/día)", color="Vel. diaria",
-                    color_continuous_scale=["#00C49F", "#FFD700", "#FF5733"], text="Vel. diaria")
-                fig_vel.update_layout(showlegend=False, coloraxis_showscale=False,
-                    yaxis={"categoryorder": "total ascending"})
-                fig_vel.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-                st.plotly_chart(fig_vel, use_container_width=True)
+                df_chart = (df_ok[["Producto", "Vel. reciente"]]
+                            .sort_values("Vel. reciente", ascending=True).tail(15))
+                if not df_chart.empty:
+                    fig_vel = px.bar(
+                        df_chart, x="Vel. reciente", y="Producto", orientation="h",
+                        title="Velocidad reciente (u/día)", color="Vel. reciente",
+                        color_continuous_scale=["#00C49F", "#FFD700", "#FF5733"],
+                        text="Vel. reciente",
+                    )
+                    fig_vel.update_layout(showlegend=False, coloraxis_showscale=False,
+                                          yaxis={"categoryorder": "total ascending"})
+                    fig_vel.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+                    st.plotly_chart(fig_vel, use_container_width=True)
 
                 cols_show = [
-                    "Producto", "Unidades vendidas", "Vel. diaria", "Vel. semanal",
-                    "Vel. mensual", "Revenue ($)", "Stock actual", "Días restantes",
-                    "Se agota", "Restock sugerido", "Urgencia",
+                    "Producto", "Unidades", "Vel. histórica", "Vel. reciente",
+                    "Stock actual", "ROP", "Días restantes", "Restock sugerido",
+                    "Facturación en riesgo",
                 ]
                 st.dataframe(
-                    df_vel[cols_show].style
-                        .format({"Revenue ($)": "${:,.0f}", "Vel. diaria": "{:.3f}", "Vel. semanal": "{:.1f}"})
-                        .map(lambda v: (
-                            "background-color: #5a1a1a; color: #ff6b6b" if isinstance(v, (int, float)) and v >= 70
-                            else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v >= 40
-                            else "background-color: #1a3a1a; color: #00C49F" if isinstance(v, (int, float))
-                            else ""
-                        ), subset=["Urgencia"])
-                        .map(lambda v: (
-                            "background-color: #5a1a1a; color: #ff6b6b" if isinstance(v, (int, float)) and v <= 7
-                            else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v <= 14
-                            else ""
-                        ), subset=["Días restantes"]),
+                    df_ok[cols_show].style.format({
+                        "Vel. histórica": "{:.3f}", "Vel. reciente": "{:.3f}",
+                        "ROP": "{:.1f}", "Facturación en riesgo": "${:,.0f}",
+                    }),
                     use_container_width=True, hide_index=True,
                 )
+
+                if not df_baja.empty:
+                    with st.expander(f"🔸 {len(df_baja)} productos de baja confianza (pocas ventas)", expanded=False):
+                        st.dataframe(
+                            df_baja[["Producto", "Unidades", "Vel. reciente", "Stock actual"]],
+                            use_container_width=True, hide_index=True,
+                        )
 
                 st.divider()
                 st.subheader("📈 Evolución de ventas")
                 prod_sel = st.selectbox("Producto", df_vel["Producto"].tolist())
                 if prod_sel:
-                    df_evo = df_tn[df_tn["Productos"].str.contains(prod_sel, na=False, regex=False)]
+                    df_evo = df_full[df_full["Productos"].str.contains(prod_sel, na=False, regex=False)]
                     if not df_evo.empty:
                         df_evo_g = df_evo.groupby("Fecha").agg(
                             Unidades=("Cantidad", "sum"), Revenue=("Total ($)", "sum"),
@@ -3964,7 +3945,8 @@ if st.session_state.df_tn is not None:
                         st.plotly_chart(fig_evo, use_container_width=True)
 
                 st.download_button("⬇️ Descargar análisis",
-                    df_vel[cols_show].to_csv(index=False).encode("utf-8"), "restock_analysis.csv", "text/csv")
+                    df_vel[cols_show].to_csv(index=False).encode("utf-8"),
+                    "restock_analysis.csv", "text/csv")
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 6: GASTOS FIJOS
