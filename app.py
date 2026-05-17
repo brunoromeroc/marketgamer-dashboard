@@ -2214,6 +2214,18 @@ def _norm_nombre(s):
     s = _re.sub(r"[^a-z0-9]+", " ", s)
     return _re.sub(r"\s+", " ", s).strip()
 
+def _base_nombre(s):
+    """Nombre de producto SIN variante: saca lo que está entre paréntesis."""
+    import re as _re
+    return _norm_nombre(_re.sub(r"\([^)]*\)", " ", str(s or "")))
+
+def _slug_producto(path):
+    """Slug normalizado desde un pagePath de TN (/productos/<slug>/)."""
+    p = str(path or "")
+    if "/productos/" in p:
+        p = p.split("/productos/", 1)[1]
+    return _norm_nombre(p.replace("-", " "))
+
 def get_dolar_blue():
     try:
         r = requests.get("https://api.bluelytics.com.ar/v2/latest", timeout=5)
@@ -6960,9 +6972,9 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                 # ── Qué poner en la home ────────────────────────────────────────
                 st.subheader("🏠 Qué poner en la home")
                 st.caption(
-                    "Recomendación cruzando ventas reales TN, margen, origen (orgánico "
-                    "vs pauta) y gasto Meta — últimos 30 días. Listas transparentes "
-                    "(ves el porqué); vos cargás los carruseles en Tiendanube."
+                    "Dos pilares: **lo que más plata te hace ganar** y **lo más "
+                    "buscado orgánicamente**. Agrupado por producto (no por color), "
+                    "últimos 30 días. Soporte de decisión — vos cargás los carruseles."
                 )
                 from velocidad_restock import explotar_items as _eih
                 _hoy_h = date.today()
@@ -6976,48 +6988,60 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                     _prod = {}
                     if not _lih.empty:
                         for _p, _g in _lih.groupby("Producto"):
-                            _k = _norm_nombre(_p)
+                            _k = _base_nombre(_p)
+                            if not _k:
+                                continue
                             _f = sorted(str(f) for f in _g["Fecha"] if f)
                             _u30 = int(_g[_g["Fecha"] >= _c30]["Cantidad"].sum())
                             _cs = [float(c) for c in _g["Costo"] if c and float(c) > 0]
                             d = _prod.setdefault(
-                                _k, {"k": _k, "nombre": _p, "u30": 0,
-                                      "costo": 0.0, "primera": _f[0] if _f else ""}
+                                _k, {"k": _k, "nombre": "", "u30": 0,
+                                      "costos": [], "primera": ""}
                             )
                             d["u30"] += _u30
-                            if _cs and not d["costo"]:
-                                d["costo"] = sum(_cs) / len(_cs)
+                            d["costos"] += _cs
+                            if not d["nombre"] or len(_p) < len(d["nombre"]):
+                                d["nombre"] = _p
                             if _f and (not d["primera"] or _f[0] < d["primera"]):
                                 d["primera"] = _f[0]
 
+                    # Stock/precio agregado por producto base
                     _stk = {}
-                    _prc = {}
+                    _prcs = {}
                     _sdf2 = st.session_state.get("stock_tn")
                     if _sdf2 is not None:
                         for _, _sr in _sdf2.iterrows():
-                            _k = _norm_nombre(_sr["Producto"])
+                            _k = _base_nombre(_sr["Producto"])
                             _sv = _sr["Stock"]
-                            _stk[_k] = "ilim" if not isinstance(_sv, (int, float)) else int(_sv)
+                            _hay = (not isinstance(_sv, (int, float))) or int(_sv) > 0
+                            _stk[_k] = _stk.get(_k, False) or _hay
                             _pp = _sr.get("Precio ($)", 0)
-                            if _pp and _k not in _prc:
-                                _prc[_k] = float(_pp)
+                            if _pp:
+                                _prcs.setdefault(_k, []).append(float(_pp))
 
+                    # Origen GA4: clave por SLUG del path (limpio), fallback título base
                     _orgm = {}
                     for o in (ga4.get("origen_productos") or []):
                         _tt = o["pauta"] + o["busco"] + o["navego"] + o["directo"]
                         if _tt <= 0:
                             continue
-                        _orgm[_norm_nombre(o.get("titulo") or o["path"])] = {
+                        _val = {
                             "pct_org": (o["busco"] + o["navego"]) / _tt,
                             "pct_pauta": o["pauta"] / _tt,
-                            "ater": _tt,
+                            "org_abs": o["busco"] + o["navego"],
                         }
+                        _ks = _slug_producto(o.get("path", ""))
+                        if _ks:
+                            _orgm[_ks] = _val
+                        _kt = _base_nombre(o.get("titulo", ""))
+                        if _kt and _kt not in _orgm:
+                            _orgm[_kt] = _val
 
                     _gmeta = {}
                     _mp_h = get_meta_gasto_por_producto(30)
                     if _mp_h:
                         for x in _mp_h:
-                            _kk = _norm_nombre(x["producto"])
+                            _kk = _base_nombre(x["producto"])
                             _gmeta[_kk] = _gmeta.get(_kk, 0.0) + x["gasto"]
 
                     def _mt(nrm, tabla):
@@ -7028,95 +7052,102 @@ mucho tráfico con engagement bajo NO zafan por volumen.
 
                     _regs = []
                     for _k, d in _prod.items():
-                        _st = _stk.get(_k)
-                        if _st is None:
-                            _st = _mt(_k, _stk)
-                        _pre = _prc.get(_k) or _mt(_k, _prc) or 0.0
+                        _en = bool(_stk.get(_k))
+                        if _k not in _stk:
+                            _m = _mt(_k, _stk)
+                            _en = bool(_m) if _m is not None else False
+                        _plist = _prcs.get(_k) or _mt(_k, _prcs) or []
+                        _pre = (sum(_plist) / len(_plist)) if _plist else 0.0
+                        _cu = (sum(d["costos"]) / len(d["costos"])) if d["costos"] else 0.0
                         _og = _orgm.get(_k) or _mt(_k, _orgm)
                         _gm = _gmeta.get(_k)
                         if _gm is None:
                             _gm = _mt(_k, _gmeta)
                         _gm = _gm or 0.0
-                        _en = (_st == "ilim") or (isinstance(_st, (int, float)) and _st > 0)
-                        _mg = ((_pre - d["costo"]) / _pre) if (_pre > 0 and d["costo"] > 0) else None
+                        _mg = ((_pre - _cu) / _pre) if (_pre > 0 and _cu > 0) else None
+                        _gan = (d["u30"] * (_pre - _cu)) if (_pre > 0 and _cu > 0) else None
                         _regs.append({
                             "k": _k, "nombre": d["nombre"], "u30": d["u30"],
                             "primera": d["primera"], "en_stock": _en,
-                            "margen": _mg, "ing30": d["u30"] * _pre if _pre > 0 else 0.0,
+                            "margen": _mg, "ganancia": _gan,
                             "pct_org": _og["pct_org"] if _og else None,
                             "pct_pauta": _og["pct_pauta"] if _og else None,
-                            "ater": _og["ater"] if _og else 0,
+                            "org_abs": _og["org_abs"] if _og else 0,
                             "gasto": _gm,
+                            "nuevo": bool(d["primera"]) and d["primera"] >= _c45,
                         })
 
-                    _cab = [r for r in _regs if r["en_stock"] and r["u30"] > 0 and r["margen"] is not None]
-                    _cab.sort(key=lambda r: r["ing30"] * (r["margen"] or 0), reverse=True)
-                    _cab = _cab[:10]
-                    _cabk = {r["k"] for r in _cab}
-                    _joy = [
-                        r for r in _regs if r["en_stock"] and r["u30"] > 0
-                        and r["k"] not in _cabk and r["pct_org"] is not None
-                        and r["pct_org"] >= 0.5 and (r["pct_pauta"] or 0) < 0.4
-                        and (r["margen"] is None or r["margen"] > 0)
+                    _plata = [
+                        r for r in _regs
+                        if r["en_stock"] and r["u30"] >= 2 and r["ganancia"] is not None
                     ]
-                    _joy.sort(key=lambda r: (r["ater"], r["u30"]), reverse=True)
-                    _joy = _joy[:10]
-                    _nov = [r for r in _regs if r["en_stock"] and r["u30"] > 0 and r["primera"] >= _c45]
-                    _nov.sort(key=lambda r: r["u30"], reverse=True)
-                    _nov = _nov[:10]
-                    _evi = [r for r in _regs if r["gasto"] > 0 and (r["u30"] == 0 or not r["en_stock"])]
-                    _evi.sort(key=lambda r: r["gasto"], reverse=True)
-                    _evi = _evi[:10]
+                    _plata.sort(key=lambda r: r["ganancia"], reverse=True)
+                    _plata = _plata[:12]
+                    _busc = [
+                        r for r in _regs if r["en_stock"] and r["org_abs"] > 0
+                    ]
+                    _busc.sort(key=lambda r: r["org_abs"], reverse=True)
+                    _busc = _busc[:12]
+                    _rev = [
+                        r for r in _regs
+                        if r["gasto"] > 0 and (r["u30"] == 0 or not r["en_stock"])
+                    ]
+                    _rev.sort(key=lambda r: r["gasto"], reverse=True)
+                    _rev = _rev[:12]
 
                     def _pc(v):
                         return f"{v*100:.0f}%" if v is not None else "—"
 
-                    _ta, _tb, _tc, _td = st.tabs([
-                        f"🐎 Caballos ({len(_cab)})",
-                        f"💎 Joyas orgánicas ({len(_joy)})",
-                        f"✨ Novedades ({len(_nov)})",
-                        f"⛔ Evitar ({len(_evi)})",
+                    _ta, _tb, _tc = st.tabs([
+                        f"💰 Lo que hace plata ({len(_plata)})",
+                        f"🔍 Muy buscados ({len(_busc)})",
+                        f"⛔ Revisar pauta ({len(_rev)})",
                     ])
                     with _ta:
-                        st.caption("Lo que ya vende y deja margen. Reforzalos en home (amplificás lo que convierte).")
+                        st.caption(
+                            "Ordenado por **ganancia real $ 30d** (unid × (precio−costo)). "
+                            "Mínimo 2 unidades — 1 venta es casualidad. 🆕 = nuevo y ya gana."
+                        )
                         st.dataframe(pd.DataFrame([
-                            {"Producto": r["nombre"], "Unid 30d": r["u30"],
-                             "Margen": _pc(r["margen"]), "Ingreso aprox": f"${r['ing30']:,.0f}",
+                            {"Producto": ("🆕 " if r["nuevo"] else "") + r["nombre"],
+                             "Unid 30d": r["u30"], "Margen": _pc(r["margen"]),
+                             "Ganancia 30d": f"${r['ganancia']:,.0f}",
                              "% Pauta": _pc(r["pct_pauta"])}
-                            for r in _cab
-                        ]) if _cab else pd.DataFrame({"—": ["Sin candidatos (¿stock/margen cargados?)"]}),
+                            for r in _plata
+                        ]) if _plata else pd.DataFrame(
+                            {"—": ["Sin candidatos. Cargá stock (solapa Stock) para precio/margen."]}),
                             hide_index=True, use_container_width=True)
                     with _tb:
-                        st.caption("Demanda orgánica alta y poca pauta: la jugada de mayor ROI, hoy no la capitalizás en home.")
+                        st.caption(
+                            "Lo que la gente busca/llega sola (orgánico absoluto), tenga "
+                            "muchas o pocas ventas. Si está acá y vende poco, puede ser "
+                            "viral o demanda no capitalizada → fuerte candidato a home."
+                        )
                         st.dataframe(pd.DataFrame([
-                            {"Producto": r["nombre"], "Unid 30d": r["u30"],
+                            {"Producto": r["nombre"], "Aterrizajes org.": int(r["org_abs"]),
                              "% Orgánico": _pc(r["pct_org"]), "% Pauta": _pc(r["pct_pauta"]),
-                             "Aterrizajes": int(r["ater"]), "Margen": _pc(r["margen"])}
-                            for r in _joy
-                        ]) if _joy else pd.DataFrame({"—": ["Sin joyas detectadas (necesita datos de origen GA4)"]}),
+                             "Unid 30d": r["u30"], "Margen": _pc(r["margen"])}
+                            for r in _busc
+                        ]) if _busc else pd.DataFrame(
+                            {"—": ["Sin datos de origen que matcheen productos en stock."]}),
                             hide_index=True, use_container_width=True)
                     with _tc:
-                        st.caption("Productos nuevos (primera venta ≤ 45 días) que ya muestran tracción real.")
-                        st.dataframe(pd.DataFrame([
-                            {"Producto": r["nombre"], "1ª venta": r["primera"],
-                             "Unid 30d": r["u30"], "Margen": _pc(r["margen"]),
-                             "% Orgánico": _pc(r["pct_org"])}
-                            for r in _nov
-                        ]) if _nov else pd.DataFrame({"—": ["Sin novedades con tracción en la ventana"]}),
-                            hide_index=True, use_container_width=True)
-                    with _td:
-                        st.caption("Gastás pauta y no convierte (o sin stock). No van a home: revisar precio/ficha o sacar del catálogo.")
+                        st.caption(
+                            "Gasto Meta sin venta atribuida o sin stock. OJO: es Advantage+ "
+                            "(el algoritmo decide el producto y la atribución es difusa). "
+                            "Revisar precio/ficha/stock — no necesariamente sacar a ciegas."
+                        )
                         st.dataframe(pd.DataFrame([
                             {"Producto": r["nombre"], "Gasto Meta 30d": f"${r['gasto']:,.0f}",
                              "Unid 30d": r["u30"], "En stock": "sí" if r["en_stock"] else "no",
-                             "Motivo": "Sin stock" if not r["en_stock"] else "Gasta y no vende"}
-                            for r in _evi
-                        ]) if _evi else pd.DataFrame({"—": ["Nada para evitar (bien ahí)"]}),
+                             "Motivo": "Sin stock" if not r["en_stock"] else "Gasta, no convierte"}
+                            for r in _rev
+                        ]) if _rev else pd.DataFrame({"—": ["Nada para revisar (bien ahí)"]}),
                             hide_index=True, use_container_width=True)
                     st.caption(
-                        "Heurístico, match por nombre entre fuentes. Unidades exactas (TN); "
-                        "margen/ingreso usan precio actual (aprox). Es soporte de decisión: "
-                        "la última palabra es tuya."
+                        "Heurístico, match por nombre/slug entre fuentes. Unidades exactas "
+                        "(TN); margen/ganancia usan precio actual promedio del producto "
+                        "(aprox). Es soporte de decisión: la última palabra es tuya."
                     )
 
                 st.divider()
