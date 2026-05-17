@@ -743,6 +743,18 @@ def gs_write(sheet_name, data_dict):
     except Exception:
         return False
 
+def gs_append_snapshot(stock_map):
+    """Guarda el snapshot de stock de hoy en HistorialStock (idempotente por fecha)."""
+    from velocidad_restock import merge_snapshot, recortar_historial
+    try:
+        hoy = date.today().isoformat()
+        hist = gs_read("HistorialStock") or {}
+        hist = merge_snapshot(hist, hoy, stock_map)
+        hist = recortar_historial(hist, max_dias=180)
+        return gs_write("HistorialStock", hist)
+    except Exception:
+        return False
+
 # ── Google Analytics 4 ─────────────────────────────────────────────────────────
 @st.cache_resource
 def get_ga4_client():
@@ -3754,6 +3766,12 @@ if st.session_state.df_tn is not None:
                                 "Precio ($)": float(v.get("price", 0) or 0),
                             })
                     st.session_state.stock_tn = pd.DataFrame(stock_rows)
+                    _snap_map = {}
+                    for _r in stock_rows:
+                        _sv = _r["Stock"]
+                        if isinstance(_sv, (int, float)):
+                            _snap_map[_r["Producto"]] = _snap_map.get(_r["Producto"], 0) + int(_sv)
+                    gs_append_snapshot(_snap_map)
                     st.success(f"✅ {len(stock_rows)} variantes cargadas")
                 else:
                     st.warning("No se pudieron cargar productos.")
