@@ -2249,6 +2249,23 @@ def _extraer_nombre_producto(n):
         return n.get("es", "") or next(iter(n.values()), "")
     return ""
 
+def _variant_label(v):
+    """Etiqueta legible de una variante TN: junta sus valores (color, RAM, etc.).
+    Ej: values=[{'es':'Gris'}] → 'Gris'.  values=[{'es':'8GB'},{'es':'Negro'}] → '8GB, Negro'.
+    """
+    if not isinstance(v, dict):
+        return ""
+    partes = []
+    for val in (v.get("values") or []):
+        if isinstance(val, dict):
+            txt = val.get("es") or next((x for x in val.values() if x), "")
+        else:
+            txt = str(val)
+        txt = str(txt).strip()
+        if txt:
+            partes.append(txt)
+    return ", ".join(partes)
+
 def procesar_orders(orders):
     filas = []
     for o in orders:
@@ -4331,31 +4348,14 @@ if st.session_state.df_tn is not None:
                 if productos_tn:
                     prods_map = {}
                     prods_urls = {}
-                    multi_variant_skipped = 0
+                    multi_variant_expandidos = 0
+                    variantes_agregadas = 0
                     for p in productos_tn:
                         nombre_raw = p.get("name", {})
                         nombre = nombre_raw.get("es", "") if isinstance(nombre_raw, dict) else str(nombre_raw)
                         variants_list = p.get("variants", []) or []
-                        # Productos con multiples variantes: no agregar la fila padre
-                        # — el usuario gestiona cada variante con nombre propio en la sheet.
-                        if len(variants_list) > 1:
-                            multi_variant_skipped += 1
-                            continue
-                        peso_kg = None
-                        for v in variants_list:
-                            w = v.get("weight")
-                            if w:
-                                try:
-                                    peso_kg = float(w)
-                                    break
-                                except Exception:
-                                    pass
-                        if not peso_kg:
-                            try:
-                                peso_kg = float(p.get("weight")) if p.get("weight") else None
-                            except Exception:
-                                peso_kg = None
-                        prods_map[nombre] = peso_kg
+
+                        # URL del producto (igual para todas sus variantes)
                         handle_raw = p.get("handle") or {}
                         if isinstance(handle_raw, dict):
                             handle = handle_raw.get("es") or handle_raw.get("pt") or handle_raw.get("en") or ""
@@ -4370,8 +4370,45 @@ if st.session_state.df_tn is not None:
                                 url = str(permalink)
                             elif p.get("id"):
                                 url = f"https://marketgamer.mitiendanube.com/admin/v2/products/{p.get('id')}"
-                        if url:
-                            prods_urls[nombre] = url
+
+                        # Peso a nivel padre (fallback si la variante no lo trae)
+                        try:
+                            peso_padre = float(p.get("weight")) if p.get("weight") else None
+                        except Exception:
+                            peso_padre = None
+
+                        if len(variants_list) > 1:
+                            # Producto multi-variante: agregar UNA fila por variante con
+                            # nombre propio "Producto (Valores)". Las variantes que solo
+                            # cambian de color colapsan luego en _build_costos_df (color es
+                            # ruido); las de RAM/almacenamiento quedan como filas separadas.
+                            multi_variant_expandidos += 1
+                            for v in variants_list:
+                                label = _variant_label(v)
+                                disp = f"{nombre} ({label})" if label else nombre
+                                try:
+                                    vp = float(v.get("weight")) if v.get("weight") else None
+                                except Exception:
+                                    vp = None
+                                prods_map[disp] = vp or peso_padre
+                                if url:
+                                    prods_urls[disp] = url
+                                variantes_agregadas += 1
+                        else:
+                            peso_kg = None
+                            for v in variants_list:
+                                w = v.get("weight")
+                                if w:
+                                    try:
+                                        peso_kg = float(w)
+                                        break
+                                    except Exception:
+                                        pass
+                            if not peso_kg:
+                                peso_kg = peso_padre
+                            prods_map[nombre] = peso_kg
+                            if url:
+                                prods_urls[nombre] = url
                     st.session_state.productos_tn_map = prods_map
                     st.session_state.productos_tn_urls = prods_urls
 
@@ -4393,9 +4430,9 @@ if st.session_state.df_tn is not None:
                                     existing["peso_kg"] = peso
                     st.session_state.costos_consolas = costos_actual
                     st.session_state._costos_needs_refresh = True
-                    msg = f"✅ {len(prods_map)} productos cargados ({nuevos} nuevos agregados, existentes conservados)"
-                    if multi_variant_skipped:
-                        msg += f" · {multi_variant_skipped} con múltiples variantes omitidos (cargá cada variante a mano)"
+                    msg = f"✅ {len(prods_map)} filas cargadas ({nuevos} nuevas, existentes conservadas)"
+                    if multi_variant_expandidos:
+                        msg += f" · {multi_variant_expandidos} producto(s) multi-variante expandido(s) en {variantes_agregadas} variantes"
                     st.success(msg)
                     try:
                         st.rerun(scope="app")
