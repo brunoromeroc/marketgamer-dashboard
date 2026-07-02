@@ -10,6 +10,8 @@ import json
 import re
 import urllib.parse
 
+import operacion
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Dashboard Market Gamer", layout="wide", page_icon="🎮")
 
@@ -2523,6 +2525,7 @@ SECCIONES = [
     "🏭 Proveedores",
     "💳 Estadísticas de pago",
     "🤖 Analista IA",
+    "⚙️ Operación",
 ]
 
 with st.sidebar:
@@ -2776,6 +2779,96 @@ if st.session_state.df_tn is None:
 
 # ── Contenido principal ───────────────────────────────────────────────────────
 dolar_blue = get_dolar_blue()
+
+# ══════════════════════════════════════════════════════════════
+#  OPERACIÓN — señales del CRM + Merki web vía worker (fase 2 universo MG)
+#  Aislada: NO depende de df_tn; si el worker no responde, degrada sola.
+# ══════════════════════════════════════════════════════════════
+SENALES_URL = st.secrets.get("SENALES_URL", "https://merki-bot.brunoromeroc.workers.dev")
+SENALES_KEY = st.secrets.get("SENALES_KEY", "")
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def get_senales():
+    try:
+        r = requests.get(f"{SENALES_URL}/senales", params={"key": SENALES_KEY}, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        return None
+    except Exception:
+        return None
+
+
+if seccion == "⚙️ Operación":
+    st.markdown("## ⚙️ Operación")
+    if not SENALES_KEY:
+        st.warning("⚠️ Falta SENALES_KEY en secrets — agregala en Streamlit Cloud → Settings → Secrets.")
+        st.stop()
+    _data_op = get_senales()
+    if not _data_op:
+        st.warning("⚠️ Sin datos de operación (el worker no responde). El resto del dashboard sigue normal.")
+        st.stop()
+    op = operacion.parse_senales(_data_op)
+
+    def _kpi_op(label, value, sub="", val_color=None):
+        vc = val_color or MG_TEXT
+        sub_html = (
+            f'<div style="font-size:0.68rem;color:{MG_MUTED};margin-top:0.25rem;">{sub}</div>'
+            if sub else f'<div style="font-size:0.68rem;color:transparent;margin-top:0.25rem;">—</div>'
+        )
+        return (
+            f'<div style="background:{MG_SURF};border-radius:8px;padding:0.9rem 1rem;'
+            f'min-height:90px;display:flex;flex-direction:column;justify-content:flex-start;">'
+            f'<div style="font-size:0.58rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+            f'text-transform:uppercase;letter-spacing:0.08em;">{label}</div>'
+            f'<div style="font-size:1.35rem;font-weight:700;color:{vc};line-height:1.1;">{value}</div>'
+            f'{sub_html}</div>'
+        )
+
+    st.caption(
+        f"Snapshot del CRM: {operacion.edad_legible(op['snapshot_ts'])} · Merki web: últimos 7 días"
+    )
+
+    st.markdown("#### 🏷️ Fichas")
+    f = op["fichas"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(_kpi_op("Rojas", str(f["rojas"]), f"de {f['total']} fichas",
+                        val_color=MG_RED if f["rojas"] else None), unsafe_allow_html=True)
+    c2.markdown(_kpi_op("Amarillas / Verdes", f"{f['amarillas']} / {f['verdes']}"), unsafe_allow_html=True)
+    c3.markdown(_kpi_op("Alertas de claims", str(f["con_alerta_claims"]),
+                        f"{f['propuestas_pendientes']} propuestas pendientes",
+                        val_color=MG_RED if f["con_alerta_claims"] else None), unsafe_allow_html=True)
+    c4.markdown(_kpi_op("Drift / Sin peso", f"{f['con_drift']} / {f['sin_peso']}"), unsafe_allow_html=True)
+
+    st.markdown("#### 👥 Clientes")
+    c = op["clientes"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(_kpi_op("VIP", str(c["vip"]), f"de {c['total']} clientes"), unsafe_allow_html=True)
+    c2.markdown(_kpi_op("Activos", str(c["activo"])), unsafe_allow_html=True)
+    c3.markdown(_kpi_op("Dormidos / Inactivos", f"{c['dormido']} / {c['inactivo']}"), unsafe_allow_html=True)
+    c4.markdown(_kpi_op("Gran comprador (no VIP)", str(c["gran_comprador"]),
+                        "gastan como VIP pero se enfriaron"), unsafe_allow_html=True)
+
+    st.markdown("#### 📨 Automatizaciones")
+    a = op["automatizaciones"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(_kpi_op("Tracking pendientes", str(a["pendientes_tracking"])), unsafe_allow_html=True)
+    c2.markdown(_kpi_op("Reviews pendientes", str(a["pendientes_review"])), unsafe_allow_html=True)
+    c3.markdown(_kpi_op("Enviados hoy", f"{a['enviados_hoy']} / {a['limite_diario']}"), unsafe_allow_html=True)
+    c4.markdown(_kpi_op("Envío automático", "ON" if op["envio_habilitado"] else "OFF",
+                        val_color=None if op["envio_habilitado"] else MG_MUTED), unsafe_allow_html=True)
+
+    st.markdown("#### 🤖 Merki web (últimos 7 días)")
+    m = op["merki"]
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(_kpi_op("Mensajes", str(m["total_messages"])), unsafe_allow_html=True)
+    c2.markdown(_kpi_op("Conversaciones", str(m["unique_sessions"])), unsafe_allow_html=True)
+    c3.markdown(_kpi_op("Leads", str(m["lead_sessions"])), unsafe_allow_html=True)
+    if m["consultas"]:
+        st.markdown("**Consultas recientes** (primer mensaje de cada charla):")
+        for q in m["consultas"]:
+            st.markdown(f"- {q.get('texto', '')}")
+    st.stop()
 
 if st.session_state.df_tn is not None:
     # ── Helper: Extraer precios individuales por producto desde órdenes raw ──
