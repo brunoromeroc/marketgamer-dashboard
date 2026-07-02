@@ -11,6 +11,7 @@ import re
 import urllib.parse
 
 import operacion
+import tn_client
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Dashboard Market Gamer", layout="wide", page_icon="🎮")
@@ -1329,14 +1330,8 @@ def get_ga4_metrics(periodo="28d"):
         return None
 
 # ── API Tienda Nube ────────────────────────────────────────────────────────────
-def get_tn_headers():
-    return {
-        "Authentication": f"bearer {TN_TOKEN}",
-        "User-Agent": "MarketGamerDashboard (info@marketgamer.com.ar)",
-    }
-
 def get_tn_orders(fecha_desde, fecha_hasta):
-    headers = get_tn_headers()
+    """Trae órdenes pagas de TN (3 combos de filtros, dedup por id). HTTP: tn_client."""
     all_orders, seen_ids = [], set()
     combinaciones = [
         {"payment_status": "paid"},
@@ -1345,102 +1340,38 @@ def get_tn_orders(fecha_desde, fecha_hasta):
     ]
     with st.spinner("Conectando con Tienda Nube..."):
         for filtros in combinaciones:
-            page = 1
-            while True:
-                r = requests.get(
-                    f"https://api.tiendanube.com/v1/{TN_STORE_ID}/orders",
-                    headers=headers,
-                    params={
-                        "per_page": 50, "page": page,
-                        "created_at_min": f"{fecha_desde}T00:00:00-03:00",
-                        "created_at_max": f"{fecha_hasta}T23:59:59-03:00",
-                        **filtros,
-                    },
-                )
-                if r.status_code == 404:
-                    break
-                if r.status_code == 429:
-                    time.sleep(3)
-                    continue
-                if r.status_code != 200:
-                    break
-                try:
-                    data = r.json()
-                except Exception:
-                    break
-                if not data:
-                    break
-                for o in data:
-                    oid = o.get("id")
-                    if oid not in seen_ids:
-                        seen_ids.add(oid)
-                        all_orders.append(o)
-                if len(data) < 50:
-                    break
-                page += 1
+            batch = tn_client.get_paginado(
+                "orders",
+                params={
+                    "created_at_min": f"{fecha_desde}T00:00:00-03:00",
+                    "created_at_max": f"{fecha_hasta}T23:59:59-03:00",
+                    **filtros,
+                },
+                per_page=50,
+                token=TN_TOKEN,
+            )
+            for o in batch:
+                if o["id"] not in seen_ids:
+                    seen_ids.add(o["id"])
+                    all_orders.append(o)
     return all_orders
 
 def get_tn_pagos(fecha_desde, fecha_hasta):
-    headers = get_tn_headers()
-    all_pagos, seen_ids = [], set()
+    """Transacciones de Pago Nube del período. HTTP: tn_client."""
     with st.spinner("Conectando con Pago Nube..."):
-        page = 1
-        while True:
-            r = requests.get(
-                f"https://api.tiendanube.com/v1/{TN_STORE_ID}/transactions",
-                headers=headers,
-                params={
-                    "per_page": 50, "page": page,
-                    "created_at_min": f"{fecha_desde}T00:00:00-03:00",
-                    "created_at_max": f"{fecha_hasta}T23:59:59-03:00",
-                },
-            )
-            if r.status_code in [404, 422]:
-                break
-            if r.status_code == 429:
-                time.sleep(3)
-                continue
-            if r.status_code != 200:
-                break
-            try:
-                data = r.json()
-            except Exception:
-                break
-            if not data:
-                break
-            for p in data:
-                pid = p.get("id")
-                if pid not in seen_ids:
-                    seen_ids.add(pid)
-                    all_pagos.append(p)
-            if len(data) < 50:
-                break
-            page += 1
-    return all_pagos
+        return tn_client.get_paginado(
+            "transactions",
+            params={
+                "created_at_min": f"{fecha_desde}T00:00:00-03:00",
+                "created_at_max": f"{fecha_hasta}T23:59:59-03:00",
+            },
+            per_page=50,
+            token=TN_TOKEN,
+        )
 
 def get_tn_products():
-    headers = get_tn_headers()
-    all_products = []
-    page = 1
-    while True:
-        r = requests.get(
-            f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products",
-            headers=headers,
-            params={"per_page": 50, "page": page},
-        )
-        if r.status_code != 200:
-            break
-        try:
-            data = r.json()
-        except Exception:
-            break
-        if not data:
-            break
-        all_products.extend(data)
-        if len(data) < 50:
-            break
-        page += 1
-    return all_products
+    """Catálogo completo de productos. HTTP: tn_client."""
+    return tn_client.get_paginado("products", per_page=50, token=TN_TOKEN)
 
 # ── Tasas Pago Nube ────────────────────────────────────────────────────────────
 PROC_BASE = 0.0329
