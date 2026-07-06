@@ -69,6 +69,19 @@ Todo lo decidido quedó implementado, commiteado y pusheado (7 commits, `1c9c834
 6. Gastos fijos los mantiene actualizados él.
 7. Marca ventas en efectivo: importante pero no lo hacía → detector automático.
 
+## Sesión 2026-07-06 (mañana) — Iteración post-revisión de Bruno
+
+- Dashboard: evolución histórica mensual (fact/margen/órdenes/ticket con promedio),
+  patrones por día de semana y momento del mes, tendencia por producto base
+  (30d vs prom. 90d previos, flechas ±20%), alerta de sin-costo compactada.
+- Salud Financiera: waterfall real (go.Waterfall) con % de cada costo sobre el
+  total + caption "dónde atacar"; guardián de comisiones (avisa solo si el costo %
+  de PN/MP se desvía >1pp del promedio histórico 12m); se retiró la tabla de
+  detalle por orden (vive en Margen real).
+- Bruno confirmó: usa muy poco "Detalle y ajustes" → candidata a achicarse o
+  fusionarse (por ahora queda: tiene marcar-efectivo y debug de órdenes).
+- Bruno tenía IVA en 0.00% en la config — avisado dos veces.
+
 ## Pendiente para próximas sesiones
 
 1. **Bruno debe revisar** las solapas nuevas al despertar (Dashboard, Reposición,
