@@ -2539,14 +2539,12 @@ SECCIONES = [
     "📊 Dashboard",
     "🔍 Detalle y ajustes",
     "💚 Salud Financiera",
-    "📦 Stock",
-    "🔥 Velocidad de ventas",
+    "📦 Reposición",
     "🌐 Web / Analytics",
     "🏗️ Gastos fijos",
     "💻 Costos de consolas",
-    "📐 Margen teórico",
+    "💰 Precios",
     "📈 Margen real",
-    "🏭 Proveedores",
     "💳 Estadísticas de pago",
     "🤖 Analista IA",
     "⚙️ Operación",
@@ -2775,6 +2773,42 @@ def _cargar_ordenes_historico(dias_historia):
     except Exception:
         return pd.DataFrame()
     return procesar_orders(orders) if orders else pd.DataFrame()
+
+def _fetch_stock_tn():
+    """Trae el stock de TN, lo guarda en sesión y registra snapshot histórico.
+    Devuelve True si cargó algo."""
+    productos = get_tn_products()
+    if not productos:
+        return False
+    stock_rows = []
+    for p in productos:
+        nombre_raw = p.get("name", {})
+        nombre = nombre_raw.get("es", "") if isinstance(nombre_raw, dict) else str(nombre_raw)
+        for v in p.get("variants", []):
+            stock = v.get("stock", None)
+            vals = v.get("values", [])
+            variante = " / ".join([
+                (val.get("es", "") or next(iter(val.values()), ""))
+                if isinstance(val, dict) else str(val)
+                for val in vals
+            ]) if vals else "—"
+            stock_rows.append({
+                "Producto": nombre,
+                "Variante": variante,
+                "SKU": v.get("sku", ""),
+                "Stock": stock if stock is not None else "Sin límite",
+                "Precio ($)": float(v.get("price", 0) or 0),
+            })
+    st.session_state.stock_tn = pd.DataFrame(stock_rows)
+    st.session_state.stock_tn_ts = time.strftime("%H:%M")
+    _snap_map = {}
+    for _r in stock_rows:
+        _sv = _r["Stock"]
+        if isinstance(_sv, (int, float)):
+            _snap_map[_r["Producto"]] = _snap_map.get(_r["Producto"], 0) + int(_sv)
+    if _snap_map:
+        gs_append_snapshot(_snap_map)
+    return True
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _df_periodo_liviano(desde_str, hasta_str):
@@ -4012,93 +4046,23 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 4: STOCK
     # ══════════════════════════════════════════════════════════════════════════
-    elif seccion == "📦 Stock":
-        st.subheader("📦 Stock — Tienda Nube")
-
-        @st.fragment
-        def cargar_stock():
-            if st.button("🔄 Cargar stock desde Tienda Nube", use_container_width=False):
-                with st.spinner("Consultando productos y stock..."):
-                    productos = get_tn_products()
-                if productos:
-                    stock_rows = []
-                    for p in productos:
-                        nombre_raw = p.get("name", {})
-                        nombre = nombre_raw.get("es", "") if isinstance(nombre_raw, dict) else str(nombre_raw)
-                        for v in p.get("variants", []):
-                            stock = v.get("stock", None)
-                            vals = v.get("values", [])
-                            variante = " / ".join([
-                                (val.get("es", "") or next(iter(val.values()), ""))
-                                if isinstance(val, dict) else str(val)
-                                for val in vals
-                            ]) if vals else "—"
-                            stock_rows.append({
-                                "Producto": nombre,
-                                "Variante": variante,
-                                "SKU": v.get("sku", ""),
-                                "Stock": stock if stock is not None else "Sin límite",
-                                "Precio ($)": float(v.get("price", 0) or 0),
-                            })
-                    st.session_state.stock_tn = pd.DataFrame(stock_rows)
-                    _snap_map = {}
-                    for _r in stock_rows:
-                        _sv = _r["Stock"]
-                        if isinstance(_sv, (int, float)):
-                            _snap_map[_r["Producto"]] = _snap_map.get(_r["Producto"], 0) + int(_sv)
-                    gs_append_snapshot(_snap_map)
-                    st.success(f"✅ {len(stock_rows)} variantes cargadas")
-                else:
-                    st.warning("No se pudieron cargar productos.")
-
-            if "stock_tn" in st.session_state and st.session_state.stock_tn is not None:
-                df_stock = st.session_state.stock_tn
-                col_f1, col_f2 = st.columns(2)
-                buscar_prod = col_f1.text_input("🔍 Buscar producto", "")
-                mostrar_sin_stock = col_f2.checkbox("Solo sin stock o bajo", value=False)
-
-                df_stock_f = df_stock.copy()
-                if buscar_prod:
-                    df_stock_f = df_stock_f[df_stock_f["Producto"].str.contains(buscar_prod, case=False, na=False)]
-                if mostrar_sin_stock:
-                    df_stock_f = df_stock_f[df_stock_f["Stock"].apply(lambda x: isinstance(x, (int, float)) and x <= 3)]
-
-                st.dataframe(
-                    df_stock_f.style.format({"Precio ($)": "${:,.0f}"}),
-                    use_container_width=True, hide_index=True,
-                )
-
-                st.divider()
-                st.subheader("⚠️ Alertas de stock bajo")
-                umbral = st.slider("Umbral (unidades)", 1, 20, 5)
-                alertas = df_stock[df_stock["Stock"].apply(lambda x: isinstance(x, (int, float)) and x <= umbral)]
-                if alertas.empty:
-                    st.success(f"✅ Todos con más de {umbral} unidades.")
-                else:
-                    st.warning(f"⚠️ {len(alertas)} variante(s) con stock ≤ {umbral}")
-                    st.dataframe(alertas.style.format({"Precio ($)": "${:,.0f}"}),
-                        use_container_width=True, hide_index=True)
-
-                st.divider()
-                stock_num = df_stock[df_stock["Stock"].apply(lambda x: isinstance(x, (int, float)))]
-                r1, r2, r3 = st.columns(3)
-                r1.metric("Total productos", df_stock["Producto"].nunique())
-                r2.metric("Total variantes", len(df_stock))
-                r3.metric("Total unidades", int(stock_num["Stock"].sum()))
-                st.download_button("⬇️ Descargar stock",
-                    df_stock.to_csv(index=False).encode("utf-8"), "stock_marketgamer.csv", "text/csv")
-            else:
-                st.info("👆 Hacé clic en 'Cargar stock' para ver el inventario.")
-
-        cargar_stock()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # TAB 5: VELOCIDAD DE VENTAS
-    # ══════════════════════════════════════════════════════════════════════════
-    elif seccion == "🔥 Velocidad de ventas":
+    elif seccion == "📦 Reposición":
         from velocidad_restock import calcular_velocidad_restock
-        st.subheader("🔥 Velocidad de ventas y planificación de restock")
-        st.caption("📌 Esta solapa usa su propia ventana histórica, independiente del período del panel lateral.")
+        st.subheader("📦 Reposición — stock, velocidad y plan de compra")
+        st.caption("📌 Usa su propia ventana histórica, independiente del período del panel lateral.")
+
+        # ── Stock: auto-carga si falta (adiós dependencia oculta) ─────────────
+        if st.session_state.get("stock_tn") is None:
+            with st.spinner("Cargando stock desde Tienda Nube..."):
+                _fetch_stock_tn()
+        _sc1, _sc2 = st.columns([1, 3])
+        if _sc1.button("🔄 Refrescar stock", use_container_width=True):
+            with st.spinner("Actualizando stock..."):
+                _fetch_stock_tn()
+            st.rerun()
+        _ts_stock = st.session_state.get("stock_tn_ts", "")
+        if _ts_stock:
+            _sc2.caption(f"Stock cargado a las {_ts_stock} · snapshot histórico registrado")
 
         with st.expander("⚙️ Configuración de alertas", expanded=False):
             cg, ch = st.columns(2)
@@ -4130,11 +4094,7 @@ if st.session_state.df_tn is not None:
                         precio_map[pn] = float(pr)
 
             if not stock_map:
-                st.warning(
-                    "📦 No cargaste el stock todavía. Andá a la solapa **Stock** y tocá "
-                    "**'Cargar stock desde Tienda Nube'**. Sin stock no se puede calcular el "
-                    "restock: todos los productos figuran como 'Sin límite'."
-                )
+                st.warning("📦 No se pudo cargar el stock de TN — el restock no se puede calcular sin stock.")
 
             historial = gs_read("HistorialStock") or {}
 
@@ -4172,6 +4132,117 @@ if st.session_state.df_tn is not None:
                             f"| ROP {crow['ROP']} | pedir **{crow['Restock sugerido']} u** "
                             f"| riesgo ${crow['Facturación en riesgo']:,.0f}"
                         )
+
+                # ══════════════════════════════════════════════════════════════
+                # 🛒 PLAN DE COMPRA — cuánta plata necesito y qué me conviene
+                # Cruza el restock sugerido con CostosConsolas (FOB + import)
+                # para pasar de "qué reponer" a "cuánto flujo necesito".
+                # ══════════════════════════════════════════════════════════════
+                st.divider()
+                st.subheader("🛒 Plan de compra")
+                _costos_repo = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
+                _tc_repo = st.session_state.tipo_cambio_sf or (int(dolar_blue) if dolar_blue else 1200)
+                _iva_repo = float(st.session_state.pct_iva)
+                _pkg_repo = float(st.session_state.get("packaging_global", 2500))
+                _TASA_VENTA_EST = 0.0415  # comisión promedio estimada para el margen proyectado
+
+                _cand_plan = df_ok[df_ok["Restock sugerido"] > 0]
+                if _cand_plan.empty:
+                    st.success("✅ Nada para reponer según la velocidad actual.")
+                else:
+                    _filas_plan = []
+                    _sin_costo_plan = []
+                    for _, _r in _cand_plan.iterrows():
+                        _prod = _r["Producto"]
+                        _qty = int(_r["Restock sugerido"])
+                        _costo_usd = get_costo_total_usd(_prod, _costos_repo)
+                        _precio_v = float(precio_map.get(_prod, 0) or 0)
+                        if _costo_usd <= 0:
+                            _sin_costo_plan.append(_prod)
+                            continue
+                        _costo_ars = _costo_usd * _tc_repo
+                        _margen_u = None
+                        if _precio_v > 0:
+                            _margen_u = _precio_v * (1 - _TASA_VENTA_EST - _iva_repo / 100) - _pkg_repo - _costo_ars
+                        _vel_r = float(_r["Vel. reciente"])
+                        _gan_mes = round(_margen_u * min(_vel_r * 30, _qty)) if _margen_u is not None else None
+                        _filas_plan.append({
+                            "Comprar": True,
+                            "Producto": _prod,
+                            "Unidades": _qty,
+                            "Costo/u (USD)": round(_costo_usd, 2),
+                            "Margen/u ($)": round(_margen_u) if _margen_u is not None else None,
+                            "Vel (u/día)": round(_vel_r, 2),
+                            "Días rest.": _r["Días restantes"],
+                            "Gan. mes est. ($)": _gan_mes,
+                        })
+                    if _sin_costo_plan:
+                        st.caption(f"⚠️ Sin costo cargado (no entran al plan): {', '.join(_sin_costo_plan)} → 💻 Costos de consolas")
+
+                    if _filas_plan:
+                        # Orden por ganancia mensual estimada por dólar invertido
+                        _df_plan = pd.DataFrame(_filas_plan)
+                        _df_plan["_score"] = _df_plan.apply(
+                            lambda r: (r["Gan. mes est. ($)"] or 0) / max(r["Costo/u (USD)"] * r["Unidades"], 1),
+                            axis=1,
+                        )
+                        _df_plan = _df_plan.sort_values("_score", ascending=False).drop(columns=["_score"])
+
+                        _df_plan_ed = st.data_editor(
+                            _df_plan,
+                            column_config={
+                                "Comprar": st.column_config.CheckboxColumn("Comprar"),
+                                "Unidades": st.column_config.NumberColumn("Unidades", min_value=0, step=1),
+                                "Costo/u (USD)": st.column_config.NumberColumn(disabled=True, format="$%.2f"),
+                                "Margen/u ($)": st.column_config.NumberColumn(disabled=True, format="$%d"),
+                                "Vel (u/día)": st.column_config.NumberColumn(disabled=True),
+                                "Días rest.": st.column_config.NumberColumn(disabled=True),
+                                "Gan. mes est. ($)": st.column_config.NumberColumn(disabled=True, format="$%d"),
+                                "Producto": st.column_config.TextColumn(disabled=True),
+                            },
+                            use_container_width=True, hide_index=True, key="plan_compra_editor",
+                        )
+
+                        _sel_plan = _df_plan_ed[(_df_plan_ed["Comprar"]) & (_df_plan_ed["Unidades"] > 0)]
+                        _tot_usd = float((_sel_plan["Costo/u (USD)"] * _sel_plan["Unidades"]).sum())
+                        _tot_ars = _tot_usd * _tc_repo
+                        _tot_gan = float(_sel_plan["Gan. mes est. ($)"].fillna(0).sum())
+
+                        _pc1, _pc2, _pc3 = st.columns(3)
+                        _pc1.markdown(kpi_card("Inversión necesaria", f"USD {_tot_usd:,.0f}", f"≈ {fmt(_tot_ars)} al blue"), unsafe_allow_html=True)
+                        _pc2.markdown(kpi_card("Ganancia mensual est.", fmt(_tot_gan), "si se vende a velocidad actual", val_color="#4ade80"), unsafe_allow_html=True)
+                        _pc3.markdown(kpi_card("Repago estimado", f"{(_tot_ars / _tot_gan):.1f} meses" if _tot_gan > 0 else "—", "inversión / ganancia mensual"), unsafe_allow_html=True)
+
+                        # ── ¿Tenés un presupuesto? — asignación por rentabilidad ──
+                        _presu = st.number_input(
+                            "💵 ¿Cuánto tenés para invertir? (USD, 0 = sin límite)",
+                            min_value=0, value=0, step=100, key="presu_plan",
+                        )
+                        if _presu > 0 and _tot_usd > _presu:
+                            _rest = float(_presu)
+                            _picks = []
+                            for _, _r in _sel_plan.iterrows():
+                                _cu = float(_r["Costo/u (USD)"])
+                                if _cu <= 0:
+                                    continue
+                                _n_af = int(min(_r["Unidades"], _rest // _cu))
+                                if _n_af > 0:
+                                    _picks.append(f"{_n_af}× {_r['Producto']}")
+                                    _rest -= _n_af * _cu
+                            if _picks:
+                                st.info(
+                                    f"🎯 Con USD {_presu:,.0f}, priorizando ganancia por dólar: "
+                                    + " · ".join(_picks)
+                                    + f" (sobran USD {_rest:,.0f})"
+                                )
+                            else:
+                                st.warning("El presupuesto no alcanza para ninguna unidad del plan.")
+
+                        # ── Pedido armado (copiar y pegar al proveedor) ──
+                        if not _sel_plan.empty:
+                            with st.expander("📋 Pedido armado para el proveedor", expanded=False):
+                                _lineas = [f"{int(_r['Unidades'])} x {_r['Producto']}" for _, _r in _sel_plan.iterrows()]
+                                st.code("\n".join(_lineas), language=None)
 
                 st.divider()
                 df_chart = (df_ok[["Producto", "Vel. reciente"]]
@@ -4232,6 +4303,30 @@ if st.session_state.df_tn is not None:
                 st.download_button("⬇️ Descargar análisis",
                     df_vel[cols_show].to_csv(index=False).encode("utf-8"),
                     "restock_analysis.csv", "text/csv")
+
+                # ── Inventario completo (ex solapa Stock) ─────────────────────
+                _df_stock_full = st.session_state.get("stock_tn")
+                if _df_stock_full is not None and not _df_stock_full.empty:
+                    with st.expander("📦 Inventario completo (variantes)", expanded=False):
+                        col_f1, col_f2 = st.columns(2)
+                        buscar_prod = col_f1.text_input("🔍 Buscar producto", "", key="repo_buscar_stock")
+                        mostrar_sin_stock = col_f2.checkbox("Solo sin stock o bajo (≤3)", value=False, key="repo_solo_bajo")
+                        df_stock_f = _df_stock_full.copy()
+                        if buscar_prod:
+                            df_stock_f = df_stock_f[df_stock_f["Producto"].str.contains(buscar_prod, case=False, na=False)]
+                        if mostrar_sin_stock:
+                            df_stock_f = df_stock_f[df_stock_f["Stock"].apply(lambda x: isinstance(x, (int, float)) and x <= 3)]
+                        st.dataframe(
+                            df_stock_f.style.format({"Precio ($)": "${:,.0f}"}),
+                            use_container_width=True, hide_index=True,
+                        )
+                        stock_num = _df_stock_full[_df_stock_full["Stock"].apply(lambda x: isinstance(x, (int, float)))]
+                        r1, r2, r3 = st.columns(3)
+                        r1.metric("Productos", _df_stock_full["Producto"].nunique())
+                        r2.metric("Variantes", len(_df_stock_full))
+                        r3.metric("Unidades", int(stock_num["Stock"].sum()))
+                        st.download_button("⬇️ Descargar stock",
+                            _df_stock_full.to_csv(index=False).encode("utf-8"), "stock_marketgamer.csv", "text/csv")
 
                 with st.expander("🗂️ Historial de snapshots de stock", expanded=False):
                     if not historial:
@@ -7093,7 +7188,7 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                              "% Pauta": _pc(r["pct_pauta"])}
                             for r in _plata
                         ]) if _plata else pd.DataFrame(
-                            {"—": ["Sin candidatos. Cargá stock (solapa Stock) para precio/margen."]}),
+                            {"—": ["Sin candidatos. Cargá stock (solapa 📦 Reposición) para precio/margen."]}),
                             hide_index=True, use_container_width=True)
                     with _tb:
                         st.caption(
