@@ -5,5 +5,4 @@ plotly
 gspread
 google-auth
 google-analytics-data
-python-pptx
-pdfplumber
+reportlab

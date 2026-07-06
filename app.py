@@ -2046,6 +2046,181 @@ def get_meta_demograficos(fecha_desde_str, fecha_hasta_str):
     except Exception:
         return None
 
+def _generar_pdf_audiencias(win_label, geo_df, ciudades_df, seg_df, moneda,
+                            fact_total, ordenes_total, n80, prov_top):
+    """Genera el informe de Audiencias en PDF (bytes) para el equipo de paid media.
+
+    geo_df/ciudades_df/seg_df pueden ser None si esa fuente no tiene datos.
+    Devuelve None si reportlab no está instalado.
+    """
+    try:
+        from io import BytesIO
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+        )
+    except ImportError:
+        return None
+
+    ROJO = colors.HexColor("#d91e1d")
+    GRIS = colors.HexColor("#555555")
+    st_h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=ROJO, spaceAfter=6)
+    st_meta = ParagraphStyle("meta", fontName="Helvetica", fontSize=9, leading=12, textColor=GRIS, spaceAfter=12)
+    st_h2 = ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=12.5, spaceBefore=14, spaceAfter=5)
+    st_body = ParagraphStyle("body", fontName="Helvetica", fontSize=9.5, leading=14, spaceAfter=6)
+    st_nota = ParagraphStyle("nota", fontName="Helvetica-Oblique", fontSize=8, textColor=GRIS, spaceBefore=4)
+
+    def _tabla(headers, rows, col_align=None):
+        data = [headers] + rows
+        t = Table(data, hAlign="LEFT")
+        style = [
+            ("BACKGROUND", (0, 0), (-1, 0), ROJO),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f4f4")]),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]
+        for i, al in enumerate(col_align or []):
+            if al == "R":
+                style.append(("ALIGN", (i, 1), (i, -1), "RIGHT"))
+        t.setStyle(TableStyle(style))
+        return t
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm,
+        title="Market Gamer — Informe de Audiencias",
+    )
+    el = []
+    el.append(Paragraph("Market Gamer — Informe de Audiencias", st_h1))
+    el.append(Paragraph(
+        f"Generado el {date.today().strftime('%d/%m/%Y')} · Ventana analizada: {win_label} · "
+        "Fuentes: ventas reales de Tienda Nube + Meta Ads Insights", st_meta,
+    ))
+
+    # ── Resumen ejecutivo ──
+    el.append(Paragraph("Resumen ejecutivo", st_h2))
+    _partes = []
+    if fact_total:
+        _partes.append(
+            f"En la ventana analizada se registraron <b>{ordenes_total:,} órdenes</b> por "
+            f"<b>${fact_total:,.0f}</b> (ticket promedio ${fact_total / max(ordenes_total, 1):,.0f})."
+        )
+    if prov_top:
+        _partes.append(
+            f"La demanda está geográficamente concentrada: <b>{n80} provincia(s) explican el 80% "
+            f"de la facturación</b>, encabezadas por {', '.join(prov_top)}."
+        )
+    if seg_df is not None and not seg_df.empty:
+        _mejor = seg_df.dropna(subset=["ROAS"]).sort_values("ROAS", ascending=False).head(1)
+        if not _mejor.empty:
+            _m = _mejor.iloc[0]
+            _partes.append(
+                f"El segmento publicitario más eficiente fue <b>{_m['Segmento']}</b> "
+                f"con ROAS {_m['ROAS']:.2f} y CPA {_m['CPA']:,.0f} {moneda}."
+            )
+    el.append(Paragraph(" ".join(_partes) or "Sin datos suficientes en la ventana elegida.", st_body))
+
+    # ── Geografía ──
+    if geo_df is not None and not geo_df.empty:
+        el.append(Paragraph("¿Dónde compran? — Geografía de las ventas reales", st_h2))
+        el.append(Paragraph(
+            "Distribución de la facturación por provincia según las órdenes reales de Tienda Nube. "
+            "Sirve para geo-segmentar campañas y priorizar acuerdos de envío.", st_body,
+        ))
+        rows = [
+            [r["Provincia"], f"{int(r['Ordenes']):,}", f"${r['Facturacion']:,.0f}",
+             f"${r['Ticket']:,.0f}", f"{r['% Fact']:.1f}%"]
+            for _, r in geo_df.head(15).iterrows()
+        ]
+        el.append(_tabla(
+            ["Provincia", "Órdenes", "Facturación", "Ticket prom.", "% del total"],
+            rows, col_align=["L", "R", "R", "R", "R"],
+        ))
+
+    if ciudades_df is not None and not ciudades_df.empty:
+        el.append(Paragraph("Top ciudades", st_h2))
+        rows = [
+            [r["Ciudad"], r["Provincia"], f"{int(r['Ordenes']):,}", f"${r['Facturacion']:,.0f}"]
+            for _, r in ciudades_df.head(15).iterrows()
+        ]
+        el.append(_tabla(
+            ["Ciudad", "Provincia", "Órdenes", "Facturación"],
+            rows, col_align=["L", "L", "R", "R"],
+        ))
+
+    # ── Demografía ──
+    if seg_df is not None and not seg_df.empty:
+        el.append(Paragraph("¿Qué edades y géneros convierten? — Meta Ads", st_h2))
+        el.append(Paragraph(
+            f"Inversión y resultados por segmento demográfico según la atribución de Meta "
+            f"(montos en {moneda}). Refleja el rendimiento de los públicos a los que efectivamente "
+            "se les mostró pauta — no es un censo de clientes.", st_body,
+        ))
+        _seg_orden = seg_df.sort_values("ROAS", ascending=False, na_position="last")
+        rows = []
+        for _, r in _seg_orden.iterrows():
+            rows.append([
+                r["Segmento"], f"{r['Spend']:,.0f}", f"{r['Compras']:,.0f}",
+                f"{r['Valor']:,.0f}",
+                f"{r['CPA']:,.0f}" if pd.notna(r["CPA"]) else "—",
+                f"{r['ROAS']:.2f}" if pd.notna(r["ROAS"]) else "—",
+            ])
+        el.append(_tabla(
+            ["Segmento", f"Inversión ({moneda})", "Compras", f"Valor ({moneda})", "CPA", "ROAS"],
+            rows, col_align=["L", "R", "R", "R", "R", "R"],
+        ))
+
+        # ── Recomendaciones ──
+        el.append(Paragraph("Recomendaciones", st_h2))
+        _recs = []
+        if prov_top:
+            _recs.append(
+                f"<b>Geo:</b> concentrar la inversión en {', '.join(prov_top)} "
+                f"(explican el grueso de la facturación); testear el resto con presupuesto marginal."
+            )
+        _spend_total = float(seg_df["Spend"].sum()) or 1.0
+        _escalar = seg_df[(seg_df["ROAS"].notna()) & (seg_df["ROAS"] >= 3)].sort_values("ROAS", ascending=False)
+        if not _escalar.empty:
+            _lst = ", ".join(f"{r['Segmento']} (ROAS {r['ROAS']:.1f})" for _, r in _escalar.head(3).iterrows())
+            _recs.append(f"<b>Escalar:</b> {_lst}.")
+        _recortar = seg_df[
+            (seg_df["ROAS"].notna()) & (seg_df["ROAS"] < 1) & (seg_df["Spend"] / _spend_total >= 0.05)
+        ]
+        if not _recortar.empty:
+            _lst = ", ".join(
+                f"{r['Segmento']} (ROAS {r['ROAS']:.1f}, {r['Spend'] / _spend_total * 100:.0f}% del gasto)"
+                for _, r in _recortar.iterrows()
+            )
+            _recs.append(f"<b>Revisar o recortar:</b> {_lst} — hoy no repagan la inversión.")
+        _sin_datos = seg_df[seg_df["ROAS"].isna() & (seg_df["Spend"] / _spend_total >= 0.05)]
+        if not _sin_datos.empty:
+            _lst = ", ".join(r["Segmento"] for _, r in _sin_datos.iterrows())
+            _recs.append(f"<b>Sin conversiones atribuidas:</b> {_lst} — validar el tracking o pausar.")
+        for _rec in _recs:
+            el.append(Paragraph("• " + _rec, st_body))
+
+    el.append(Spacer(1, 8))
+    el.append(Paragraph(
+        "Nota metodológica: la geografía sale de las órdenes reales de Tienda Nube (dato duro). "
+        "La demografía sale de Meta Ads Insights con atribución de Meta, por lo que compras y valor "
+        "pueden no coincidir 1:1 con las órdenes. Los segmentos sin pauta previa no aparecen aunque "
+        "puedan convertir.", st_nota,
+    ))
+
+    doc.build(el)
+    return buf.getvalue()
+
 @st.cache_data(ttl=900, show_spinner=False)
 def get_dolar_blue():
     try:
@@ -5490,6 +5665,16 @@ if st.session_state.df_tn is not None:
 
         _df_aud = _cargar_ordenes_historico(_dias_aud)
 
+        # Datos que alimentan el informe PDF (se completan en cada bloque)
+        _geo_pdf = None
+        _ciu_pdf = None
+        _seg_pdf = None
+        _n80 = 0
+        _prov_top = []
+        _cur_demo = "ARS"
+        _fact_aud = 0.0
+        _ords_aud = 0
+
         # ══════════════════════════════════════════════════════════════════
         # 1) GEOGRAFÍA DE LAS VENTAS (Tienda Nube)
         # ══════════════════════════════════════════════════════════════════
@@ -5506,6 +5691,9 @@ if st.session_state.df_tn is not None:
             ).reset_index().sort_values("Facturacion", ascending=False)
             _geo["Ticket"] = (_geo["Facturacion"] / _geo["Ordenes"]).round(0)
             _geo["% Fact"] = (_geo["Facturacion"] / _geo["Facturacion"].sum() * 100).round(1)
+            _geo_pdf = _geo
+            _fact_aud = float(_geo["Facturacion"].sum())
+            _ords_aud = int(_geo["Ordenes"].sum())
 
             _g1, _g2 = st.columns([3, 2])
             with _g1:
@@ -5548,6 +5736,7 @@ if st.session_state.df_tn is not None:
                     _ciu = _dfg[_dfg["Ciudad"] != "Sin dato"].groupby(["Provincia", "Ciudad"]).agg(
                         Ordenes=("Orden", "count"), Facturacion=("Total ($)", "sum"),
                     ).reset_index().sort_values("Facturacion", ascending=False).head(20)
+                    _ciu_pdf = _ciu
                     st.dataframe(
                         _ciu.style.format({"Facturacion": "${:,.0f}"}),
                         use_container_width=True, hide_index=True,
@@ -5618,6 +5807,7 @@ if st.session_state.df_tn is not None:
                 lambda r: r["Valor"] / r["Spend"] if r["Spend"] > 0 and r["Valor"] > 0 else None, axis=1
             )
             _seg_eff["Segmento"] = _seg_eff["age"] + " · " + _seg_eff["Género"]
+            _seg_pdf = _seg_eff
             _cols_eff = ["Segmento", "Spend", "Compras", "Valor", "CPA", "ROAS", "Clicks"]
             st.dataframe(
                 _seg_eff[_cols_eff].sort_values("ROAS", ascending=False, na_position="last").style
@@ -5642,7 +5832,7 @@ if st.session_state.df_tn is not None:
             if not _mejor_roas.empty and _df_aud is not None and not _df_aud.empty:
                 with st.expander("📋 Resumen copiable para el media buyer", expanded=False):
                     _lineas_res = [f"MARKET GAMER — Audiencias ({_win_aud})", ""]
-                    if "Provincia" in _df_aud.columns:
+                    if _prov_top:
                         _lineas_res.append(f"GEO (ventas reales): top provincias {', '.join(_prov_top)} — {_n80} provincias = 80% de la facturación")
                     _lineas_res.append("SEGMENTOS con mejor ROAS (Meta):")
                     for _, _r in _mejor_roas.iterrows():
@@ -5650,6 +5840,28 @@ if st.session_state.df_tn is not None:
                             f"  - {_r['Segmento']}: ROAS {_r['ROAS']:.2f} · CPA {_r['CPA']:,.0f} {_cur_demo} · {_r['Compras']:.0f} compras"
                         )
                     st.code("\n".join(_lineas_res), language=None)
+
+        # ══════════════════════════════════════════════════════════════════
+        # 🖨️ INFORME PDF — para mandar al equipo de paid media
+        # ══════════════════════════════════════════════════════════════════
+        if _geo_pdf is not None or _seg_pdf is not None:
+            st.divider()
+            _pdf_bytes = _generar_pdf_audiencias(
+                _win_aud, _geo_pdf, _ciu_pdf, _seg_pdf, _cur_demo,
+                _fact_aud, _ords_aud, _n80, _prov_top,
+            )
+            if _pdf_bytes:
+                st.download_button(
+                    "🖨️ Imprimir informe (PDF)",
+                    data=_pdf_bytes,
+                    file_name=f"audiencias_marketgamer_{date.today().isoformat()}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    type="primary",
+                )
+                st.caption("Informe redactado con resumen ejecutivo, geografía, demografía y recomendaciones — listo para mandar al equipo.")
+            else:
+                st.caption("⚠️ Para el informe PDF instalá `reportlab` (`pip install reportlab`).")
 
     elif seccion == "💳 Estadísticas de pago":
         st.subheader("💳 Estadísticas de pago")
