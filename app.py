@@ -485,13 +485,17 @@ def gs_write(sheet_name, data_dict):
         return False
 
 def gs_append_snapshot(stock_map):
-    """Guarda el snapshot de stock de hoy en HistorialStock (idempotente por fecha)."""
-    from velocidad_restock import merge_snapshot, recortar_historial
+    """Guarda el snapshot de stock de hoy en HistorialStock (idempotente por fecha).
+
+    El historial no se borra nunca: diario los últimos 180 días, semanal más atrás
+    (para la curva de stock valuado del Dashboard).
+    """
+    from velocidad_restock import merge_snapshot, compactar_historial
     try:
         hoy = date.today().isoformat()
         hist = gs_read("HistorialStock") or {}
         hist = merge_snapshot(hist, hoy, stock_map)
-        hist = recortar_historial(hist, max_dias=180)
+        hist = compactar_historial(hist, max_dias_diario=180, hoy_iso=hoy)
         return gs_write("HistorialStock", hist)
     except Exception:
         return False
@@ -4412,7 +4416,7 @@ if st.session_state.df_tn is not None:
                         _fechas_snap = sorted(historial.keys())
                         st.caption(
                             f"{len(_fechas_snap)} días capturados · "
-                            f"{_fechas_snap[0]} → {_fechas_snap[-1]} · retención 180 días"
+                            f"{_fechas_snap[0]} → {_fechas_snap[-1]} · diario 180 días, semanal más atrás (no se borra)"
                         )
                         _filtro_snap = st.text_input(
                             "Filtrar producto", "", key="filtro_hist_snap"

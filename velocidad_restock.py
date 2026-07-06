@@ -26,6 +26,34 @@ def recortar_historial(historial, max_dias=180):
     return {f: historial[f] for f in keep}
 
 
+def compactar_historial(historial, max_dias_diario=180, hoy_iso=None):
+    """Compacta el historial sin perder profundidad temporal.
+
+    Las fechas dentro de los últimos `max_dias_diario` días se conservan a
+    diario; las más viejas se compactan a una por semana ISO (se queda la
+    primera fecha de cada semana). Así la curva de stock valuado crece de
+    por vida con la sheet acotada. No muta el original.
+    """
+    if not historial:
+        return {}
+    fechas = sorted(historial.keys())
+    if hoy_iso is None:
+        hoy_iso = fechas[-1]
+    corte = date.fromisoformat(hoy_iso) - timedelta(days=max_dias_diario)
+    out = {}
+    semanas_vistas = set()
+    for f in fechas:
+        d = date.fromisoformat(f)
+        if d >= corte:
+            out[f] = dict(historial[f])
+        else:
+            clave = (d.isocalendar()[0], d.isocalendar()[1])
+            if clave not in semanas_vistas:
+                semanas_vistas.add(clave)
+                out[f] = dict(historial[f])
+    return out
+
+
 def explotar_items(df_tn):
     """Convierte df_tn (con columna Items) a long-form: una fila por línea de venta.
 

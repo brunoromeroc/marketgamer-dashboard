@@ -38,6 +38,43 @@ def test_recortar_historial_sin_recorte_si_pocas():
     assert out == h
 
 
+from velocidad_restock import compactar_historial
+
+
+def test_compactar_historial_conserva_recientes_a_diario():
+    h = {f"2026-06-{d:02d}": {"A": d} for d in range(1, 8)}
+    out = compactar_historial(h, max_dias_diario=180, hoy_iso="2026-06-07")
+    assert out == h
+
+
+def test_compactar_historial_viejas_una_por_semana():
+    # 14 días consecutivos, todos más viejos que el corte → 1ra fecha de cada semana ISO
+    h = {f"2026-01-{d:02d}": {"A": d} for d in range(5, 19)}  # lun 5-ene a dom 18-ene
+    out = compactar_historial(h, max_dias_diario=30, hoy_iso="2026-06-01")
+    assert sorted(out.keys()) == ["2026-01-05", "2026-01-12"]  # lunes de cada semana
+
+
+def test_compactar_historial_mixto_diario_y_semanal():
+    h = {
+        "2026-01-05": {"A": 1},  # vieja, semana 2
+        "2026-01-06": {"A": 2},  # vieja, misma semana → se compacta
+        "2026-05-30": {"A": 3},  # reciente
+        "2026-05-31": {"A": 4},  # reciente
+    }
+    out = compactar_historial(h, max_dias_diario=30, hoy_iso="2026-06-01")
+    assert sorted(out.keys()) == ["2026-01-05", "2026-05-30", "2026-05-31"]
+
+
+def test_compactar_historial_no_muta_original():
+    h = {"2026-01-05": {"A": 1}, "2026-01-06": {"A": 2}}
+    compactar_historial(h, max_dias_diario=1, hoy_iso="2026-06-01")
+    assert h == {"2026-01-05": {"A": 1}, "2026-01-06": {"A": 2}}
+
+
+def test_compactar_historial_vacio():
+    assert compactar_historial({}) == {}
+
+
 from velocidad_restock import explotar_items
 
 
