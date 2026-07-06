@@ -2980,6 +2980,118 @@ if st.session_state.df_tn is not None:
                     "El margen bruto no descuenta IVA, pauta ni gastos fijos."
                 )
 
+            # ══════════════════════════════════════════════════════════════════
+            # 💼 STOCK VALUADO — cuánto capital hay posicionado en el estante
+            # Snapshots de HistorialStock valuados a costo (FOB+import) y a
+            # precio de venta TN. Abrir el Dashboard también registra snapshot.
+            # ══════════════════════════════════════════════════════════════════
+            st.markdown("### 💼 Stock valuado — cuánto tenés posicionado")
+            if st.session_state.get("stock_tn") is None:
+                with st.spinner("Cargando stock desde Tienda Nube..."):
+                    _fetch_stock_tn()
+            _stock_now_d = st.session_state.get("stock_tn")
+            _precio_map_d = {}
+            if _stock_now_d is not None and not _stock_now_d.empty:
+                for _, _r_s in _stock_now_d.iterrows():
+                    _pn_s = _r_s["Producto"]
+                    _pr_s = float(_r_s.get("Precio ($)", 0) or 0)
+                    if _pr_s > 0 and _pn_s not in _precio_map_d:
+                        _precio_map_d[_pn_s] = _pr_s
+
+            _hist_snap_d = gs_read("HistorialStock") or {}
+            if not _hist_snap_d:
+                st.caption("Todavía no hay snapshots de stock. Se generan solos al abrir el Dashboard o Reposición.")
+            else:
+                # Memo de costo unitario por producto (el matching es caro)
+                _prods_snap = set()
+                for _snap in _hist_snap_d.values():
+                    if isinstance(_snap, dict):
+                        _prods_snap.update(_snap.keys())
+                _costo_u_memo = {p: get_costo_total_usd(p, _costos_gs_dash) for p in _prods_snap}
+
+                _rows_val = []
+                for _f_s in sorted(_hist_snap_d.keys()):
+                    _snap = _hist_snap_d.get(_f_s) or {}
+                    if not isinstance(_snap, dict):
+                        continue
+                    _v_costo = _v_venta = 0.0
+                    _units_s = 0
+                    for _pn_s, _u_s in _snap.items():
+                        try:
+                            _u_s = int(_u_s)
+                        except Exception:
+                            continue
+                        if _u_s <= 0:
+                            continue
+                        _units_s += _u_s
+                        _cu_s = _costo_u_memo.get(_pn_s, 0)
+                        if _cu_s > 0:
+                            _v_costo += _cu_s * _tc_dash * _u_s
+                        _pv_s = _precio_map_d.get(_pn_s, 0)
+                        if _pv_s > 0:
+                            _v_venta += _pv_s * _u_s
+                    _rows_val.append({
+                        "Fecha": _f_s, "A costo": round(_v_costo),
+                        "A precio de venta": round(_v_venta), "Unidades": _units_s,
+                    })
+
+                _df_val = pd.DataFrame(_rows_val)
+                _df_val["Fecha"] = pd.to_datetime(_df_val["Fecha"])
+                _df_val = _df_val.sort_values("Fecha")
+
+                _ult = _df_val.iloc[-1]
+                _v_c, _v_v = float(_ult["A costo"]), float(_ult["A precio de venta"])
+                _sv1, _sv2, _sv3, _sv4 = st.columns(4)
+                _sv1.markdown(kpi_card(
+                    "Stock a costo (hoy)", fmt(_v_c),
+                    f"USD {_v_c / _tc_dash:,.0f} al blue",
+                ), unsafe_allow_html=True)
+                _sv2.markdown(kpi_card(
+                    "Stock a precio de venta", fmt(_v_v),
+                    "si se vendiera todo al precio actual",
+                ), unsafe_allow_html=True)
+                _sv3.markdown(kpi_card(
+                    "Margen potencial", fmt(_v_v - _v_c),
+                    f"{((_v_v / _v_c - 1) * 100):.0f}% sobre el costo" if _v_c > 0 else "",
+                    val_color="#4ade80",
+                ), unsafe_allow_html=True)
+                _sv4.markdown(kpi_card(
+                    "Unidades en stock", f"{int(_ult['Unidades']):,}",
+                    f"{len(_df_val)} snapshots registrados",
+                ), unsafe_allow_html=True)
+
+                if len(_df_val) >= 2:
+                    fig_val = go.Figure()
+                    fig_val.add_trace(go.Scatter(
+                        x=_df_val["Fecha"], y=_df_val["A precio de venta"],
+                        name="A precio de venta", mode="lines+markers",
+                        line=dict(color="#4ade80", width=2), marker=dict(size=5),
+                        fill="tozeroy", fillcolor="rgba(74,222,128,0.06)",
+                        hovertemplate="%{x|%d/%m}<br>Venta: $%{y:,.0f}<extra></extra>",
+                    ))
+                    fig_val.add_trace(go.Scatter(
+                        x=_df_val["Fecha"], y=_df_val["A costo"],
+                        name="A costo", mode="lines+markers",
+                        line=dict(color="#009EE3", width=2), marker=dict(size=5),
+                        fill="tozeroy", fillcolor="rgba(0,158,227,0.08)",
+                        hovertemplate="%{x|%d/%m}<br>Costo: $%{y:,.0f}<extra></extra>",
+                    ))
+                    fig_val.update_layout(
+                        height=320, margin=dict(t=20, b=25, l=10, r=10),
+                        yaxis_tickformat="$,.0f",
+                        legend=dict(orientation="h", y=1.1, x=0),
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig_val, use_container_width=True)
+
+                _sin_fob_snap = sorted(p for p in _prods_snap if _costo_u_memo.get(p, 0) <= 0)
+                _nota_val = (
+                    "Valuado con costos y precios de HOY (la curva refleja variación de unidades). "
+                )
+                if _sin_fob_snap:
+                    _nota_val += f"⚠️ {len(_sin_fob_snap)} producto(s) sin FOB no suman a la valuación a costo."
+                st.caption(_nota_val)
+
             st.markdown("")
 
             # ── Ventas por día (BARRAS) + Top 10 por unidades — alineadas ─────
