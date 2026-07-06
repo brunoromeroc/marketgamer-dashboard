@@ -2890,8 +2890,7 @@ if st.session_state.df_tn is not None:
                         _prods_vendidos.add(_p.strip())
             _sin_costo = sorted(p for p in _prods_vendidos if get_fob_usd(p, _costos_gs_dash) <= 0)
             if _sin_costo:
-                _muestra = ", ".join(_sin_costo[:4]) + ("…" if len(_sin_costo) > 4 else "")
-                _alertas.append(f"💸 **{len(_sin_costo)} producto(s) vendidos sin costo cargado** (margen inflado): {_muestra} → cargalos en 💻 Costos de consolas")
+                _alertas.append(f"💸 **{len(_sin_costo)} vendidos sin costo cargado** (margen inflado) → 💻 Costos de consolas, filtro \"Sin precio\"")
             # 2) Candidatas a efectivo sin marcar
             if "Pasarela" in df_tn.columns:
                 _marcadas_dash = st.session_state.get("ordenes_efectivo", set()) or set()
@@ -3038,6 +3037,73 @@ if st.session_state.df_tn is not None:
                     )
                     st.plotly_chart(fig_tp, use_container_width=True)
 
+            # ══════════════════════════════════════════════════════════════════
+            # 🗓️ PATRONES DE VENTA — día de semana y momento del mes (histórico)
+            # ══════════════════════════════════════════════════════════════════
+            if _df_hist_dash is not None and not _df_hist_dash.empty:
+                st.markdown("### 🗓️ Patrones de venta (histórico)")
+                _dfp = _df_hist_dash.copy()
+                _dfp["_dt"] = pd.to_datetime(_dfp["Fecha"])
+                _diario_p = _dfp.groupby("_dt").agg(
+                    Fact=("Total ($)", "sum"), Ords=("Orden", "count"),
+                ).reset_index()
+                # Incluir días SIN ventas (si no, el promedio miente)
+                _rango_full = pd.date_range(_diario_p["_dt"].min(), _diario_p["_dt"].max(), freq="D")
+                _diario_p = (
+                    _diario_p.set_index("_dt").reindex(_rango_full, fill_value=0)
+                    .rename_axis("_dt").reset_index()
+                )
+                _diario_p["_dow"] = _diario_p["_dt"].dt.dayofweek
+                _DIAS_ES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+
+                _pat1, _pat2 = st.columns(2)
+                with _pat1:
+                    _por_dia = _diario_p.groupby("_dow")["Fact"].mean().reindex(range(7)).fillna(0)
+                    _fig_dow = go.Figure(go.Bar(
+                        x=_DIAS_ES, y=_por_dia.values,
+                        marker_color=["#009EE3"] * 5 + [MG_RED] * 2,
+                        text=[_fmt_compact(v) for v in _por_dia.values],
+                        textposition="outside", textfont_size=10,
+                        hovertemplate="%{x}<br>$%{y:,.0f}/día<extra></extra>",
+                    ))
+                    _fig_dow.update_layout(
+                        title="Facturación promedio por día de semana",
+                        height=280, margin=dict(t=45, b=25, l=10, r=10),
+                        yaxis_tickformat="$,.0f", showlegend=False, bargap=0.25,
+                    )
+                    st.plotly_chart(_fig_dow, use_container_width=True)
+                with _pat2:
+                    _diario_p["_momento"] = _diario_p["_dt"].dt.day.apply(
+                        lambda d: "Inicio (1-10)" if d <= 10 else ("Medio (11-20)" if d <= 20 else "Fin (21-31)")
+                    )
+                    _por_momento = (
+                        _diario_p.groupby("_momento")["Fact"].mean()
+                        .reindex(["Inicio (1-10)", "Medio (11-20)", "Fin (21-31)"]).fillna(0)
+                    )
+                    _fig_mom = go.Figure(go.Bar(
+                        x=_por_momento.index.tolist(), y=_por_momento.values,
+                        marker_color=["#4ade80", "#fbbf24", "#a78bfa"],
+                        text=[_fmt_compact(v) for v in _por_momento.values],
+                        textposition="outside", textfont_size=10,
+                        hovertemplate="%{x}<br>$%{y:,.0f}/día<extra></extra>",
+                    ))
+                    _fig_mom.update_layout(
+                        title="Facturación promedio según momento del mes",
+                        height=280, margin=dict(t=45, b=25, l=10, r=10),
+                        yaxis_tickformat="$,.0f", showlegend=False, bargap=0.35,
+                    )
+                    st.plotly_chart(_fig_mom, use_container_width=True)
+
+                _prom_finde = _diario_p[_diario_p["_dow"] >= 5]["Fact"].mean()
+                _prom_semana = _diario_p[_diario_p["_dow"] < 5]["Fact"].mean()
+                if _prom_semana > 0:
+                    _dif_finde = (_prom_finde / _prom_semana - 1) * 100
+                    _lectura = "el finde vende" if _dif_finde >= 0 else "el finde cae"
+                    st.caption(
+                        f"Promedio diario histórico (días sin ventas incluidos): semana {_fmt_compact(_prom_semana)} · "
+                        f"fin de semana {_fmt_compact(_prom_finde)} → {_lectura} {abs(_dif_finde):.0f}% vs días hábiles."
+                    )
+
             # ── Top 10 facturación (full width) — prorrateo por precio real ────
             # Usa el precio unitario de cada producto en la orden (TN API), no
             # una división pareja del total entre productos.
@@ -3072,6 +3138,69 @@ if st.session_state.df_tn is not None:
                     hovertemplate="<b>%{customdata[0]}</b><br>$%{x:,.0f}<extra></extra>",
                 )
                 st.plotly_chart(fig_rev, use_container_width=True)
+
+            # ══════════════════════════════════════════════════════════════════
+            # 📊 TENDENCIA POR PRODUCTO — últimos 30 días vs los 90 previos
+            # Agrupa por producto base (sin color) para que la señal sea clara.
+            # ══════════════════════════════════════════════════════════════════
+            if _df_hist_dash is not None and not _df_hist_dash.empty:
+                st.markdown("### 📊 Tendencia por producto")
+                _hoy_t = pd.Timestamp(date.today())
+
+                def _base_prod(n):
+                    return re.sub(r"\s*\([^)]*\)\s*$", "", str(n)).strip()
+
+                _apar = []  # (fecha, producto_base) una por aparición en orden
+                for _, _row_t in _df_hist_dash.iterrows():
+                    _dt_t = pd.to_datetime(_row_t["Fecha"])
+                    for _p in str(_row_t.get("Productos", "")).split(" / "):
+                        _p = _p.strip()
+                        if _p:
+                            _apar.append((_dt_t, _base_prod(_p)))
+                _df_apar = pd.DataFrame(_apar, columns=["_dt", "Producto"])
+                _u30 = _df_apar[_df_apar["_dt"] > _hoy_t - timedelta(days=30)].groupby("Producto").size()
+                _u90prev = _df_apar[
+                    (_df_apar["_dt"] <= _hoy_t - timedelta(days=30))
+                    & (_df_apar["_dt"] > _hoy_t - timedelta(days=120))
+                ].groupby("Producto").size() / 3.0  # promedio mensual de los 90d previos
+
+                _todos_t = sorted(set(_u30.index) | set(_u90prev.index))
+                _rows_tend = []
+                for _p in _todos_t:
+                    _a = int(_u30.get(_p, 0))
+                    _b = float(_u90prev.get(_p, 0))
+                    if _a == 0 and _b < 1:
+                        continue
+                    if _b >= 1:
+                        _d = (_a - _b) / _b * 100
+                        if _d >= 20:
+                            _t = f"▲ +{_d:.0f}%"
+                        elif _d <= -20:
+                            _t = f"▼ {_d:.0f}%"
+                        else:
+                            _t = "→ estable"
+                    else:
+                        _t = "✨ nuevo"
+                    _rows_tend.append({
+                        "Producto": _p,
+                        "Últimos 30d (u)": _a,
+                        "Prom. mensual 90d previos": round(_b, 1),
+                        "Tendencia": _t,
+                    })
+                if _rows_tend:
+                    _df_tend = pd.DataFrame(_rows_tend).sort_values("Últimos 30d (u)", ascending=False).head(15)
+                    st.dataframe(
+                        _df_tend.style.map(
+                            lambda v: "color: #4ade80" if isinstance(v, str) and v.startswith("▲")
+                            else ("color: #f87171" if isinstance(v, str) and v.startswith("▼") else ""),
+                            subset=["Tendencia"],
+                        ),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.caption(
+                        "Por producto base (colores agrupados) · unidades ≈ apariciones en órdenes · "
+                        "▲/▼ cuando el último mes difiere ±20% del promedio de los 3 meses previos."
+                    )
 
             # Comisiones por pasarela y medios de pago: ver 💳 Estadísticas de pago.
 
