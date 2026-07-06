@@ -3884,7 +3884,9 @@ if st.session_state.df_tn is not None:
                 _pkg_repo = float(st.session_state.get("packaging_global", 2500))
                 _TASA_VENTA_EST = 0.0415  # comisión promedio estimada para el margen proyectado
 
-                _cand_plan = df_ok[df_ok["Restock sugerido"] > 0]
+                # "Restock sugerido" mezcla ints y "—" (velocidad_restock) — coercionar
+                _restock_num = pd.to_numeric(df_ok["Restock sugerido"], errors="coerce").fillna(0)
+                _cand_plan = df_ok[_restock_num > 0]
                 if _cand_plan.empty:
                     st.success("✅ Nada para reponer según la velocidad actual.")
                 else:
