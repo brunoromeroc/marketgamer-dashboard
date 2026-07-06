@@ -6336,9 +6336,17 @@ mucho tráfico con engagement bajo NO zafan por volumen.
             def _build_analyst_context():
                 lines = []
                 _dias_p = max((fecha_hasta - fecha_desde).days + 1, 1)
-                _tc = int(dolar_blue) if dolar_blue else 1200
+                _tc = int(st.session_state.tipo_cambio_sf or (dolar_blue or 1200))
+                _iva_pct = float(st.session_state.pct_iva)
+                _pkg_ia = float(st.session_state.get("packaging_global", 2500))
                 _gastos_gs = gs_read("GastosFijos") or {}
                 _costos_gs = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
+                # Resultado del período — misma función que Salud Financiera y Dashboard
+                _res_ia = calcular_resultado_periodo(
+                    df_tn, fecha_desde, fecha_hasta, _tc, _iva_pct,
+                    st.session_state.pauta_manual, costos_gs=_costos_gs,
+                    gastos_fijos_dict=_gastos_gs,
+                )
 
                 lines.append(f"=== MARKET GAMER — ANÁLISIS FINANCIERO ===")
                 lines.append(f"Período: {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')} ({_dias_p} días)")
@@ -6390,7 +6398,7 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                         _precio_p = _grp["Precio ($)"].mean()
                         _costo_usd = get_costo_total_usd(_pn, _costos_gs)
                         _costo_ars = _costo_usd * _tc
-                        _costo_full = _costo_ars + 2500 + (_precio_p * 0.105)
+                        _costo_full = _costo_ars + _pkg_ia + (_precio_p * _iva_pct / 100)
                         _com_p = _grp["Comisión PN ($)"].mean()
                         _env_p = _grp["Envío ($)"].mean()
                         _margen_p = _precio_p - _costo_full - _com_p - _env_p
@@ -6453,30 +6461,24 @@ mucho tráfico con engagement bajo NO zafan por volumen.
                             lines.append(f"  {_k}: ${_v:,.0f}")
                             _total_gf += _v
                     lines.append(f"  TOTAL mensual: ${_total_gf:,.0f}")
-                    lines.append(f"  Prorrateado ({_dias_p}d): ${round(_total_gf * _dias_p / 30):,.0f}")
+                    lines.append(f"  Prorrateado ({_dias_p}d): ${_res_ia['gastos_fijos_periodo']:,.0f}")
                 lines.append("")
 
-                # Resultado financiero
+                # Resultado financiero — misma fuente que Salud Financiera/Dashboard
                 lines.append("--- RESULTADO FINANCIERO ---")
-                _costo_prods = 0
-                for _pn, _ps in _prod_stats.items():
-                    _costo_prods += get_costo_total_usd(_pn, _costos_gs) * _tc * _ps["uds"]
-                _iva = _fact_bruta * 0.105
-                _gf_per = round(_total_gf * _dias_p / 30)
-                _margen_b = _neto - _costo_prods - _envios
-                _resultado = _margen_b - _iva - _gf_per
-
-                lines.append(f"  Facturación bruta:  ${_fact_bruta:>12,.0f}")
-                lines.append(f"  - Comisiones PN:    ${_total_comision:>12,.0f}")
-                lines.append(f"  = Neto cobrado:     ${_neto:>12,.0f}")
-                lines.append(f"  - Costo productos:  ${_costo_prods:>12,.0f}")
-                lines.append(f"  - Costo envíos:     ${_envios:>12,.0f}")
-                lines.append(f"  = Margen bruto:     ${_margen_b:>12,.0f}")
-                lines.append(f"  - IVA (10.5%):      ${_iva:>12,.0f}")
-                lines.append(f"  - Gastos fijos:     ${_gf_per:>12,.0f}")
+                lines.append(f"  Facturación bruta:  ${_res_ia['facturacion_bruta']:>12,.0f}")
+                lines.append(f"  - Comisiones:       ${_res_ia['comisiones']:>12,.0f}")
+                lines.append(f"  = Neto cobrado:     ${_res_ia['neto_cobrado']:>12,.0f}")
+                lines.append(f"  - Costo productos:  ${_res_ia['costo_productos']:>12,.0f}")
+                lines.append(f"  - Costo envíos:     ${_res_ia['costo_envios']:>12,.0f}")
+                lines.append(f"  = Margen bruto:     ${_res_ia['margen_bruto']:>12,.0f}")
+                lines.append(f"  - IVA ({_iva_pct:.1f}%):     ${_res_ia['costo_iva']:>12,.0f}")
+                lines.append(f"  - Pauta:            ${_res_ia['pauta']:>12,.0f}")
+                lines.append(f"  - Gastos fijos:     ${_res_ia['gastos_fijos_periodo']:>12,.0f}")
+                _resultado = _res_ia["resultado_final"]
                 lines.append(f"  = RESULTADO:        ${_resultado:>12,.0f} {'✅' if _resultado >= 0 else '🔴'}")
-                if _fact_bruta > 0:
-                    lines.append(f"  Margen neto/bruto:  {_resultado/_fact_bruta*100:.1f}%")
+                if _res_ia["facturacion_bruta"] > 0:
+                    lines.append(f"  Margen neto/bruto:  {_resultado/_res_ia['facturacion_bruta']*100:.1f}%")
                 lines.append("")
 
                 # Stock
