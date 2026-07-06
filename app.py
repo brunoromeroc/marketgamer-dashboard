@@ -1971,8 +1971,100 @@ def costo_total_final_row(row, tipo_cambio, costos_gs):
         row.get("Productos", ""), row.get("Cantidad", 1), tipo_cambio, costos_gs
     ), 0)
 
-# ── Dólar blue ─────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800)
+# ── Resultado financiero del período — FUENTE ÚNICA DE VERDAD ──────────────────
+# Toda solapa que muestre "resultado", "margen del período" o la cascada debe
+# consumir esta función. No copiar la fórmula inline en ninguna solapa nueva.
+def _dias_del_mes(d):
+    siguiente = (d.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return (siguiente - timedelta(days=1)).day
+
+def calcular_resultado_periodo(df_tn, fecha_desde, fecha_hasta, tipo_cambio,
+                               pct_iva, pauta, costos_gs=None, gastos_fijos_dict=None):
+    """Calcula el P&L completo del período a partir del df de órdenes TN.
+
+    Devuelve un dict con df_calc (columnas de costo/margen recalculadas con
+    CostosConsolas como source of truth) y todos los agregados, incluyendo
+    resultado_final = margen bruto − IVA − pauta − gastos fijos prorrateados.
+    Gastos fijos se prorratean por los días reales del mes del período.
+    """
+    if costos_gs is None:
+        costos_gs = {}
+    if gastos_fijos_dict is None:
+        gastos_fijos_dict = {}
+
+    dias_periodo = max((fecha_hasta - fecha_desde).days + 1, 1)
+    total_gastos_fijos_mes = sum(
+        v for v in gastos_fijos_dict.values() if isinstance(v, (int, float)) and v > 0
+    )
+    factor_prorrateo = dias_periodo / _dias_del_mes(fecha_desde)
+    gastos_fijos_periodo = round(total_gastos_fijos_mes * factor_prorrateo)
+
+    if df_tn is None or df_tn.empty:
+        return {
+            "df_calc": pd.DataFrame(), "facturacion_bruta": 0.0, "comisiones": 0.0,
+            "neto_cobrado": 0.0, "costo_productos": 0.0, "costo_envios": 0.0,
+            "costo_iva": 0.0, "margen_bruto": 0.0, "pauta": float(pauta or 0),
+            "gastos_fijos_mes": total_gastos_fijos_mes,
+            "gastos_fijos_periodo": gastos_fijos_periodo,
+            "dias_periodo": dias_periodo, "factor_prorrateo": factor_prorrateo,
+            "resultado_final": -float(pauta or 0) - gastos_fijos_periodo,
+            "ordenes": 0,
+        }
+
+    df_calc = df_tn.copy()
+    df_calc["Neto cobrado ($)"] = df_calc["Total ($)"] - df_calc["Comision PN ($)"]
+    df_calc["Costo Productos ($)"] = df_calc.apply(
+        lambda r: costo_final_row(r, tipo_cambio, costos_gs), axis=1
+    )
+    df_calc["Margen ($)"] = (
+        df_calc["Neto cobrado ($)"] - df_calc["Costo Productos ($)"] - df_calc["Envio costo ($)"]
+    )
+    df_calc["Margen (%)"] = df_calc.apply(
+        lambda r: round((r["Margen ($)"] / r["Total ($)"] * 100) if r["Total ($)"] > 0 else 0, 2),
+        axis=1,
+    )
+
+    facturacion_bruta = float(df_calc["Total ($)"].sum())
+    comisiones = float(df_calc["Comision PN ($)"].sum())
+    costo_productos = float(df_calc["Costo Productos ($)"].sum())
+    costo_envios = float(df_calc["Envio costo ($)"].sum())
+    costo_iva = facturacion_bruta * (float(pct_iva or 0) / 100)
+    margen_bruto = float(df_calc["Margen ($)"].sum())
+    resultado_final = margen_bruto - costo_iva - float(pauta or 0) - gastos_fijos_periodo
+
+    return {
+        "df_calc": df_calc, "facturacion_bruta": facturacion_bruta,
+        "comisiones": comisiones, "neto_cobrado": facturacion_bruta - comisiones,
+        "costo_productos": costo_productos, "costo_envios": costo_envios,
+        "costo_iva": costo_iva, "margen_bruto": margen_bruto, "pauta": float(pauta or 0),
+        "gastos_fijos_mes": total_gastos_fijos_mes,
+        "gastos_fijos_periodo": gastos_fijos_periodo,
+        "dias_periodo": dias_periodo, "factor_prorrateo": factor_prorrateo,
+        "resultado_final": resultado_final,
+        "ordenes": int(len(df_calc)),
+    }
+
+# ── Card KPI compartida (usada por todas las solapas) ──────────────────────────
+def kpi_card(label, value, sub="", val_color=None, accent_border=False):
+    vc = val_color or MG_TEXT
+    border = f"border-left:2px solid {MG_RED};padding-left:0.75rem;" if accent_border else ""
+    sub_html = (
+        f'<div style="font-size:0.68rem;color:{MG_MUTED};margin-top:0.25rem;'
+        f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{sub}</div>'
+        if sub else
+        f'<div style="font-size:0.68rem;color:transparent;margin-top:0.25rem;">—</div>'
+    )
+    return (
+        f'<div style="background:{MG_SURF};border-radius:8px;padding:0.9rem 1rem;'
+        f'min-height:90px;display:flex;flex-direction:column;justify-content:flex-start;{border}">'
+        f'<div style="font-size:0.58rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+        f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;'
+        f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{label}</div>'
+        f'<div style="font-size:1.35rem;font-weight:700;color:{vc};line-height:1.1;">{value}</div>'
+        f'{sub_html}'
+        f'</div>'
+    )
+
 @st.cache_data(ttl=900, show_spinner=False)
 def get_meta_spend(fecha_desde_str, fecha_hasta_str):
     """Trae gasto en Meta Ads para el período. Devuelve float ARS o None."""
@@ -2159,6 +2251,7 @@ def _slug_producto(path):
         p = p.split("/productos/", 1)[1]
     return _norm_nombre(p.replace("-", " "))
 
+@st.cache_data(ttl=900, show_spinner=False)
 def get_dolar_blue():
     try:
         r = requests.get("https://api.bluelytics.com.ar/v2/latest", timeout=5)
@@ -2483,54 +2576,47 @@ with st.sidebar:
         st.caption(f"{fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
     buscar = st.button("Actualizar datos", use_container_width=True)
 
-    # ── Config Salud Financiera (solo visible en esa sección) ──────────────────
-    if seccion == "💚 Salud Financiera":
-        st.divider()
-        st.markdown(
-            f'<p style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\','
-            f'monospace;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.5rem;">'
-            f'⚙️ Configuración financiera</p>',
-            unsafe_allow_html=True,
-        )
+    # ── Config financiera GLOBAL — auto-aplicada, sin botón ────────────────────
+    # Dólar blue y pauta Meta se fetchean solos; los widgets escriben directo en
+    # session_state y TODAS las solapas leen de ahí. Editá solo para pisar valores.
+    st.divider()
+    with st.expander("⚙️ Config financiera", expanded=False):
         _dolar_raw_sb = get_dolar_blue()
         _dolar_default_sf = int(_dolar_raw_sb) if _dolar_raw_sb else 1200
+        if "cfg_tc" not in st.session_state:
+            st.session_state.cfg_tc = int(st.session_state.tipo_cambio_sf or _dolar_default_sf)
         _tc_sf = st.number_input(
-            f"💵 Dólar blue",
-            value=st.session_state.tipo_cambio_sf or _dolar_default_sf,
-            step=10,
-            help="Tipo de cambio para convertir costos USD → ARS",
+            "💵 Dólar blue", key="cfg_tc", step=10,
+            help="Auto: API dólar blue. Editá para pisar el valor.",
         )
-        _iva_sf = st.slider("🧾 IVA efectivo (%)", 0.0, 21.0, float(st.session_state.pct_iva), 0.5)
+        if "cfg_iva" not in st.session_state:
+            st.session_state.cfg_iva = float(st.session_state.pct_iva)
+        _iva_sf = st.slider("🧾 IVA efectivo (%)", 0.0, 21.0, step=0.5, key="cfg_iva")
+        if "cfg_pkg" not in st.session_state:
+            st.session_state.cfg_pkg = 2500
+        _pkg_sf = st.number_input("📦 Packaging/u ($)", key="cfg_pkg", step=500)
 
-        # Meta Ads — auto-fetch
+        # Pauta Meta — auto-fetch, se re-aplica sola al cambiar el período
         _meta_result_sb = get_meta_spend(str(fecha_desde), str(fecha_hasta))
+        _pauta_auto = 0
         if _meta_result_sb:
             _meta_spend_sb, _meta_cur_sb = _meta_result_sb
             _pauta_auto = round(_meta_spend_sb) if _meta_cur_sb == "ARS" else round(_meta_spend_sb * (_tc_sf or _dolar_default_sf))
-            st.success(
-                f"📡 Meta: {_meta_cur_sb} {_meta_spend_sb:,.0f}"
-                + (f" → ${_pauta_auto:,.0f}" if _meta_cur_sb != "ARS" else ""),
-            )
-            _pauta_default = int(st.session_state.pauta_manual) if st.session_state.pauta_manual else _pauta_auto
-        else:
-            _meta_token_check = st.secrets.get("META_TOKEN", "")
-            if not _meta_token_check:
-                st.caption("💡 Agregá `META_TOKEN` + `META_AD_ACCOUNT_ID` en secrets para auto-fetch.")
-            else:
-                st.warning("⚠️ Meta Ads no disponible — ingresá manualmente.")
-            _pauta_default = st.session_state.pauta_manual
-
+            st.caption(f"📡 Meta auto: ${_pauta_auto:,.0f}")
+        elif st.secrets.get("META_TOKEN", ""):
+            st.caption("⚠️ Meta Ads no respondió — cargá la pauta a mano.")
+        _periodo_actual = (str(fecha_desde), str(fecha_hasta))
+        if st.session_state.get("_pauta_periodo") != _periodo_actual:
+            st.session_state._pauta_periodo = _periodo_actual
+            st.session_state.cfg_pauta = int(_pauta_auto)
         _pauta_sf = st.number_input(
-            "📣 Pauta (ARS)",
-            value=int(_pauta_default),
-            step=10_000,
-            help="Gasto en publicidad Meta Ads del período",
+            "📣 Pauta (ARS)", key="cfg_pauta", step=10_000,
+            help="Auto: gasto Meta Ads del período. Editá para pisar el valor.",
         )
-        if st.button("✅ Aplicar", use_container_width=True, key="btn_aplicar_sf"):
-            st.session_state.tipo_cambio_sf = _tc_sf
-            st.session_state.pct_iva = _iva_sf
-            st.session_state.pauta_manual = _pauta_sf
-            st.rerun()
+    st.session_state.tipo_cambio_sf = _tc_sf
+    st.session_state.pct_iva = _iva_sf
+    st.session_state.pauta_manual = _pauta_sf
+    st.session_state.packaging_global = _pkg_sf
 
 # ── Helper: cargar y cruzar datos ─────────────────────────────────────────────
 def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
@@ -3173,12 +3259,12 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     elif seccion == "🔍 Detalle y ajustes":
         st.subheader("🛍️ Detalle de órdenes — Tienda Nube")
-        st.caption("🔧 v0.8.0")
+        st.caption("🔧 v0.9.0")
 
         if df_tn.empty:
             st.info("No hay órdenes en este período.")
         else:
-            _dolar_det = dolar_blue or 1200
+            _dolar_det = st.session_state.tipo_cambio_sf or dolar_blue or 1200
             _costos_gs = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
             df_det = df_tn.copy()
             df_det["Costo Productos ($)"] = df_det.apply(
@@ -3271,7 +3357,38 @@ if st.session_state.df_tn is not None:
             )
 
             # ══════════════════════════════════════════════════════════════════
-            # 3) ACCIONES — fila compacta de 3 columnas
+            # 3) DETECTOR DE EFECTIVO — órdenes "a convenir" sin pago MP coincidente
+            # son casi siempre ventas en efectivo sin marcar (margen mal calculado)
+            # ══════════════════════════════════════════════════════════════════
+            _marcadas_efec = st.session_state.get("ordenes_efectivo", set()) or set()
+            if "Pasarela" in df_det.columns:
+                _cand_efec = df_det[
+                    (df_det["Pasarela"] == "Convenir")
+                    & (~df_det["Orden"].astype(str).isin(_marcadas_efec))
+                ]
+            else:
+                _cand_efec = pd.DataFrame()
+            if not _cand_efec.empty:
+                _lst = " · ".join(
+                    f"#{r['Orden']} {str(r.get('Cliente',''))[:20]} ${float(r['Total ($)']):,.0f}"
+                    for _, r in _cand_efec.iterrows()
+                )
+                _ce1, _ce2 = st.columns([3, 1])
+                _ce1.warning(f"💵 {len(_cand_efec)} orden(es) parecen efectivo (a convenir, sin pago MP): {_lst}")
+                if _ce2.button("Marcar como efectivo", use_container_width=True, key="btn_marcar_cand_efec"):
+                    _gs_efec = gs_read("OrdenesEfectivo") or {}
+                    if not isinstance(_gs_efec, dict):
+                        _gs_efec = {}
+                    for _n in _cand_efec["Orden"].astype(str):
+                        _gs_efec[_n] = True
+                    if gs_write("OrdenesEfectivo", _gs_efec):
+                        _cargar_datos(fecha_desde, fecha_hasta)
+                        st.rerun()
+                    else:
+                        st.error("❌ Error guardando en Sheets.")
+
+            # ══════════════════════════════════════════════════════════════════
+            # 4) ACCIONES — fila compacta de 3 columnas
             # ══════════════════════════════════════════════════════════════════
             _orders_raw_dbg = st.session_state.get("orders_raw", [])
             _ac1, _ac2, _ac3 = st.columns(3)
@@ -3400,50 +3517,7 @@ if st.session_state.df_tn is not None:
                         with st.expander("Ver orden completa (JSON)", expanded=False):
                             st.json(o)
 
-            # ══════════════════════════════════════════════════════════════════
-            # 4) DESGLOSES — fila compacta de 2 columnas
-            # ══════════════════════════════════════════════════════════════════
-            _df_pn_det = st.session_state.get("df_pagos")
-            _has_pn = _df_pn_det is not None and not _df_pn_det.empty
-            _df_mp_det = pd.DataFrame()
-            if MP_ACCESS_TOKEN:
-                _mp_raw_det = get_mp_payments(str(fecha_desde), str(fecha_hasta)) or []
-                if _mp_raw_det:
-                    _montos_tn_det = {round(float(t)) for t in df_det["Total ($)"]} if not df_det.empty else set()
-                    _df_mp_det = procesar_mp_payments(_mp_raw_det, montos_validos_tn=_montos_tn_det)
-            _has_mp = not _df_mp_det.empty
-
-            if _has_pn or _has_mp:
-                _d1, _d2 = st.columns(2)
-                if _has_pn:
-                    with _d1.expander(f"🔵 Desglose Pago Nube ({len(_df_pn_det)})", expanded=False):
-                        st.caption("Costo de procesamiento (fee) + retenciones impositivas (IIBB, IVA).")
-                        _cols_pn = [
-                            "Orden TN", "Fecha", "Método", "Cuotas",
-                            "Monto ($)", "Fee ($)", "Retención ($)", "Costo total ($)", "Neto ($)",
-                        ]
-                        _cols_pn = [c for c in _cols_pn if c in _df_pn_det.columns]
-                        _fmt_pn = {c: "${:,.2f}" for c in _cols_pn if "($)" in c}
-                        st.dataframe(
-                            _df_pn_det[_cols_pn].style.format(_fmt_pn),
-                            use_container_width=True, hide_index=True,
-                        )
-                if _has_mp:
-                    with _d2.expander(f"💳 Desglose Mercado Pago ({len(_df_mp_det)})", expanded=False):
-                        st.caption("Cargo MP, financiación, impuestos, plataforma de terceros.")
-                        _cols_mp = [
-                            "ID MP", "Fecha", "Tipo", "Cuotas", "Medio",
-                            "Bruto ($)", "Cargo MP ($)", "Cargo financiación ($)",
-                            "Impuestos ($)", "Cargo plataforma ($)",
-                            "Fee total ($)", "Costo %", "Neto ($)",
-                        ]
-                        _cols_mp = [c for c in _cols_mp if c in _df_mp_det.columns]
-                        _fmt_money = {c: "${:,.2f}" for c in _cols_mp if "($)" in c}
-                        _fmt_money["Costo %"] = "{:.2f}%"
-                        st.dataframe(
-                            _df_mp_det[_cols_mp].style.format(_fmt_money),
-                            use_container_width=True, hide_index=True,
-                        )
+            # Los desgloses PN/MP viven en 💚 Salud Financiera (única fuente).
 
             # Estado de costos
             st.divider()
@@ -3479,29 +3553,7 @@ if st.session_state.df_tn is not None:
                 use_container_width=True, hide_index=True,
             )
 
-        # Resumen por medio de pago
-        st.divider()
-        st.subheader("📊 Resumen por medio de pago")
-        if not df_tn.empty:
-            res = df_tn.groupby("Medio de Pago").agg(
-                Cantidad=("Orden", "count"), Bruto=("Total ($)", "sum"),
-                Comision=("Comision PN ($)", "sum"), Neto=("Neto cobrado ($)", "sum"),
-                CostoProds=("Costo Productos ($)", "sum"), Margen=("Margen ($)", "sum"),
-            ).reset_index()
-            res["Costo %"] = (res["Comision"] / res["Bruto"] * 100).round(2).apply(fmt_pct)
-            res["Margen %"] = (res["Margen"] / res["Bruto"] * 100).round(2).apply(fmt_pct)
-            for col in ["Bruto", "Comision", "Neto", "CostoProds", "Margen"]:
-                res[col] = res[col].apply(fmt)
-            res.columns = ["Medio de Pago", "Cantidad", "Bruto ($)", "Comision PN ($)", "Neto ($)", "Costo Prods ($)", "Margen ($)", "Costo PN %", "Margen %"]
-            st.dataframe(res, use_container_width=True, hide_index=True)
-
-        if not df_pagos.empty:
-            st.divider()
-            st.subheader("💳 Detalle transacciones — Pago Nube")
-            st.dataframe(
-                df_pagos.style.format({"Monto ($)": "${:,.0f}", "Fee ($)": "${:,.0f}", "Neto ($)": "${:,.0f}"}),
-                use_container_width=True, hide_index=True,
-            )
+        # El resumen por medio de pago vive en 💳 Estadísticas de pago (única fuente).
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 3: SALUD FINANCIERA
@@ -3522,67 +3574,33 @@ if st.session_state.df_tn is not None:
             st.info("Buscá primero para ver los datos financieros.")
         else:
             _costos_gs_sf = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
-            df_calc = df_tn.copy()
-            # Usar comisiones reales de TN (no recalcular con tasas teóricas)
-            df_calc["Neto cobrado ($)"] = df_calc["Total ($)"] - df_calc["Comision PN ($)"]
-            df_calc["Costo Productos ($)"] = df_calc.apply(
-                lambda r: costo_final_row(r, tipo_cambio, _costos_gs_sf), axis=1
-            )
-            df_calc["Margen ($)"] = (
-                df_calc["Neto cobrado ($)"] - df_calc["Costo Productos ($)"] - df_calc["Envio costo ($)"]
-            )
-            df_calc["Margen (%)"] = df_calc.apply(
-                lambda r: round((r["Margen ($)"] / r["Total ($)"] * 100) if r["Total ($)"] > 0 else 0, 2),
-                axis=1,
-            )
-
-            facturacion_bruta = df_calc["Total ($)"].sum()
-            comisiones_pn = df_calc["Comision PN ($)"].sum()
-            neto_cobrado = df_calc["Neto cobrado ($)"].sum()
-            costo_productos = df_calc["Costo Productos ($)"].sum()
-            costo_envios = df_calc["Envio costo ($)"].sum()
-            costo_iva = facturacion_bruta * (pct_iva / 100)
-            margen_bruto = df_calc["Margen ($)"].sum()
-
-            # ── Gastos fijos prorrateados ──
             gastos_fijos_saved = gs_read("GastosFijos") or {}
-            total_gastos_fijos_mes = sum(
-                v for k, v in gastos_fijos_saved.items()
-                if isinstance(v, (int, float)) and v > 0
+
+            _res = calcular_resultado_periodo(
+                df_tn, fecha_desde, fecha_hasta, tipo_cambio, pct_iva, pauta_manual,
+                costos_gs=_costos_gs_sf, gastos_fijos_dict=gastos_fijos_saved,
             )
-            dias_periodo = max((fecha_hasta - fecha_desde).days + 1, 1)
-            factor_prorrateo = dias_periodo / 30
-            gastos_fijos_periodo = round(total_gastos_fijos_mes * factor_prorrateo)
+            df_calc = _res["df_calc"]
+            facturacion_bruta = _res["facturacion_bruta"]
+            comisiones_pn = _res["comisiones"]
+            neto_cobrado = _res["neto_cobrado"]
+            costo_productos = _res["costo_productos"]
+            costo_envios = _res["costo_envios"]
+            costo_iva = _res["costo_iva"]
+            margen_bruto = _res["margen_bruto"]
+            total_gastos_fijos_mes = _res["gastos_fijos_mes"]
+            dias_periodo = _res["dias_periodo"]
+            factor_prorrateo = _res["factor_prorrateo"]
+            gastos_fijos_periodo = _res["gastos_fijos_periodo"]
+            resultado_final = _res["resultado_final"]
 
-            resultado_final = margen_bruto - costo_iva - pauta_manual - gastos_fijos_periodo
+            _kpi_html = kpi_card
 
-            # ── Helper: card KPI uniforme ──────────────────────────────────────
-            def _kpi_html(label, value, sub="", val_color=None, accent_border=False):
-                """Card de altura fija para alinear valores verticalmente."""
-                vc = val_color or MG_TEXT
-                border = f"border-left:2px solid {MG_RED};padding-left:0.75rem;" if accent_border else ""
-                sub_html = (
-                    f'<div style="font-size:0.68rem;color:{MG_MUTED};margin-top:0.25rem;'
-                    f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{sub}</div>'
-                    if sub else
-                    f'<div style="font-size:0.68rem;color:transparent;margin-top:0.25rem;">—</div>'
-                )
-                return (
-                    f'<div style="background:{MG_SURF};border-radius:8px;padding:0.9rem 1rem;'
-                    f'min-height:90px;display:flex;flex-direction:column;justify-content:flex-start;{border}">'
-                    f'<div style="font-size:0.58rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
-                    f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;'
-                    f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{label}</div>'
-                    f'<div style="font-size:1.35rem;font-weight:700;color:{vc};line-height:1.1;">{value}</div>'
-                    f'{sub_html}'
-                    f'</div>'
-                )
-
-            # ── Cargar datos MP del período (para detalle pasarela) ────────────
+            # ── Datos MP del período — reutiliza el fetch de _cargar_datos ─────
             _mp_raw_sf = []
             _df_mp_sf = pd.DataFrame()
             if MP_ACCESS_TOKEN:
-                _mp_raw_sf = get_mp_payments(str(fecha_desde), str(fecha_hasta)) or []
+                _mp_raw_sf = st.session_state.get("mp_raw") or get_mp_payments(str(fecha_desde), str(fecha_hasta)) or []
                 if _mp_raw_sf:
                     _montos_tn_sf = {round(float(t)) for t in df_calc["Total ($)"]} if not df_calc.empty else set()
                     _df_mp_sf = procesar_mp_payments(_mp_raw_sf, montos_validos_tn=_montos_tn_sf)
@@ -3666,16 +3684,12 @@ if st.session_state.df_tn is not None:
                 _mp_api_bruto = _df_mp_sf["Bruto ($)"].sum()
                 _mp_api_fee   = _df_mp_sf["Fee total ($)"].sum()
                 _diff_pct = abs(_mp_api_bruto - _bruto_mp) / _bruto_mp * 100 if _bruto_mp > 0 else 0
-                if _diff_pct > 5:  # más de 5% de diferencia
-                    st.caption(
-                        f"⚠️ Diferencia entre MP (API) y TN (órdenes MP): "
+                # Silencioso cuando concilia; solo avisa si la diferencia es grave
+                if _diff_pct > 5:
+                    st.warning(
+                        f"⚠️ MP (API) y TN no concilian: "
                         f"API ${_mp_api_bruto:,.0f} vs TN ${_bruto_mp:,.0f} "
                         f"({_diff_pct:.1f}% diff) · Fee real API: {fmt(_mp_api_fee)}"
-                    )
-                else:
-                    st.caption(
-                        f"✅ Conciliado con API MP: Fee real {fmt(_mp_api_fee)} "
-                        f"vs estimado {fmt(_com_mp)}"
                     )
 
             # ── Debug MP (sigue disponible) ────────────────────────────────────
@@ -3979,13 +3993,10 @@ if st.session_state.df_tn is not None:
                         pm2.metric("Facturación", fmt(row_p["Facturación"]))
                         pm3.metric("Comisión", fmt(row_p["Comisión"]), help=f"Costo %: {row_p['Costo %']:.2f}%")
 
-                # Si hay token de MP, mostrar fees reales
+                # Fees reales de MP — reutiliza lo ya fetcheado arriba (sin 2do fetch)
                 if MP_ACCESS_TOKEN:
-                    with st.spinner("Consultando fees reales de Mercado Pago..."):
-                        mp_raw = get_mp_payments(str(fecha_desde), str(fecha_hasta))
-                    if mp_raw:
-                        _montos_tn_legacy = {round(float(t)) for t in df_calc["Total ($)"]} if not df_calc.empty else set()
-                        df_mp = procesar_mp_payments(mp_raw, montos_validos_tn=_montos_tn_legacy)
+                    if _mp_raw_sf:
+                        df_mp = _df_mp_sf
                         if not df_mp.empty:
                             st.markdown("**Fees reales desde API de Mercado Pago**")
                             # Resumen por tipo
