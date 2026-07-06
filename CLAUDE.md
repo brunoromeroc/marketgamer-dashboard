@@ -1,56 +1,60 @@
-# Claude Code — Market Gamer Dashboard
+# Claude Code ï¿½ Market Gamer Dashboard
 
 ## Contexto del proyecto
 - Dashboard Streamlit para Market Gamer (consolas retro, Argentina)
-- Integra: TN API (store 6623036), Google Sheets (CostosConsolas, Proveedores, SaludFinanciera)
-- archivo principal: app.py (~2500 líneas)
-- Exchange rate: SIEMPRE dólar blue, nunca oficial
+- Integra: TN API (store 6623036), Google Sheets (CostosConsolas, GastosFijos, OrdenesEfectivo, HistorialStock)
+- archivo principal: app.py (~6600 lineas)
+- Exchange rate: SIEMPRE dolar blue, nunca oficial
 - Precios: SIEMPRE precio unitario de TN API, NUNCA dividir total por cantidad
-- Margen confiable: Tab 3 (Salud Financiera), no Tab 1
-- UI: español argentino con voseo
+- Resultado/margen del periodo: SIEMPRE via calcular_resultado_periodo() â€” fuente
+  unica de verdad que consumen Dashboard, Salud Financiera y Analista IA.
+  NUNCA copiar la formula de margen inline en una solapa.
+- Config financiera (dolar, IVA, pauta, packaging): global en sidebar, auto-aplicada.
+  Leer de session_state (tipo_cambio_sf, pct_iva, pauta_manual, packaging_global).
+- UI: espanol argentino con voseo
 
 ## Flujo para mejorar el dashboard
 
 ### Mejora chica (fix, ajuste visual, dato nuevo)
-1. /programar — leer todo ? plan ? implementar ? verificar
-2. /smart-commit — commit con mensaje descriptivo
+1. /programar ï¿½ leer todo ? plan ? implementar ? verificar
+2. /smart-commit ï¿½ commit con mensaje descriptivo
 3. git push
 
-### Mejora grande (feature nueva, sección nueva, rediseño)
-1. /understand — analizar el proyecto completo
-2. /brainstorming — diseñar la mejora, genera spec en docs/superpowers/specs/
-3. /writing-plans — convierte spec en pasos de 2-5 min
-4. /executing-plans — Claude ejecuta los pasos
-5. /verification-before-completion — chequeo antes de cerrar
-6. /smart-commit — commit limpio
+### Mejora grande (feature nueva, secciï¿½n nueva, rediseï¿½o)
+1. /understand ï¿½ analizar el proyecto completo
+2. /brainstorming ï¿½ diseï¿½ar la mejora, genera spec en docs/superpowers/specs/
+3. /writing-plans ï¿½ convierte spec en pasos de 2-5 min
+4. /executing-plans ï¿½ Claude ejecuta los pasos
+5. /verification-before-completion ï¿½ chequeo antes de cerrar
+6. /smart-commit ï¿½ commit limpio
 7. git push
-8. /wrap-up — documentar estado en .superclaudio/estado.md
+8. /wrap-up ï¿½ documentar estado en .superclaudio/estado.md
 
 ### Cuando algo se rompe
-1. /systematic-debugging — causa raíz obligatoria antes de tocar código
-2. /programar — fix
+1. /systematic-debugging ï¿½ causa raï¿½z obligatoria antes de tocar cï¿½digo
+2. /programar ï¿½ fix
 3. /smart-commit
 
-### Al arrancar una sesión
-1. Leer .superclaudio/estado.md — ver dónde quedó
+### Al arrancar una sesiï¿½n
+1. Leer .superclaudio/estado.md ï¿½ ver dï¿½nde quedï¿½
 2. Si existe .understand-anything/knowledge-graph.json ? sugerir /replay-learnings
-3. Elegir flujo según el tipo de tarea
+3. Elegir flujo segï¿½n el tipo de tarea
 
 ## Agentes disponibles
 
 ### Para tareas paralelas grandes (agent-teams)
-Cuando hay múltiples cambios que no se pisan entre sí.
+Cuando hay mï¿½ltiples cambios que no se pisan entre sï¿½.
 - Activar con: CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
-- Tamaño útil: 2-3 teammates para este proyecto
+- Tamaï¿½o ï¿½til: 2-3 teammates para este proyecto
 - Usar SOLO si las tareas tocan secciones distintas del dashboard
-- NO usar para fixes o cambios en las mismas líneas
+- NO usar para fixes o cambios en las mismas lï¿½neas
 
-### Para exploración rápida (subagent)
-Cuando querés que Claude investigue algo sin tocar el código principal.
-- "Usá un subagente para analizar cómo está estructurada la tab de Proveedores"
+### Para exploraciï¿½n rï¿½pida (subagent)
+Cuando querï¿½s que Claude investigue algo sin tocar el cï¿½digo principal.
+- "Usï¿½ un subagente para analizar cï¿½mo estï¿½ estructurada la tab de Proveedores"
 
 ## Reglas del proyecto
 - NUNCA commitear .streamlit/secrets.toml
 - SIEMPRE verificar sintaxis antes de commitear: python -c "import ast; ast.parse(open('app.py').read())"
-- Dólar blue: fetchear de la API, nunca hardcodear
-- Pendiente: completar sección GCP Service Account si falla Google Sheets
+- Dï¿½lar blue: fetchear de la API, nunca hardcodear
+- Pendiente: completar secciï¿½n GCP Service Account si falla Google Sheets
