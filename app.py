@@ -2912,6 +2912,75 @@ if st.session_state.df_tn is not None:
             for _a in _alertas:
                 st.warning(_a)
 
+            # ══════════════════════════════════════════════════════════════════
+            # 📈 EVOLUCIÓN HISTÓRICA — ¿estamos creciendo?
+            # Vista mensual desde que hay datos, con el promedio como referencia.
+            # ══════════════════════════════════════════════════════════════════
+            st.markdown("### 📈 Evolución histórica — ¿estamos creciendo?")
+            _df_hist_dash = _cargar_ordenes_historico(730)
+            if _df_hist_dash is None or _df_hist_dash.empty:
+                st.caption("Sin histórico disponible todavía.")
+            else:
+                _dfh = _df_hist_dash.copy()
+                _dfh["Mes"] = pd.to_datetime(_dfh["Fecha"]).dt.to_period("M").dt.to_timestamp()
+                _dfh["_costo_h"] = _dfh.apply(
+                    lambda r: costo_final_row(r, _tc_dash, _costos_gs_dash), axis=1
+                )
+                _dfh["_margen_h"] = (
+                    _dfh["Total ($)"] - _dfh["Comision PN ($)"] - _dfh["_costo_h"] - _dfh["Envio costo ($)"]
+                )
+                _mens = _dfh.groupby("Mes").agg(
+                    Facturacion=("Total ($)", "sum"),
+                    Ordenes=("Orden", "count"),
+                    Margen=("_margen_h", "sum"),
+                ).reset_index().sort_values("Mes")
+                _mens["Ticket"] = (_mens["Facturacion"] / _mens["Ordenes"]).round(0)
+                _mes_curso = pd.Timestamp(date.today().replace(day=1))
+                _mens["_parcial"] = _mens["Mes"] == _mes_curso
+
+                def _chart_hist(col, titulo, es_plata=True, color=MG_RED):
+                    _completos = _mens[~_mens["_parcial"]]
+                    _prom = float(_completos[col].mean()) if len(_completos) else None
+                    _colores = [MG_DIM if p else color for p in _mens["_parcial"]]
+                    if es_plata:
+                        _txt = _mens[col].apply(_fmt_compact)
+                        _hover = "%{x|%b %Y}<br>$%{y:,.0f}<extra></extra>"
+                    else:
+                        _txt = _mens[col].apply(lambda v: f"{v:,.0f}")
+                        _hover = "%{x|%b %Y}<br>%{y:,.0f}<extra></extra>"
+                    _fig = go.Figure(go.Bar(
+                        x=_mens["Mes"], y=_mens[col],
+                        marker_color=_colores, text=_txt,
+                        textposition="outside", textfont_size=10,
+                        hovertemplate=_hover,
+                    ))
+                    if _prom is not None:
+                        _fig.add_hline(
+                            y=_prom, line_dash="dash", line_color=MG_MUTED, line_width=1,
+                            annotation_text=f"prom {_fmt_compact(_prom) if es_plata else f'{_prom:,.0f}'}",
+                            annotation_font_size=10, annotation_font_color=MG_MUTED,
+                        )
+                    _fig.update_layout(
+                        title=titulo, height=280,
+                        margin=dict(t=45, b=25, l=10, r=10),
+                        xaxis=dict(tickformat="%b %y", dtick="M1"),
+                        yaxis=dict(tickformat="$,.0f" if es_plata else ",.0f"),
+                        showlegend=False, bargap=0.25,
+                    )
+                    return _fig
+
+                _eh1, _eh2 = st.columns(2)
+                _eh1.plotly_chart(_chart_hist("Facturacion", "Facturación mensual"), use_container_width=True)
+                _eh2.plotly_chart(_chart_hist("Margen", "Margen bruto mensual", color="#4ade80"), use_container_width=True)
+                _eh3, _eh4 = st.columns(2)
+                _eh3.plotly_chart(_chart_hist("Ordenes", "Órdenes por mes", es_plata=False, color="#009EE3"), use_container_width=True)
+                _eh4.plotly_chart(_chart_hist("Ticket", "Ticket promedio", color="#fbbf24"), use_container_width=True)
+                st.caption(
+                    "La barra gris es el mes en curso (incompleto — no cuenta para el promedio). "
+                    "Margen calculado con costos y dólar de HOY; comisiones históricas estimadas con tasas oficiales. "
+                    "El margen bruto no descuenta IVA, pauta ni gastos fijos."
+                )
+
             st.markdown("")
 
             # ── Ventas por día (BARRAS) + Top 10 por unidades — alineadas ─────
