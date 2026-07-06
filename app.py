@@ -352,7 +352,9 @@ def _normalizar(s):
 
 _NOISE_WORDS = ('almacenamiento', 'transparente', 'ram', 'negro', 'blanco',
                 'azul', 'rojo', 'naranja', 'verde', 'gris', 'violeta',
-                'purpura', 'rosa', 'dorado', 'plateado')
+                'purpura', 'rosa', 'dorado', 'plateado', 'amarillo',
+                'ndigo', 'indigo', 'silver', 'beige', 'metalico', 'celeste',
+                'turquesa', 'lila', 'cierre')
 
 def _norm_compact(s):
     """Normalización agresiva: solo alfanumérico, sin colores ni 'GB/RAM/etc'.
@@ -5284,6 +5286,108 @@ if st.session_state.df_tn is not None:
                         st.session_state.costos_img_props = None
                         st.session_state.costos_img_sin_match = None
                         st.rerun()
+
+        # ══════════════════════════════════════════════════════════════════
+        # 🔀 MIGRAR PRECIOS — filas viejas sin link TN → variantes reales de TN
+        # Las ventas siempre vienen de TN, así que el precio tiene que vivir
+        # en la fila de la variante TN, no en una fila genérica huérfana.
+        # ══════════════════════════════════════════════════════════════════
+        with st.expander("🔀 Migrar precios viejos → variantes de TN", expanded=False):
+            st.caption(
+                "Detecta filas **sin link de TN pero con FOB cargado** (genéricas viejas, ej. "
+                "\"RG 34XX 64GB\") y propone copiar su precio a las **variantes reales de TN** "
+                "que están en $0 (ej. \"RG 34XX (Negro)\"). Después las viejas se depuran abajo."
+            )
+            _map_tn_mig = st.session_state.get("productos_tn_map", {}) or {}
+            _tn_compact_mig = {_norm_compact(k): k for k in _map_tn_mig if _norm_compact(k)}
+            _costos_mig = st.session_state.costos_consolas
+
+            def _fob_de(k):
+                v = _costos_mig.get(k)
+                return float(v.get("fob_usd", 0) or 0) if isinstance(v, dict) else 0.0
+
+            # Donantes: con FOB, fuera de TN. Receptores: en TN, sin FOB.
+            _donantes = [
+                k for k in _costos_mig
+                if not k.startswith("_") and _fob_de(k) > 0
+                and _norm_compact(k) not in _tn_compact_mig
+            ]
+            _receptores = [
+                k for k in _map_tn_mig
+                if _fob_de(k) <= 0 and len(_norm_compact(k)) >= 6
+            ]
+
+            _props_mig = []
+            for _rec in sorted(_receptores):
+                _rc = _norm_compact(_rec)
+                _best, _best_left = None, None
+                # Segundo intento sin "rg": TN a veces omite el prefijo del modelo
+                # ("Anbernic 34XXSP" vs fila vieja "Anbernic RG 34XX SP")
+                _rc2 = _rc.replace("rg", "", 1)
+                for _don in _donantes:
+                    _dc = _norm_compact(_don)
+                    if _rc == _dc:
+                        _best, _best_left = _don, ""
+                        break
+                    _dc2 = _dc.replace("rg", "", 1)
+                    for _a, _b in ((_rc, _dc), (_rc2, _dc2)):
+                        if _a and _a in _b:
+                            # El sobrante debe ser solo dígitos (almacenamiento): evita
+                            # que "RG 34XX SP 64GB" le pise el precio a "RG 34XX (Negro)"
+                            _left = _b.replace(_a, "", 1)
+                            if _left.isdigit() or _left == "":
+                                if _best_left is None or len(_left) < len(_best_left):
+                                    _best, _best_left = _don, _left
+                            break
+                if _best:
+                    _props_mig.append({
+                        "Aplicar": True,
+                        "Variante TN (recibe)": _rec,
+                        "Toma el precio de": _best,
+                        "FOB (USD)": round(_fob_de(_best), 2),
+                    })
+
+            if not _donantes:
+                st.success("✅ No hay filas viejas con precio fuera de TN — nada para migrar.")
+            elif not _props_mig:
+                st.info(
+                    f"Hay {len(_donantes)} fila(s) con precio fuera de TN pero ninguna matchea "
+                    "con variantes TN en $0. Revisá los nombres o cargá a mano."
+                )
+            else:
+                _df_mig = st.data_editor(
+                    pd.DataFrame(_props_mig),
+                    column_config={
+                        "Aplicar": st.column_config.CheckboxColumn("Aplicar"),
+                        "Variante TN (recibe)": st.column_config.TextColumn(disabled=True, width="large"),
+                        "Toma el precio de": st.column_config.TextColumn(disabled=True, width="large"),
+                        "FOB (USD)": st.column_config.NumberColumn(disabled=True, format="$%.2f"),
+                    },
+                    hide_index=True, use_container_width=True, key="costos_migrar_editor",
+                )
+                _n_mig = int(_df_mig["Aplicar"].sum())
+                if st.button(
+                    f"🔀 Migrar {_n_mig} precio(s) a variantes TN — con backup",
+                    use_container_width=True, type="primary", key="btn_migrar",
+                    disabled=_n_mig == 0,
+                ):
+                    gs_backup_costos(motivo=f"pre-migración de precios ({_n_mig})")
+                    for _, _rm in _df_mig[_df_mig["Aplicar"]].iterrows():
+                        _k_rec = _rm["Variante TN (recibe)"]
+                        _entry = _costos_mig.get(_k_rec)
+                        if not isinstance(_entry, dict):
+                            _entry = {"fob_usd": 0.0, "peso_kg": float(_map_tn_mig.get(_k_rec) or 0)}
+                        _entry["fob_usd"] = float(_rm["FOB (USD)"])
+                        _entry.pop("costo_total_usd", None)
+                        _costos_mig[_k_rec] = _entry
+                    gs_write("CostosConsolas", _costos_mig)
+                    st.session_state.costos_consolas = _costos_mig
+                    st.session_state._costos_needs_refresh = True
+                    st.success(
+                        f"✅ {_n_mig} precio(s) migrados a variantes TN. "
+                        "Ahora podés depurar las filas viejas en 🧹 Depurar."
+                    )
+                    st.rerun()
 
         # ══════════════════════════════════════════════════════════════════
         # 🧹 DEPURAR — dejar solo consolas, con backup
