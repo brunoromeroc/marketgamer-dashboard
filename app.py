@@ -5390,27 +5390,24 @@ if st.session_state.df_tn is not None:
                     st.rerun()
 
         # ══════════════════════════════════════════════════════════════════
-        # 🧹 DEPURAR — dejar solo consolas, con backup
+        # 🧹 DEPURAR — sacar solo lo que ya no existe en TN, con backup
+        # (los accesorios también se venden y necesitan costo — NO son basura)
         # ══════════════════════════════════════════════════════════════════
-        with st.expander("🧹 Depurar tabla — dejar solo consolas", expanded=False):
-            _KW_ACC = (
-                "estuche", "funda", "memoria", "micro sd", "microsd", "lectora",
-                "cable", "joystick", "grip", "protector", "vidrio", "templado",
-                "mochila", "bolso", "sticker", "skin", "cargador", "adaptador", "auricular",
-            )
+        with st.expander("🧹 Depurar tabla — sacar lo que ya no está en TN", expanded=False):
             _keys_dep = sorted(k for k in st.session_state.costos_consolas if not k.startswith("_"))
-            _cand_acc = [k for k in _keys_dep if any(w in k.lower() for w in _KW_ACC)]
             _map_tn_dep = st.session_state.get("productos_tn_map", {}) or {}
             _tn_compact_dep = {_norm_compact(k) for k in _map_tn_dep}
             _cand_fuera = [
                 k for k in _keys_dep
                 if _map_tn_dep and _norm_compact(k) not in _tn_compact_dep
             ] if _map_tn_dep else []
-            _default_dep = sorted(set(_cand_acc) | set(_cand_fuera))
+            _default_dep = sorted(_cand_fuera)
+            if not _map_tn_dep:
+                st.warning("TN no sincronizó — no se puede detectar qué falta. Refrescá primero.")
             st.caption(
-                f"Candidatos detectados: **{len(_cand_acc)} accesorios** (por palabra clave) y "
-                f"**{len(_cand_fuera)} que ya no están en TN**. Ajustá la selección antes de eliminar — "
-                "se hace backup automático primero."
+                f"**{len(_cand_fuera)} fila(s) sin producto en TN** (eliminados de la tienda o "
+                "genéricas viejas — migrá sus precios primero en 🔀). Ajustá la selección antes de "
+                "eliminar — se hace backup automático primero."
             )
             _sel_dep = st.multiselect(
                 "Filas a eliminar", options=_keys_dep, default=_default_dep,
