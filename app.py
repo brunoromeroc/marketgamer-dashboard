@@ -5226,17 +5226,24 @@ if st.session_state.df_tn is not None:
                     _lista_tabla = "\n".join(f"- {k}" for k in _keys_tabla)
                     _prompt_cat = (
                         "Imagen: lista de precios de un proveedor de consolas retro. "
-                        "Matcheá cada producto de la imagen con UNA fila de MI TABLA (nombres exactos abajo). "
+                        "Matcheá cada MODELO de la imagen con UNA fila de MI TABLA (nombres exactos abajo). "
                         "Respondé SOLO este JSON, sin texto extra:\n"
                         '{"matches":[{"producto_tabla":"<nombre EXACTO de mi tabla>","producto_imagen":"<como aparece en la imagen>","precio_usd":0.0}],'
-                        '"sin_match":["<producto de la imagen sin correspondencia clara>"]}\n'
-                        "Reglas: precio UNITARIO en USD (no el total de la fila); los nombres de la imagen "
-                        "suelen traer la cantidad adelante ('10 x 556' es el modelo 556, '20 RG 40XXH' es RG 40XX H); "
-                        "elegí cualquier variante de color de mi tabla del modelo correcto; NO confundas modelos "
-                        "parecidos (34XX ≠ 34XXSP ≠ 35XX); si dudás, va a sin_match.\n"
+                        '"sin_match":["<modelo de la imagen sin correspondencia clara>"]}\n'
+                        "REGLAS:\n"
+                        "1. Precio UNITARIO en USD (no la columna de total ni cantidad×precio).\n"
+                        "2. Los nombres traen cantidad y memoria pegadas: '10 x 556' = modelo 556; 'MAX3 16GB' = modelo MAX3.\n"
+                        "3. MODELOS PARECIDOS SON DISTINTOS Y NO SE CRUZAN: 'MAX3' ≠ 'MAX3 PRO'; '34XX' ≠ '34XXSP'; "
+                        "'V90' ≠ 'V90S'; 'RGB20S' ≠ 'RGB20SX' ≠ 'RGB20 PRO'. Si la imagen NO dice PRO/S/SP/SX/Mini, "
+                        "matcheá la fila SIN ese sufijo; si lo dice, la fila CON el sufijo.\n"
+                        "4. Sufijos descriptivos de mi tabla que no contradicen a la imagen sí matchean: "
+                        "'Q20' de la imagen matchea 'Powkiddy Q20 Mini' (es el mismo producto).\n"
+                        "5. OCR fino: leé letra por letra — 'RGB20SX' suele confundirse con 'RGB205X'; una 'S' final cambia el modelo.\n"
+                        "6. La misma consola repetida en varios colores de la imagen = UN solo match (cualquier variante de color de mi tabla).\n"
+                        "7. Cada modelo distinto de la imagen aparece exactamente una vez: en matches o en sin_match. Si dudás, sin_match.\n"
                         f"MI TABLA:\n{_lista_tabla}"
                     )
-                    with st.spinner("Leyendo catálogo con Claude (Haiku)..."):
+                    with st.spinner("Leyendo catálogo con Claude..."):
                         try:
                             _r_cat = requests.post(
                                 "https://api.anthropic.com/v1/messages",
@@ -5246,7 +5253,10 @@ if st.session_state.df_tn is not None:
                                     "content-type": "application/json",
                                 },
                                 json={
-                                    "model": "claude-haiku-4-5-20251001",
+                                    # Sonnet: una lectura de catálogo cuesta ~USD 0.02 y
+                                    # la precisión en modelos parecidos (MAX3 vs MAX3 PRO,
+                                    # SX vs 5X) justifica el costo vs Haiku.
+                                    "model": "claude-sonnet-4-6",
                                     "max_tokens": 3000,
                                     "messages": [{"role": "user", "content": [
                                         {"type": "image", "source": {"type": "base64", "media_type": _media, "data": _b64img}},
