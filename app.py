@@ -3629,6 +3629,28 @@ if st.session_state.df_tn is not None:
                 unsafe_allow_html=True,
             )
 
+            # ── Guardián de comisiones — compara contra la línea de base histórica.
+            # Silencioso si todo está normal; avisa solo si el costo % del período
+            # se desvía más de 1 punto del promedio de los últimos 12 meses.
+            _df_hist_sf = _cargar_ordenes_historico(365)
+            if _df_hist_sf is not None and not _df_hist_sf.empty and "Pasarela" in _df_hist_sf.columns:
+                for _pas_lbl, _pas_key, _pct_act in (("Pago Nube", "PN", _pct_pn), ("Mercado Pago", "MP", _pct_mp)):
+                    if _pas_key == "MP":
+                        _mask_h = _df_hist_sf["Pasarela"].isin(["MP", "Convenir"])
+                    else:
+                        _mask_h = _df_hist_sf["Pasarela"] == _pas_key
+                    _bruto_h = _df_hist_sf.loc[_mask_h, "Total ($)"].sum()
+                    _com_h = _df_hist_sf.loc[_mask_h, "Comision PN ($)"].sum()
+                    if _bruto_h <= 0 or _pct_act <= 0:
+                        continue
+                    _pct_hist = _com_h / _bruto_h * 100
+                    if _pct_act - _pct_hist > 1.0:
+                        st.warning(
+                            f"📈 El costo de **{_pas_lbl}** este período ({_pct_act:.2f}%) está "
+                            f"{_pct_act - _pct_hist:.1f} puntos arriba de tu promedio histórico ({_pct_hist:.2f}%). "
+                            f"Puede ser mix de cuotas más caras o cambio de tasas."
+                        )
+
             # Validación cruzada con MP API (si los datos no cuadran avisamos)
             if not _df_mp_sf.empty and _bruto_mp > 0:
                 _mp_api_bruto = _df_mp_sf["Bruto ($)"].sum()
@@ -3864,49 +3886,54 @@ if st.session_state.df_tn is not None:
                 else:
                     st.info(f"➡️ Tendencia estable — promedio {_lbl(df_daily['Resultado'].mean())}/día. {dias_positivos}/{dias_totales} días en verde.")
 
-            # Detalle por orden
-            st.divider()
-            st.subheader("📋 Detalle por orden con margen real")
-            cols_fin = [
-                "Orden", "Fecha", "Cliente", "Medio de Pago", "Cuotas", "Total ($)",
-                "Comision PN ($)", "Neto cobrado ($)", "Costo Productos ($)",
-                "Envio costo ($)", "Margen ($)", "Margen (%)",
-            ]
-            cols_fin = [c for c in cols_fin if c in df_calc.columns]
-            st.dataframe(
-                df_calc[cols_fin].style.format({
-                    "Total ($)": "${:,.0f}", "Comision PN ($)": "${:,.0f}",
-                    "Neto cobrado ($)": "${:,.0f}", "Costo Productos ($)": "${:,.0f}",
-                    "Envio costo ($)": "${:,.0f}", "Margen ($)": "${:,.0f}", "Margen (%)": "{:.1f}%",
-                }),
-                use_container_width=True, hide_index=True,
-            )
+            # El detalle por orden vive en 📈 Margen real (única fuente).
 
-            # Cascada
+            # ── Cascada de resultados — waterfall real con % de cada costo ─────
             st.divider()
             st.subheader("📊 Cascada de resultados")
-            wf = pd.DataFrame({
-                "Concepto": [
-                    "Facturación bruta", "Comisiones PN", "Costo productos",
-                    "Costo envíos", f"IVA ({pct_iva:.1f}%)", "Pauta",
-                    "Gastos fijos", "Resultado final",
-                ],
-                "Monto": [
-                    facturacion_bruta, -comisiones_pn, -costo_productos,
-                    -costo_envios, -costo_iva, -pauta_manual,
-                    -gastos_fijos_periodo, resultado_final,
-                ],
-                "Color": [
-                    "#00C49F", "#FF9900", "#FF5733", "#FF5733", "#FF5733",
-                    "#FF9900", "#FF9900",
-                    "#009EE3" if resultado_final >= 0 else "#FF0000",
-                ],
-            })
-            fig_wf = px.bar(wf, x="Concepto", y="Monto", color="Concepto",
-                color_discrete_sequence=wf["Color"].tolist(), title="Cascada financiera")
-            fig_wf.update_layout(showlegend=False, yaxis_tickformat="$,.0f")
-            fig_wf.update_traces(texttemplate="%{y:$,.0f}", textposition="outside")
+            _costos_items = [
+                ("Comisiones", comisiones_pn),
+                ("Costo productos", costo_productos),
+                ("Envíos", costo_envios),
+                (f"IVA ({pct_iva:.1f}%)", costo_iva),
+                ("Pauta", pauta_manual),
+                ("Gastos fijos", gastos_fijos_periodo),
+            ]
+            _total_costos = sum(v for _, v in _costos_items) or 1
+
+            _wf_x = ["Facturación"] + [n for n, _ in _costos_items] + ["Resultado"]
+            _wf_y = [facturacion_bruta] + [-v for _, v in _costos_items] + [resultado_final]
+            _wf_measure = ["absolute"] + ["relative"] * len(_costos_items) + ["total"]
+            _wf_text = [fmt(facturacion_bruta)] + [
+                f"{fmt(-v)}<br>{v / _total_costos * 100:.0f}% de los costos" for _, v in _costos_items
+            ] + [fmt(resultado_final)]
+
+            fig_wf = go.Figure(go.Waterfall(
+                x=_wf_x, y=_wf_y, measure=_wf_measure,
+                text=_wf_text, textposition="outside", textfont_size=11,
+                connector=dict(line=dict(color=MG_BORDER, width=1)),
+                increasing=dict(marker=dict(color="#4ade80")),
+                decreasing=dict(marker=dict(color=MG_RED)),
+                totals=dict(marker=dict(color="#009EE3" if resultado_final >= 0 else "#7f1d1d")),
+                hovertemplate="<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
+            ))
+            fig_wf.update_layout(
+                height=460, showlegend=False,
+                yaxis_tickformat="$,.0f",
+                margin=dict(t=30, b=30, l=10, r=10),
+            )
             st.plotly_chart(fig_wf, use_container_width=True)
+
+            # ¿Dónde atacar? — el costo más pesado del período
+            _costos_orden = sorted(_costos_items, key=lambda t: -t[1])
+            if _costos_orden[0][1] > 0:
+                _n1, _v1 = _costos_orden[0]
+                _n2, _v2 = _costos_orden[1] if len(_costos_orden) > 1 else ("", 0)
+                st.caption(
+                    f"🎯 Tu costo más pesado: **{_n1}** ({fmt(_v1)}, {_v1/_total_costos*100:.0f}% de los costos"
+                    f", {_v1/facturacion_bruta*100:.1f}% de la facturación)"
+                    + (f" · le sigue {_n2} con {_v2/_total_costos*100:.0f}%." if _v2 > 0 else ".")
+                )
 
             # ── Desglose por pasarela (MP vs PN) ──
             if "Pasarela" in df_calc.columns:
