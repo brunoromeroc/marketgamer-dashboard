@@ -4709,21 +4709,79 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 8: MARGEN TEÓRICO POR CONSOLA
     # ══════════════════════════════════════════════════════════════════════════
-    elif seccion == "📐 Margen teórico":
-        st.subheader("📐 Margen teórico por consola")
+    elif seccion == "💰 Precios":
+        st.subheader("💰 Precios — simulador y margen teórico")
 
         _costos_gs_mt = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
-        _tc_mt = int(dolar_blue) if dolar_blue else 1200
+        _tc_mt = int(st.session_state.tipo_cambio_sf or (dolar_blue or 1200))
 
-        # ── Configuración de costos adicionales (colapsado por default) ──
-        with st.expander("⚙️ Costos adicionales", expanded=False):
-            cc1, cc2, cc3 = st.columns(3)
-            with cc1:
-                iva_mt = cc1.number_input("IVA (%)", value=10.5, step=0.5, key="iva_mt")
-            with cc2:
-                packaging_ars = cc2.number_input("Packaging por unidad ($)", value=2500, step=500, key="pkg_mt")
-            with cc3:
-                cc3.metric("Dólar blue", f"${_tc_mt:,.0f}")
+        # Config global (sidebar → ⚙️ Config financiera)
+        iva_mt = float(st.session_state.pct_iva)
+        packaging_ars = float(st.session_state.get("packaging_global", 2500))
+        st.caption(f"Config global: IVA {iva_mt:.1f}% · packaging {fmt(packaging_ars)} · dólar ${_tc_mt:,.0f} — editable en ⚙️ Config financiera del sidebar")
+
+        # ══════════════════════════════════════════════════════════════════
+        # 🎯 SIMULADOR INVERSO — "tengo este FOB, quiero X% aun en 6 cuotas,
+        # ¿a cuánto lo listo?" — la pregunta real al recibir producto nuevo.
+        # ══════════════════════════════════════════════════════════════════
+        st.markdown("### 🎯 ¿A cuánto lo listo?")
+        st.caption("Precio de lista para ganar el margen objetivo **aun cobrando en 6 cuotas** (tu peor caso). Todo lo que te paguen mejor, es margen extra.")
+
+        _sim1, _sim2, _sim3, _sim4 = st.columns([2, 1, 1, 1])
+        _prods_con_costo = ["— FOB manual —"] + sorted(
+            k for k, v in _costos_gs_mt.items()
+            if not k.startswith("_") and isinstance(v, dict) and float(v.get("fob_usd", 0) or 0) > 0
+        )
+        _sim_prod = _sim1.selectbox("Producto (o FOB manual)", _prods_con_costo, key="sim_prod")
+        if _sim_prod != "— FOB manual —":
+            _sim_costo_default = float(get_costo_total_usd(_sim_prod, _costos_gs_mt) or 0)
+        else:
+            _sim_costo_default = 0.0
+        _sim_costo_usd = _sim2.number_input(
+            "Costo total (USD)", min_value=0.0, value=round(_sim_costo_default, 2),
+            step=1.0, key=f"sim_costo_{_sim_prod}",
+            help="FOB + importación. Se autocompleta si elegís un producto.",
+        )
+        _sim_margen_obj = _sim3.number_input("Margen objetivo (%)", min_value=0.0, max_value=60.0, value=25.0, step=1.0, key="sim_margen")
+        _sim_envio = _sim4.number_input("Envío est. ($)", min_value=0.0, value=0.0, step=1000.0, key="sim_envio")
+
+        _TASAS_SIM = {"Transferencia": 0.0126, "Contado": 0.0415, "3 cuotas": 0.1420, "6 cuotas": 0.2370, "12 cuotas": 0.4324}
+        _t6 = _TASAS_SIM["6 cuotas"]
+        _denominador = 1 - (iva_mt / 100) - _t6 - (_sim_margen_obj / 100)
+        if _sim_costo_usd > 0 and _denominador > 0.01:
+            _costo_ars_sim = _sim_costo_usd * _tc_mt
+            _precio_exacto = (_costo_ars_sim + packaging_ars + _sim_envio) / _denominador
+            _precio_lista = int(-(-_precio_exacto // 5000) * 5000)  # redondeo hacia arriba a $5.000
+
+            _sp1, _sp2 = st.columns([1, 2])
+            _sp1.markdown(kpi_card(
+                "Precio de lista sugerido", fmt(_precio_lista),
+                f"exacto: {fmt(round(_precio_exacto))} · costo {fmt(_costo_ars_sim)}",
+                val_color="#4ade80",
+            ), unsafe_allow_html=True)
+            _rows_sim = []
+            for _lbl, _tasa in _TASAS_SIM.items():
+                _mg = _precio_lista * (1 - iva_mt / 100 - _tasa) - _costo_ars_sim - packaging_ars - _sim_envio
+                _rows_sim.append({
+                    "Medio de pago": _lbl,
+                    "Comisión": f"{_tasa*100:.2f}%",
+                    "Margen ($)": round(_mg),
+                    "Margen (%)": round(_mg / _precio_lista * 100, 1) if _precio_lista else 0,
+                })
+            _sp2.dataframe(
+                pd.DataFrame(_rows_sim).style
+                    .format({"Margen ($)": "${:,.0f}", "Margen (%)": "{:.1f}%"})
+                    .map(
+                        lambda v: "color: #4ade80" if isinstance(v, (int, float)) and v >= _sim_margen_obj
+                        else ("color: #f87171" if isinstance(v, (int, float)) and v < 0 else ""),
+                        subset=["Margen (%)"],
+                    ),
+                use_container_width=True, hide_index=True,
+            )
+        elif _sim_costo_usd > 0:
+            st.error("Con ese margen objetivo + IVA + tasa de 6 cuotas el precio se va al infinito — bajá el margen objetivo.")
+
+        st.divider()
 
         # ── Cargar catálogo completo de TN (todos los productos publicados) ──
         @st.cache_data(ttl=300, show_spinner=False)
@@ -5057,14 +5115,13 @@ if st.session_state.df_tn is not None:
             st.info("Buscá primero para ver los datos.")
         else:
             _costos_gs_mr = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
-            _tc_mr = int(dolar_blue) if dolar_blue else 1200
+            _tc_mr = int(st.session_state.tipo_cambio_sf or (dolar_blue or 1200))
             orders_raw_mr = st.session_state.orders_raw
 
-            # Config costos adicionales
-            with st.expander("⚙️ Costos adicionales", expanded=False):
-                cr1, cr2 = st.columns(2)
-                iva_mr = cr1.number_input("IVA (%)", value=10.5, step=0.5, key="iva_mr")
-                packaging_mr = cr2.number_input("Packaging/u ($)", value=2500, step=500, key="pkg_mr")
+            # Config global (sidebar → ⚙️ Config financiera)
+            iva_mr = float(st.session_state.pct_iva)
+            packaging_mr = float(st.session_state.get("packaging_global", 2500))
+            st.caption(f"Config global: IVA {iva_mr:.1f}% · packaging {fmt(packaging_mr)} · dólar ${_tc_mr:,.0f}")
 
             # Extraer precios individuales desde raw orders
             product_rows_mr = _build_product_rows_from_raw(orders_raw_mr)
