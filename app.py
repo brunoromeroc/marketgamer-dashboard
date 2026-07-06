@@ -1993,6 +1993,59 @@ def _slug_producto(path):
         p = p.split("/productos/", 1)[1]
     return _norm_nombre(p.replace("-", " "))
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_meta_demograficos(fecha_desde_str, fecha_hasta_str):
+    """Insights de Meta Ads con breakdown edad × género para el período.
+
+    Devuelve lista de dicts: age, gender, spend, impressions, clicks,
+    purchases, purchase_value, currency. None si no hay credenciales o falla.
+    """
+    meta_token = st.secrets.get("META_TOKEN", "")
+    meta_account = st.secrets.get("META_AD_ACCOUNT_ID", "")
+    if not meta_token or not meta_account:
+        return None
+    account_id = meta_account.replace("act_", "")
+    url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
+    params = {
+        "access_token": meta_token,
+        "fields": "spend,impressions,clicks,actions,action_values,account_currency",
+        "breakdowns": "age,gender",
+        "time_range": json.dumps({"since": fecha_desde_str, "until": fecha_hasta_str}),
+        "level": "account",
+        "limit": 200,
+    }
+    # Tipos de acción que cuentan como compra (en orden de preferencia, sin duplicar)
+    _PURCHASE_TYPES = ("omni_purchase", "purchase", "offsite_conversion.fb_pixel_purchase")
+
+    def _extraer_compra(items):
+        if not items:
+            return 0.0
+        vals = {i.get("action_type"): float(i.get("value", 0) or 0) for i in items}
+        for t in _PURCHASE_TYPES:
+            if t in vals:
+                return vals[t]
+        return 0.0
+
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code != 200:
+            return None
+        rows = []
+        for d in r.json().get("data", []):
+            rows.append({
+                "age": d.get("age", "?"),
+                "gender": d.get("gender", "?"),
+                "spend": float(d.get("spend", 0) or 0),
+                "impressions": int(d.get("impressions", 0) or 0),
+                "clicks": int(d.get("clicks", 0) or 0),
+                "purchases": _extraer_compra(d.get("actions")),
+                "purchase_value": _extraer_compra(d.get("action_values")),
+                "currency": d.get("account_currency", "ARS"),
+            })
+        return rows
+    except Exception:
+        return None
+
 @st.cache_data(ttl=900, show_spinner=False)
 def get_dolar_blue():
     try:
@@ -2078,6 +2131,8 @@ def procesar_orders(orders):
         descuento = float(o.get("discount", 0) or 0)
         costo_envio_dueno = float(o.get("shipping_cost_owner", 0) or 0)
         province = str(o.get("billing_province", "")).strip()
+        _ship = o.get("shipping_address") or {}
+        city = str(o.get("billing_city", "") or (_ship.get("city", "") if isinstance(_ship, dict) else "")).strip()
 
         if _es_gateway_mp(gateway):
             pasarela = "MP"
@@ -2121,6 +2176,7 @@ def procesar_orders(orders):
             "Estado": o.get("status", ""),
             "ID MP": "",
             "Provincia": province,
+            "Ciudad": city,
             "Gateway raw": gateway,
             "Metodo raw": str(metodo),
             "Items": items_linea,
@@ -2283,6 +2339,7 @@ SECCIONES = [
     "💚 Salud Financiera",
     "📦 Reposición",
     "🌐 Web / Analytics",
+    "🎯 Audiencias",
     "🏗️ Gastos fijos",
     "💻 Costos de consolas",
     "💰 Precios",
@@ -5415,6 +5472,185 @@ if st.session_state.df_tn is not None:
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 11: ESTADÍSTICAS DE PAGO
     # ══════════════════════════════════════════════════════════════════════════
+    elif seccion == "🎯 Audiencias":
+        st.subheader("🎯 Audiencias — para el equipo de paid media")
+        st.caption(
+            "Dónde compran (ventas reales de TN) y qué edades/géneros convierten (Meta Ads). "
+            "Ventana histórica propia, independiente del período del panel lateral."
+        )
+
+        _ventanas_aud = {"90 días": 90, "180 días": 180, "365 días": 365, "2 años": 730}
+        _win_aud = st.pills(
+            "Ventana", options=list(_ventanas_aud.keys()), default="365 días",
+            selection_mode="single", key="aud_ventana",
+        ) or "365 días"
+        _dias_aud = _ventanas_aud[_win_aud]
+        _desde_aud = (date.today() - timedelta(days=_dias_aud)).isoformat()
+        _hasta_aud = date.today().isoformat()
+
+        _df_aud = _cargar_ordenes_historico(_dias_aud)
+
+        # ══════════════════════════════════════════════════════════════════
+        # 1) GEOGRAFÍA DE LAS VENTAS (Tienda Nube)
+        # ══════════════════════════════════════════════════════════════════
+        st.markdown("### 🗺️ ¿Dónde compran?")
+        if _df_aud is None or _df_aud.empty or "Provincia" not in _df_aud.columns:
+            st.info("No hay órdenes con provincia en la ventana elegida.")
+        else:
+            _dfg = _df_aud.copy()
+            _dfg["Provincia"] = _dfg["Provincia"].astype(str).str.strip().str.title().replace(
+                {"": "Sin dato", "Ciudad Autónoma De Buenos Aires": "CABA", "Capital Federal": "CABA"}
+            )
+            _geo = _dfg.groupby("Provincia").agg(
+                Ordenes=("Orden", "count"), Facturacion=("Total ($)", "sum"),
+            ).reset_index().sort_values("Facturacion", ascending=False)
+            _geo["Ticket"] = (_geo["Facturacion"] / _geo["Ordenes"]).round(0)
+            _geo["% Fact"] = (_geo["Facturacion"] / _geo["Facturacion"].sum() * 100).round(1)
+
+            _g1, _g2 = st.columns([3, 2])
+            with _g1:
+                _top_geo = _geo.head(12).iloc[::-1]
+                _fig_geo = go.Figure(go.Bar(
+                    x=_top_geo["Facturacion"], y=_top_geo["Provincia"], orientation="h",
+                    marker_color=MG_RED,
+                    text=[f"{v:.0f}%" for v in _top_geo["% Fact"]],
+                    textposition="outside", textfont_size=10,
+                    customdata=_top_geo["Ordenes"],
+                    hovertemplate="<b>%{y}</b><br>$%{x:,.0f} · %{customdata} órdenes<extra></extra>",
+                ))
+                _fig_geo.update_layout(
+                    title=f"Facturación por provincia ({_win_aud})",
+                    height=420, margin=dict(t=45, b=25, l=10, r=30),
+                    xaxis_tickformat="$,.0f",
+                )
+                st.plotly_chart(_fig_geo, use_container_width=True)
+            with _g2:
+                st.dataframe(
+                    _geo.head(15).style.format({
+                        "Facturacion": "${:,.0f}", "Ticket": "${:,.0f}", "% Fact": "{:.1f}%",
+                    }),
+                    use_container_width=True, hide_index=True, height=420,
+                )
+
+            # Concentración: cuántas provincias explican el 80%
+            _acum = _geo["% Fact"].cumsum()
+            _n80 = int((_acum < 80).sum()) + 1
+            _prov_top = _geo.head(3)["Provincia"].tolist()
+            st.caption(
+                f"📌 {_n80} provincia(s) explican el 80% de la facturación. "
+                f"Top 3: {', '.join(_prov_top)}. Útil para geo-segmentar la pauta y cotizar envíos."
+            )
+
+            # Top ciudades (si el dato existe en la ventana cacheada)
+            if "Ciudad" in _dfg.columns and _dfg["Ciudad"].astype(str).str.strip().ne("").any():
+                with st.expander("🏙️ Top 20 ciudades", expanded=False):
+                    _dfg["Ciudad"] = _dfg["Ciudad"].astype(str).str.strip().str.title().replace({"": "Sin dato"})
+                    _ciu = _dfg[_dfg["Ciudad"] != "Sin dato"].groupby(["Provincia", "Ciudad"]).agg(
+                        Ordenes=("Orden", "count"), Facturacion=("Total ($)", "sum"),
+                    ).reset_index().sort_values("Facturacion", ascending=False).head(20)
+                    st.dataframe(
+                        _ciu.style.format({"Facturacion": "${:,.0f}"}),
+                        use_container_width=True, hide_index=True,
+                    )
+            else:
+                st.caption("🏙️ Ciudades: el dato empieza a acumularse con las próximas cargas (cache 30 min).")
+
+        # ══════════════════════════════════════════════════════════════════
+        # 2) DEMOGRAFÍA DE LA PAUTA (Meta Ads — edad × género)
+        # ══════════════════════════════════════════════════════════════════
+        st.markdown("### 👥 ¿Qué edades y géneros convierten? (Meta Ads)")
+        _demo = get_meta_demograficos(_desde_aud, _hasta_aud)
+        if not _demo:
+            if not st.secrets.get("META_TOKEN", ""):
+                st.info("Configurá `META_TOKEN` + `META_AD_ACCOUNT_ID` en secrets para ver la demografía de la pauta.")
+            else:
+                st.warning("Meta Ads no devolvió datos demográficos para la ventana elegida.")
+        else:
+            _df_demo = pd.DataFrame(_demo)
+            _df_demo = _df_demo[_df_demo["gender"].isin(["male", "female"])]
+            _df_demo["Género"] = _df_demo["gender"].map({"male": "Hombres", "female": "Mujeres"})
+            _cur_demo = _df_demo["currency"].iloc[0] if len(_df_demo) else "ARS"
+
+            _seg = _df_demo.groupby(["age", "Género"]).agg(
+                Spend=("spend", "sum"), Compras=("purchases", "sum"),
+                Valor=("purchase_value", "sum"), Clicks=("clicks", "sum"),
+            ).reset_index().sort_values("age")
+
+            _d1, _d2 = st.columns(2)
+            _COL_GEN = {"Hombres": "#009EE3", "Mujeres": "#f472b6"}
+            with _d1:
+                _fig_sp = go.Figure()
+                for _gen, _grp in _seg.groupby("Género"):
+                    _fig_sp.add_trace(go.Bar(
+                        x=_grp["age"], y=_grp["Spend"], name=_gen,
+                        marker_color=_COL_GEN.get(_gen, MG_MUTED),
+                        hovertemplate="<b>%{x} " + _gen + "</b><br>%{y:,.0f} " + _cur_demo + "<extra></extra>",
+                    ))
+                _fig_sp.update_layout(
+                    title=f"Inversión por edad y género ({_cur_demo})",
+                    barmode="group", height=340,
+                    margin=dict(t=45, b=25, l=10, r=10),
+                    legend=dict(orientation="h", y=1.12, x=0),
+                )
+                st.plotly_chart(_fig_sp, use_container_width=True)
+            with _d2:
+                _fig_cv = go.Figure()
+                for _gen, _grp in _seg.groupby("Género"):
+                    _fig_cv.add_trace(go.Bar(
+                        x=_grp["age"], y=_grp["Compras"], name=_gen,
+                        marker_color=_COL_GEN.get(_gen, MG_MUTED),
+                        hovertemplate="<b>%{x} " + _gen + "</b><br>%{y:.0f} compras<extra></extra>",
+                    ))
+                _fig_cv.update_layout(
+                    title="Compras atribuidas por edad y género",
+                    barmode="group", height=340,
+                    margin=dict(t=45, b=25, l=10, r=10),
+                    legend=dict(orientation="h", y=1.12, x=0),
+                )
+                st.plotly_chart(_fig_cv, use_container_width=True)
+
+            # Tabla de eficiencia por segmento
+            _seg_eff = _seg[_seg["Spend"] > 0].copy()
+            _seg_eff["CPA"] = _seg_eff.apply(
+                lambda r: r["Spend"] / r["Compras"] if r["Compras"] > 0 else None, axis=1
+            )
+            _seg_eff["ROAS"] = _seg_eff.apply(
+                lambda r: r["Valor"] / r["Spend"] if r["Spend"] > 0 and r["Valor"] > 0 else None, axis=1
+            )
+            _seg_eff["Segmento"] = _seg_eff["age"] + " · " + _seg_eff["Género"]
+            _cols_eff = ["Segmento", "Spend", "Compras", "Valor", "CPA", "ROAS", "Clicks"]
+            st.dataframe(
+                _seg_eff[_cols_eff].sort_values("ROAS", ascending=False, na_position="last").style
+                    .format({
+                        "Spend": "{:,.0f}", "Compras": "{:,.0f}", "Valor": "{:,.0f}",
+                        "CPA": "{:,.0f}", "ROAS": "{:.2f}", "Clicks": "{:,.0f}",
+                    }, na_rep="—")
+                    .map(
+                        lambda v: "color: #4ade80" if isinstance(v, (int, float)) and v >= 3
+                        else ("color: #f87171" if isinstance(v, (int, float)) and v < 1 else ""),
+                        subset=["ROAS"],
+                    ),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(
+                f"Montos en {_cur_demo} (moneda de la cuenta publicitaria). Compras y valor según atribución "
+                "de Meta (no coinciden 1:1 con las órdenes de TN). ROAS verde ≥3, rojo <1."
+            )
+
+            # Resumen copiable para el equipo
+            _mejor_roas = _seg_eff.dropna(subset=["ROAS"]).sort_values("ROAS", ascending=False).head(3)
+            if not _mejor_roas.empty and _df_aud is not None and not _df_aud.empty:
+                with st.expander("📋 Resumen copiable para el media buyer", expanded=False):
+                    _lineas_res = [f"MARKET GAMER — Audiencias ({_win_aud})", ""]
+                    if "Provincia" in _df_aud.columns:
+                        _lineas_res.append(f"GEO (ventas reales): top provincias {', '.join(_prov_top)} — {_n80} provincias = 80% de la facturación")
+                    _lineas_res.append("SEGMENTOS con mejor ROAS (Meta):")
+                    for _, _r in _mejor_roas.iterrows():
+                        _lineas_res.append(
+                            f"  - {_r['Segmento']}: ROAS {_r['ROAS']:.2f} · CPA {_r['CPA']:,.0f} {_cur_demo} · {_r['Compras']:.0f} compras"
+                        )
+                    st.code("\n".join(_lineas_res), language=None)
+
     elif seccion == "💳 Estadísticas de pago":
         st.subheader("💳 Estadísticas de pago")
 
