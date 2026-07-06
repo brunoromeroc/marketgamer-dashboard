@@ -484,6 +484,25 @@ def gs_write(sheet_name, data_dict):
     except Exception:
         return False
 
+def gs_backup_costos(motivo=""):
+    """Snapshot del CostosConsolas ACTUAL de la sheet en CostosConsolasBackups.
+
+    Se llama antes de cualquier escritura destructiva (guardar, depurar,
+    importar precios, restaurar). Mantiene los últimos 12 backups.
+    """
+    try:
+        actual = gs_read("CostosConsolas") or {}
+        if not actual:
+            return True  # nada que respaldar
+        backups = gs_read("CostosConsolasBackups") or {}
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        backups[ts] = {"motivo": motivo, "data": actual}
+        for k in sorted(backups.keys())[:-12]:
+            backups.pop(k, None)
+        return gs_write("CostosConsolasBackups", backups)
+    except Exception:
+        return False
+
 def gs_append_snapshot(stock_map):
     """Guarda el snapshot de stock de hoy en HistorialStock (idempotente por fecha).
 
@@ -4851,12 +4870,11 @@ if st.session_state.df_tn is not None:
 
         tc_consolas = int(dolar_blue) if dolar_blue else 1200
 
-        @st.fragment
-        def cargar_productos_tn():
-            if st.button("🔄 Actualizar productos desde Tienda Nube", key="btn_load_consolas"):
-                with st.spinner("Cargando..."):
-                    productos_tn = get_tn_products()
-                if productos_tn:
+        def _sync_productos_tn():
+            """Trae productos+variantes de TN y los mergea en costos sin pisar datos.
+            Devuelve el mensaje de resumen, o None si TN no respondió."""
+            productos_tn = get_tn_products()
+            if productos_tn:
                     prods_map = {}
                     prods_urls = {}
                     multi_variant_expandidos = 0
@@ -4941,18 +4959,30 @@ if st.session_state.df_tn is not None:
                                     existing["peso_kg"] = peso
                     st.session_state.costos_consolas = costos_actual
                     st.session_state._costos_needs_refresh = True
-                    msg = f"✅ {len(prods_map)} filas cargadas ({nuevos} nuevas, existentes conservadas)"
+                    msg = f"✅ {len(prods_map)} filas de TN ({nuevos} nuevas, existentes conservadas)"
                     if multi_variant_expandidos:
-                        msg += f" · {multi_variant_expandidos} producto(s) multi-variante expandido(s) en {variantes_agregadas} variantes"
-                    st.success(msg)
-                    try:
-                        st.rerun(scope="app")
-                    except TypeError:
-                        st.rerun()
-                else:
-                    st.warning("No se pudieron cargar productos.")
+                        msg += f" · {multi_variant_expandidos} multi-variante expandidos en {variantes_agregadas} variantes"
+                    return msg
+            return None
 
-        cargar_productos_tn()
+        # ── Auto-sincronización: la tabla SIEMPRE refleja el catálogo de TN ──
+        if "productos_tn_map" not in st.session_state:
+            with st.spinner("Sincronizando productos desde Tienda Nube..."):
+                _msg_sync = _sync_productos_tn()
+            if _msg_sync is None:
+                st.warning("No se pudieron cargar productos de TN — mostrando lo guardado.")
+
+        _sc1, _sc2 = st.columns([1, 3])
+        if _sc1.button("🔄 Refrescar desde TN", key="btn_load_consolas", use_container_width=True):
+            with st.spinner("Sincronizando..."):
+                _msg_sync = _sync_productos_tn()
+            if _msg_sync:
+                st.rerun()
+            else:
+                st.warning("No se pudieron cargar productos.")
+        _n_tn_sync = len(st.session_state.get("productos_tn_map", {}) or {})
+        if _n_tn_sync:
+            _sc2.caption(f"🔗 Sincronizado con TN: {_n_tn_sync} productos/variantes en catálogo")
 
         costos = st.session_state.costos_consolas.copy()
         productos_map = st.session_state.get("productos_tn_map", {})
@@ -5103,9 +5133,225 @@ if st.session_state.df_tn is not None:
 
                 st.session_state.costos_consolas = nuevos_costos
                 st.session_state._costos_needs_refresh = True
+                gs_backup_costos(motivo="pre-guardado manual")
                 ok = gs_write("CostosConsolas", nuevos_costos)
-                st.success("✅ Guardado en Google Sheets" if ok else "⚠️ Solo en sesión")
+                st.success("✅ Guardado en Google Sheets (backup previo hecho)" if ok else "⚠️ Solo en sesión")
                 st.rerun()
+
+        st.divider()
+
+        # ══════════════════════════════════════════════════════════════════
+        # 📷 IMPORTAR PRECIOS DESDE IMAGEN DE CATÁLOGO (Claude visión)
+        # ══════════════════════════════════════════════════════════════════
+        with st.expander("📷 Importar precios desde catálogo (imagen)", expanded=False):
+            st.caption(
+                "Subí la foto o captura de la lista de precios del proveedor. Claude la lee, "
+                "matchea contra tu tabla y te propone los cambios — **nada se aplica sin tu OK**, "
+                "y siempre con backup previo."
+            )
+            if not ANTHROPIC_KEY:
+                st.info("Configurá `ANTHROPIC_KEY` en secrets para usar esta función.")
+            else:
+                _img_cat = st.file_uploader(
+                    "Imagen del catálogo", type=["png", "jpg", "jpeg", "webp"],
+                    key="costos_img_catalogo", label_visibility="collapsed",
+                )
+                if _img_cat is not None and st.button("🔎 Leer precios de la imagen", use_container_width=True, key="btn_leer_catalogo"):
+                    import base64 as _b64mod
+                    _media = _img_cat.type or "image/png"
+                    _b64img = _b64mod.b64encode(_img_cat.getvalue()).decode()
+                    _prompt_cat = (
+                        "Esta imagen es una lista de precios de un proveedor de consolas retro portátiles "
+                        "(Anbernic, Powkiddy, Miyoo, Trimui, Retroid, AYN, etc.). Extraé TODOS los productos "
+                        "con su precio unitario en USD. Respondé SOLO con un array JSON válido, sin texto extra:\n"
+                        '[{"producto": "nombre tal como aparece", "precio_usd": 123.45}]\n'
+                        "Si un producto tiene variantes con precios distintos (RAM/almacenamiento), una entrada "
+                        "por variante incluyendo la variante en el nombre. Ignorá precios que no sean USD."
+                    )
+                    with st.spinner("Leyendo catálogo con Claude..."):
+                        try:
+                            _r_cat = requests.post(
+                                "https://api.anthropic.com/v1/messages",
+                                headers={
+                                    "x-api-key": ANTHROPIC_KEY,
+                                    "anthropic-version": "2023-06-01",
+                                    "content-type": "application/json",
+                                },
+                                json={
+                                    "model": "claude-sonnet-4-6",
+                                    "max_tokens": 4000,
+                                    "messages": [{"role": "user", "content": [
+                                        {"type": "image", "source": {"type": "base64", "media_type": _media, "data": _b64img}},
+                                        {"type": "text", "text": _prompt_cat},
+                                    ]}],
+                                },
+                                timeout=120,
+                            )
+                            if _r_cat.status_code != 200:
+                                st.error(f"Error de la API: {_r_cat.status_code} — {_r_cat.text[:300]}")
+                                _items_cat = None
+                            else:
+                                _txt_cat = "".join(
+                                    b.get("text", "") for b in _r_cat.json().get("content", [])
+                                ).strip()
+                                if _txt_cat.startswith("```"):
+                                    _txt_cat = re.sub(r"^```(?:json)?\s*|\s*```$", "", _txt_cat, flags=re.S)
+                                _items_cat = json.loads(_txt_cat)
+                        except Exception as _e_cat:
+                            st.error(f"No pude leer la imagen: {_e_cat}")
+                            _items_cat = None
+
+                    if _items_cat:
+                        # Matchear contra la tabla actual por nombre compacto
+                        _keys_tabla = [k for k in st.session_state.costos_consolas if not k.startswith("_")]
+                        _kc_map = {_norm_compact(k): k for k in _keys_tabla if _norm_compact(k)}
+
+                        def _match_cat(nombre):
+                            nc = _norm_compact(nombre)
+                            if not nc:
+                                return None
+                            if nc in _kc_map:
+                                return _kc_map[nc]
+                            _best, _best_len = None, 0
+                            for kc, k in _kc_map.items():
+                                if nc in kc or kc in nc:
+                                    _l = min(len(kc), len(nc))
+                                    if _l > _best_len:
+                                        _best, _best_len = k, _l
+                            return _best if _best_len >= 6 else None
+
+                        _props, _sin_match = [], []
+                        for _it in _items_cat:
+                            try:
+                                _nom_c = str(_it.get("producto", "")).strip()
+                                _pre_c = float(_it.get("precio_usd", 0) or 0)
+                            except Exception:
+                                continue
+                            if not _nom_c or _pre_c <= 0:
+                                continue
+                            _k_match = _match_cat(_nom_c)
+                            if _k_match is None:
+                                _sin_match.append(f"{_nom_c} (${_pre_c:.2f})")
+                                continue
+                            _fob_act = float((st.session_state.costos_consolas.get(_k_match) or {}).get("fob_usd", 0) or 0)
+                            _props.append({
+                                "Aplicar": abs(_pre_c - _fob_act) > 0.01,
+                                "Producto (tabla)": _k_match,
+                                "Producto (catálogo)": _nom_c,
+                                "FOB actual": round(_fob_act, 2),
+                                "FOB nuevo": round(_pre_c, 2),
+                                "Δ %": round((_pre_c - _fob_act) / _fob_act * 100, 1) if _fob_act > 0 else None,
+                            })
+                        st.session_state.costos_img_props = _props
+                        st.session_state.costos_img_sin_match = _sin_match
+
+                # Propuesta persistida en sesión (sobrevive reruns)
+                _props_ses = st.session_state.get("costos_img_props")
+                if _props_ses:
+                    st.markdown(f"**{len(_props_ses)} precio(s) matcheados** — revisá y destildá lo que no corresponda:")
+                    _df_props = st.data_editor(
+                        pd.DataFrame(_props_ses),
+                        column_config={
+                            "Aplicar": st.column_config.CheckboxColumn("Aplicar"),
+                            "Producto (tabla)": st.column_config.TextColumn(disabled=True, width="large"),
+                            "Producto (catálogo)": st.column_config.TextColumn(disabled=True),
+                            "FOB actual": st.column_config.NumberColumn(disabled=True, format="$%.2f"),
+                            "FOB nuevo": st.column_config.NumberColumn(disabled=True, format="$%.2f"),
+                            "Δ %": st.column_config.NumberColumn(disabled=True, format="%.1f%%"),
+                        },
+                        hide_index=True, use_container_width=True, key="costos_img_editor",
+                    )
+                    _sin_m = st.session_state.get("costos_img_sin_match") or []
+                    if _sin_m:
+                        st.caption("Sin match en tu tabla (no se tocan): " + " · ".join(_sin_m[:8]) + ("…" if len(_sin_m) > 8 else ""))
+                    _ci1, _ci2 = st.columns(2)
+                    _n_ap = int(_df_props["Aplicar"].sum()) if _df_props is not None else 0
+                    if _ci1.button(f"✅ Aplicar {_n_ap} precio(s) — con backup", use_container_width=True, type="primary", key="btn_aplicar_catalogo", disabled=_n_ap == 0):
+                        gs_backup_costos(motivo="pre-importación de catálogo por imagen")
+                        _costos_upd = st.session_state.costos_consolas
+                        for _, _rp in _df_props[_df_props["Aplicar"]].iterrows():
+                            _k = _rp["Producto (tabla)"]
+                            if _k in _costos_upd and isinstance(_costos_upd[_k], dict):
+                                _costos_upd[_k]["fob_usd"] = float(_rp["FOB nuevo"])
+                                _costos_upd[_k].pop("costo_total_usd", None)  # se recalcula
+                        gs_write("CostosConsolas", _costos_upd)
+                        st.session_state.costos_consolas = _costos_upd
+                        st.session_state.costos_img_props = None
+                        st.session_state._costos_needs_refresh = True
+                        st.success(f"✅ {_n_ap} precio(s) actualizados.")
+                        st.rerun()
+                    if _ci2.button("Descartar propuesta", use_container_width=True, key="btn_descartar_catalogo"):
+                        st.session_state.costos_img_props = None
+                        st.session_state.costos_img_sin_match = None
+                        st.rerun()
+
+        # ══════════════════════════════════════════════════════════════════
+        # 🧹 DEPURAR — dejar solo consolas, con backup
+        # ══════════════════════════════════════════════════════════════════
+        with st.expander("🧹 Depurar tabla — dejar solo consolas", expanded=False):
+            _KW_ACC = (
+                "estuche", "funda", "memoria", "micro sd", "microsd", "lectora",
+                "cable", "joystick", "grip", "protector", "vidrio", "templado",
+                "mochila", "bolso", "sticker", "skin", "cargador", "adaptador", "auricular",
+            )
+            _keys_dep = sorted(k for k in st.session_state.costos_consolas if not k.startswith("_"))
+            _cand_acc = [k for k in _keys_dep if any(w in k.lower() for w in _KW_ACC)]
+            _map_tn_dep = st.session_state.get("productos_tn_map", {}) or {}
+            _tn_compact_dep = {_norm_compact(k) for k in _map_tn_dep}
+            _cand_fuera = [
+                k for k in _keys_dep
+                if _map_tn_dep and _norm_compact(k) not in _tn_compact_dep
+            ] if _map_tn_dep else []
+            _default_dep = sorted(set(_cand_acc) | set(_cand_fuera))
+            st.caption(
+                f"Candidatos detectados: **{len(_cand_acc)} accesorios** (por palabra clave) y "
+                f"**{len(_cand_fuera)} que ya no están en TN**. Ajustá la selección antes de eliminar — "
+                "se hace backup automático primero."
+            )
+            _sel_dep = st.multiselect(
+                "Filas a eliminar", options=_keys_dep, default=_default_dep,
+                key="costos_depurar_sel",
+            )
+            if st.button(
+                f"🗑️ Eliminar {len(_sel_dep)} fila(s) — con backup", use_container_width=True,
+                key="btn_depurar", disabled=not _sel_dep,
+            ):
+                gs_backup_costos(motivo=f"pre-depuración ({len(_sel_dep)} filas)")
+                _costos_dep = st.session_state.costos_consolas
+                for _k in _sel_dep:
+                    _costos_dep.pop(_k, None)
+                gs_write("CostosConsolas", _costos_dep)
+                st.session_state.costos_consolas = _costos_dep
+                st.session_state._costos_needs_refresh = True
+                st.success(f"✅ {len(_sel_dep)} fila(s) eliminadas. Backup disponible en 🕘 Backups.")
+                st.rerun()
+
+        # ══════════════════════════════════════════════════════════════════
+        # 🕘 BACKUPS — ver y restaurar
+        # ══════════════════════════════════════════════════════════════════
+        with st.expander("🕘 Backups de costos", expanded=False):
+            _backups = gs_read("CostosConsolasBackups") or {}
+            if not _backups:
+                st.caption("Todavía no hay backups. Se crean solos antes de cada guardado, depuración o importación.")
+            else:
+                _ts_list = sorted(_backups.keys(), reverse=True)
+                _opts_bk = [
+                    f"{ts} — {(_backups[ts].get('motivo') or 's/motivo')} · {len([k for k in (_backups[ts].get('data') or {}) if not str(k).startswith('_')])} productos"
+                    for ts in _ts_list
+                ]
+                _sel_bk = st.selectbox("Backup", _opts_bk, key="costos_backup_sel")
+                _ts_sel = _ts_list[_opts_bk.index(_sel_bk)]
+                if st.button("↩️ Restaurar este backup", use_container_width=True, key="btn_restaurar_bk"):
+                    gs_backup_costos(motivo="pre-restauración")
+                    _data_bk = (_backups.get(_ts_sel) or {}).get("data") or {}
+                    if _data_bk:
+                        gs_write("CostosConsolas", _data_bk)
+                        st.session_state.costos_consolas = _data_bk
+                        st.session_state._costos_needs_refresh = True
+                        st.success(f"✅ Restaurado el backup de {_ts_sel}.")
+                        st.rerun()
+                    else:
+                        st.error("El backup está vacío — no se restauró nada.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 8: MARGEN TEÓRICO POR CONSOLA
