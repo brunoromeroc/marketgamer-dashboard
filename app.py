@@ -2050,11 +2050,17 @@ def _generar_pdf_audiencias(win_label, geo_df, ciudades_df, seg_df, moneda,
                             fact_total, ordenes_total, n80, prov_top):
     """Genera el informe de Audiencias en PDF (bytes) para el equipo de paid media.
 
-    geo_df/ciudades_df/seg_df pueden ser None si esa fuente no tiene datos.
-    Devuelve None si reportlab no está instalado.
+    Enfoque 80/20: solo el percentil que mueve la aguja (provincias hasta el 80%
+    de facturación + "Resto del país"; top ciudades; segmentos con gasto real).
+    Todo lo posible en gráficos (charts nativos de reportlab, sin deps extra).
+    geo_df/ciudades_df/seg_df pueden ser None. Devuelve None sin reportlab.
     """
     try:
         from io import BytesIO
+        from reportlab.graphics.charts.barcharts import (
+            HorizontalBarChart, VerticalBarChart,
+        )
+        from reportlab.graphics.shapes import Drawing, Rect, String
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import ParagraphStyle
@@ -2066,34 +2072,55 @@ def _generar_pdf_audiencias(win_label, geo_df, ciudades_df, seg_df, moneda,
         return None
 
     ROJO = colors.HexColor("#d91e1d")
+    AZUL = colors.HexColor("#0084bd")
+    ROSA = colors.HexColor("#e0559d")
+    VERDE = colors.HexColor("#2e9e5b")
+    AMBAR = colors.HexColor("#d9a112")
     GRIS = colors.HexColor("#555555")
+    GRIS_CLARO = colors.HexColor("#9a9a9a")
+
     st_h1 = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=ROJO, spaceAfter=6)
     st_meta = ParagraphStyle("meta", fontName="Helvetica", fontSize=9, leading=12, textColor=GRIS, spaceAfter=12)
     st_h2 = ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=12.5, spaceBefore=14, spaceAfter=5)
     st_body = ParagraphStyle("body", fontName="Helvetica", fontSize=9.5, leading=14, spaceAfter=6)
     st_nota = ParagraphStyle("nota", fontName="Helvetica-Oblique", fontSize=8, textColor=GRIS, spaceBefore=4)
 
-    def _tabla(headers, rows, col_align=None):
-        data = [headers] + rows
-        t = Table(data, hAlign="LEFT")
-        style = [
-            ("BACKGROUND", (0, 0), (-1, 0), ROJO),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f4f4")]),
-            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ]
-        for i, al in enumerate(col_align or []):
-            if al == "R":
-                style.append(("ALIGN", (i, 1), (i, -1), "RIGHT"))
-        t.setStyle(TableStyle(style))
-        return t
+    def _fmt_monto(v):
+        v = float(v)
+        if abs(v) >= 1_000_000:
+            return f"${v / 1_000_000:.1f}M"
+        if abs(v) >= 1_000:
+            return f"${v / 1_000:.0f}K"
+        return f"${v:.0f}"
+
+    def _hbar(labels, values, cols, label_fmt, width=460, alto_barra=26):
+        """Barras horizontales, la más grande arriba, valor al final de cada barra."""
+        n = len(values)
+        h = alto_barra * n + 24
+        d = Drawing(width, h)
+        bc = HorizontalBarChart()
+        bc.x, bc.y = 130, 8
+        bc.width, bc.height = width - 210, h - 16
+        # reportlab dibuja el primer item abajo → invertimos para top-first
+        bc.data = [list(values[::-1])]
+        bc.categoryAxis.categoryNames = [str(l) for l in labels[::-1]]
+        bc.categoryAxis.labels.fontName = "Helvetica"
+        bc.categoryAxis.labels.fontSize = 8.5
+        bc.categoryAxis.strokeColor = GRIS_CLARO
+        bc.valueAxis.visible = 0
+        bc.valueAxis.valueMin = 0
+        bc.valueAxis.valueMax = max(values) * 1.28 if values else 1
+        bc.bars.strokeColor = None
+        _cols_rev = cols[::-1]
+        for i in range(n):
+            bc.bars[(0, i)].fillColor = _cols_rev[i]
+        bc.barLabelFormat = label_fmt
+        bc.barLabels.fontName = "Helvetica"
+        bc.barLabels.fontSize = 8
+        bc.barLabels.boxAnchor = "w"
+        bc.barLabels.dx = 4
+        d.add(bc)
+        return d
 
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -2131,55 +2158,117 @@ def _generar_pdf_audiencias(win_label, geo_df, ciudades_df, seg_df, moneda,
             )
     el.append(Paragraph(" ".join(_partes) or "Sin datos suficientes en la ventana elegida.", st_body))
 
-    # ── Geografía ──
+    # ── Geografía: solo el percentil que importa + "Resto del país" ──
     if geo_df is not None and not geo_df.empty:
-        el.append(Paragraph("¿Dónde compran? — Geografía de las ventas reales", st_h2))
+        el.append(Paragraph("¿Dónde compran? — El 80% de la facturación", st_h2))
+        _g = geo_df.sort_values("Facturacion", ascending=False).reset_index(drop=True)
+        _acum = _g["% Fact"].cumsum()
+        _n_core = max(int((_acum < 80).sum()) + 1, 3)
+        _core = _g.head(_n_core)
+        _resto = _g.iloc[_n_core:]
+        _labels = [
+            f"{r['Provincia']}" for _, r in _core.iterrows()
+        ]
+        _vals = [float(r["Facturacion"]) for _, r in _core.iterrows()]
+        _pcts = [float(r["% Fact"]) for _, r in _core.iterrows()]
+        _cols_geo = [ROJO] * len(_vals)
+        if not _resto.empty:
+            _labels.append(f"Resto del país ({len(_resto)} prov.)")
+            _vals.append(float(_resto["Facturacion"].sum()))
+            _pcts.append(float(_resto["% Fact"].sum()))
+            _cols_geo.append(GRIS_CLARO)
+        _pct_map = {i: p for i, p in enumerate(_pcts)}
+        _idx_geo = {"n": -1}
+
+        def _lbl_geo(v):
+            _idx_geo["n"] += 1
+            # las barras se dibujan de abajo hacia arriba (lista invertida)
+            i = len(_vals) - 1 - _idx_geo["n"]
+            return f"{_fmt_monto(v)}  ·  {_pct_map.get(i, 0):.0f}%"
+
+        el.append(_hbar(_labels, _vals, _cols_geo, _lbl_geo))
         el.append(Paragraph(
-            "Distribución de la facturación por provincia según las órdenes reales de Tienda Nube. "
-            "Sirve para geo-segmentar campañas y priorizar acuerdos de envío.", st_body,
-        ))
-        rows = [
-            [r["Provincia"], f"{int(r['Ordenes']):,}", f"${r['Facturacion']:,.0f}",
-             f"${r['Ticket']:,.0f}", f"{r['% Fact']:.1f}%"]
-            for _, r in geo_df.head(15).iterrows()
-        ]
-        el.append(_tabla(
-            ["Provincia", "Órdenes", "Facturación", "Ticket prom.", "% del total"],
-            rows, col_align=["L", "R", "R", "R", "R"],
+            f"Las primeras {_n_core} provincias concentran el "
+            f"{sum(_pcts[:_n_core]):.0f}% de la facturación — ahí va el geo-targeting.", st_body,
         ))
 
-    if ciudades_df is not None and not ciudades_df.empty:
-        el.append(Paragraph("Top ciudades", st_h2))
-        rows = [
-            [r["Ciudad"], r["Provincia"], f"{int(r['Ordenes']):,}", f"${r['Facturacion']:,.0f}"]
-            for _, r in ciudades_df.head(15).iterrows()
-        ]
-        el.append(_tabla(
-            ["Ciudad", "Provincia", "Órdenes", "Facturación"],
-            rows, col_align=["L", "L", "R", "R"],
-        ))
+        if ciudades_df is not None and not ciudades_df.empty:
+            el.append(Paragraph("Top ciudades", st_h2))
+            _c = ciudades_df.sort_values("Facturacion", ascending=False).head(8)
+            _lbl_c = [f"{r['Ciudad']} ({str(r['Provincia'])[:12]})" for _, r in _c.iterrows()]
+            _val_c = [float(r["Facturacion"]) for _, r in _c.iterrows()]
+            el.append(_hbar(_lbl_c, _val_c, [AZUL] * len(_val_c), lambda v: _fmt_monto(v), alto_barra=22))
 
-    # ── Demografía ──
+    # ── Demografía Meta: gráficos de inversión y ROAS ──
     if seg_df is not None and not seg_df.empty:
         el.append(Paragraph("¿Qué edades y géneros convierten? — Meta Ads", st_h2))
-        el.append(Paragraph(
-            f"Inversión y resultados por segmento demográfico según la atribución de Meta "
-            f"(montos en {moneda}). Refleja el rendimiento de los públicos a los que efectivamente "
-            "se les mostró pauta — no es un censo de clientes.", st_body,
-        ))
-        _seg_orden = seg_df.sort_values("ROAS", ascending=False, na_position="last")
-        rows = []
-        for _, r in _seg_orden.iterrows():
-            rows.append([
-                r["Segmento"], f"{r['Spend']:,.0f}", f"{r['Compras']:,.0f}",
-                f"{r['Valor']:,.0f}",
+
+        # 1) Inversión por edad, agrupada por género (barras verticales)
+        _edades = sorted(seg_df["age"].unique())
+        _serie_h = [float(seg_df[(seg_df["age"] == a) & (seg_df["Género"] == "Hombres")]["Spend"].sum()) for a in _edades]
+        _serie_m = [float(seg_df[(seg_df["age"] == a) & (seg_df["Género"] == "Mujeres")]["Spend"].sum()) for a in _edades]
+        _dv = Drawing(460, 190)
+        _vb = VerticalBarChart()
+        _vb.x, _vb.y, _vb.width, _vb.height = 40, 18, 400, 140
+        _vb.data = [_serie_h, _serie_m]
+        _vb.categoryAxis.categoryNames = _edades
+        _vb.categoryAxis.labels.fontSize = 8.5
+        _vb.valueAxis.valueMin = 0
+        _vb.valueAxis.labels.fontSize = 7.5
+        _vb.valueAxis.labelTextFormat = lambda v: _fmt_monto(v).replace("$", "")
+        _vb.bars[0].fillColor = AZUL
+        _vb.bars[1].fillColor = ROSA
+        _vb.bars.strokeColor = None
+        _vb.groupSpacing = 8
+        _dv.add(_vb)
+        # leyenda manual
+        _dv.add(Rect(40, 168, 8, 8, fillColor=AZUL, strokeColor=None))
+        _dv.add(String(52, 169, "Hombres", fontName="Helvetica", fontSize=8))
+        _dv.add(Rect(110, 168, 8, 8, fillColor=ROSA, strokeColor=None))
+        _dv.add(String(122, 169, "Mujeres", fontName="Helvetica", fontSize=8))
+        _dv.add(String(240, 169, f"Inversión por edad y género ({moneda})",
+                       fontName="Helvetica-Bold", fontSize=8.5, fillColor=GRIS))
+        el.append(_dv)
+
+        # 2) ROAS por segmento (solo con gasto relevante), semáforo de colores
+        _spend_total = float(seg_df["Spend"].sum()) or 1.0
+        _rel = seg_df[
+            (seg_df["Spend"] / _spend_total >= 0.03) & seg_df["ROAS"].notna()
+        ].sort_values("ROAS", ascending=False)
+        if not _rel.empty:
+            el.append(Spacer(1, 6))
+            _lbl_r = [r["Segmento"] for _, r in _rel.iterrows()]
+            _val_r = [float(r["ROAS"]) for _, r in _rel.iterrows()]
+            _col_r = [VERDE if v >= 3 else (AMBAR if v >= 1 else ROJO) for v in _val_r]
+            el.append(_hbar(_lbl_r, _val_r, _col_r, lambda v: f"ROAS {v:.2f}", alto_barra=22))
+            el.append(Paragraph(
+                "ROAS por segmento (solo segmentos con ≥3% del gasto). "
+                "Verde: escala (≥3) · Ámbar: mantener/optimizar (1–3) · Rojo: no repaga (<1).", st_body,
+            ))
+
+        # 3) Tabla compacta solo del percentil con gasto relevante
+        _tab = seg_df[seg_df["Spend"] / _spend_total >= 0.03].sort_values("ROAS", ascending=False, na_position="last")
+        if not _tab.empty:
+            rows = [[
+                r["Segmento"], f"{r['Spend']:,.0f}",
+                f"{r['Spend'] / _spend_total * 100:.0f}%", f"{r['Compras']:,.0f}",
                 f"{r['CPA']:,.0f}" if pd.notna(r["CPA"]) else "—",
                 f"{r['ROAS']:.2f}" if pd.notna(r["ROAS"]) else "—",
-            ])
-        el.append(_tabla(
-            ["Segmento", f"Inversión ({moneda})", "Compras", f"Valor ({moneda})", "CPA", "ROAS"],
-            rows, col_align=["L", "R", "R", "R", "R", "R"],
-        ))
+            ] for _, r in _tab.iterrows()]
+            t = Table([["Segmento", f"Inversión ({moneda})", "% gasto", "Compras", "CPA", "ROAS"]] + rows, hAlign="LEFT")
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), ROJO),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f4f4")]),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            el.append(t)
 
         # ── Recomendaciones ──
         el.append(Paragraph("Recomendaciones", st_h2))
@@ -2189,7 +2278,6 @@ def _generar_pdf_audiencias(win_label, geo_df, ciudades_df, seg_df, moneda,
                 f"<b>Geo:</b> concentrar la inversión en {', '.join(prov_top)} "
                 f"(explican el grueso de la facturación); testear el resto con presupuesto marginal."
             )
-        _spend_total = float(seg_df["Spend"].sum()) or 1.0
         _escalar = seg_df[(seg_df["ROAS"].notna()) & (seg_df["ROAS"] >= 3)].sort_values("ROAS", ascending=False)
         if not _escalar.empty:
             _lst = ", ".join(f"{r['Segmento']} (ROAS {r['ROAS']:.1f})" for _, r in _escalar.head(3).iterrows())
