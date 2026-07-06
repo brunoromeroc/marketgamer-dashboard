@@ -5023,14 +5023,20 @@ if st.session_state.df_tn is not None:
                 row_data = {"Producto": prod, "Peso (kg)": peso_f, "FOB (USD)": fob_f, "URL": url_f}
                 nc = _norm_compact(prod)
                 if nc in _seen_compact:
-                    # Ya existe: quedarse con el que tenga mejor FOB
+                    # Ya existe: gana el de mejor FOB, pero el link de TN se
+                    # hereda del gemelo para que la fila nunca quede sin "Abrir"
                     _prev = _seen_compact[nc]
-                    if fob_f > _prev["FOB (USD)"]:
-                        _seen_compact[nc] = row_data
-                    elif fob_f == _prev["FOB (USD)"] and peso_f > _prev["Peso (kg)"]:
+                    _reemplaza = (
+                        fob_f > _prev["FOB (USD)"]
+                        or (fob_f == _prev["FOB (USD)"] and peso_f > _prev["Peso (kg)"])
+                        or (fob_f == _prev["FOB (USD)"] and url_f and not _prev.get("URL"))
+                    )
+                    if _reemplaza:
+                        if not row_data.get("URL") and _prev.get("URL"):
+                            row_data["URL"] = _prev["URL"]
                         _seen_compact[nc] = row_data
                     elif url_f and not _prev.get("URL"):
-                        _seen_compact[nc] = row_data
+                        _prev["URL"] = url_f
                 else:
                     _seen_compact[nc] = row_data
 
@@ -5299,18 +5305,19 @@ if st.session_state.df_tn is not None:
                 "que están en $0 (ej. \"RG 34XX (Negro)\"). Después las viejas se depuran abajo."
             )
             _map_tn_mig = st.session_state.get("productos_tn_map", {}) or {}
-            _tn_compact_mig = {_norm_compact(k): k for k in _map_tn_mig if _norm_compact(k)}
             _costos_mig = st.session_state.costos_consolas
 
             def _fob_de(k):
                 v = _costos_mig.get(k)
                 return float(v.get("fob_usd", 0) or 0) if isinstance(v, dict) else 0.0
 
-            # Donantes: con FOB, fuera de TN. Receptores: en TN, sin FOB.
+            # Donantes: con FOB y cuyo nombre EXACTO no es un producto de TN
+            # (incluye gemelas tipo "RG40XX H" vs TN "RG 40XX H (Negro)").
+            # Receptores: nombres exactos de TN sin FOB.
             _donantes = [
                 k for k in _costos_mig
                 if not k.startswith("_") and _fob_de(k) > 0
-                and _norm_compact(k) not in _tn_compact_mig
+                and k not in _map_tn_mig
             ]
             _receptores = [
                 k for k in _map_tn_mig
@@ -5394,21 +5401,41 @@ if st.session_state.df_tn is not None:
         # (los accesorios también se venden y necesitan costo — NO son basura)
         # ══════════════════════════════════════════════════════════════════
         with st.expander("🧹 Depurar tabla — sacar lo que ya no está en TN", expanded=False):
-            _keys_dep = sorted(k for k in st.session_state.costos_consolas if not k.startswith("_"))
+            _costos_dep_all = st.session_state.costos_consolas
+            _keys_dep = sorted(k for k in _costos_dep_all if not k.startswith("_"))
             _map_tn_dep = st.session_state.get("productos_tn_map", {}) or {}
-            _tn_compact_dep = {_norm_compact(k) for k in _map_tn_dep}
-            _cand_fuera = [
-                k for k in _keys_dep
-                if _map_tn_dep and _norm_compact(k) not in _tn_compact_dep
-            ] if _map_tn_dep else []
+
+            def _fob_dep(k):
+                v = _costos_dep_all.get(k)
+                return float(v.get("fob_usd", 0) or 0) if isinstance(v, dict) else 0.0
+
+            # Criterio: el nombre EXACTO no existe en TN. Pero si la fila todavía
+            # tiene un FOB que ninguna variante TN heredó, se retiene (migrá primero).
+            _no_tn = [k for k in _keys_dep if _map_tn_dep and k not in _map_tn_dep]
+            _tn_fob_compact = {}
+            for _k_tn in _map_tn_dep:
+                _kc_tn = _norm_compact(_k_tn)
+                _tn_fob_compact[_kc_tn] = max(_tn_fob_compact.get(_kc_tn, 0.0), _fob_dep(_k_tn))
+            _retenidas = [
+                k for k in _no_tn
+                if _fob_dep(k) > 0
+                and _norm_compact(k) in _tn_fob_compact
+                and _tn_fob_compact[_norm_compact(k)] <= 0
+            ]
+            _cand_fuera = [k for k in _no_tn if k not in set(_retenidas)]
             _default_dep = sorted(_cand_fuera)
             if not _map_tn_dep:
                 st.warning("TN no sincronizó — no se puede detectar qué falta. Refrescá primero.")
-            st.caption(
-                f"**{len(_cand_fuera)} fila(s) sin producto en TN** (eliminados de la tienda o "
-                "genéricas viejas — migrá sus precios primero en 🔀). Ajustá la selección antes de "
-                "eliminar — se hace backup automático primero."
+            _cap_dep = (
+                f"**{len(_cand_fuera)} fila(s) cuyo nombre no existe en TN** "
+                "(eliminadas de la tienda o duplicados viejos ya migrados)."
             )
+            if _retenidas:
+                _cap_dep += (
+                    f" ⚠️ Otras **{len(_retenidas)} quedan retenidas**: tienen un precio que su "
+                    "variante TN todavía no heredó — migralas primero en 🔀."
+                )
+            st.caption(_cap_dep + " Se hace backup automático antes de eliminar.")
             _sel_dep = st.multiselect(
                 "Filas a eliminar", options=_keys_dep, default=_default_dep,
                 key="costos_depurar_sel",
