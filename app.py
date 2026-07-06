@@ -2776,6 +2776,32 @@ def _cargar_ordenes_historico(dias_historia):
         return pd.DataFrame()
     return procesar_orders(orders) if orders else pd.DataFrame()
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _df_periodo_liviano(desde_str, hasta_str):
+    """Órdenes procesadas de un rango arbitrario, sin matching PN/MP.
+    Para comparativas (ej: período anterior en el Dashboard). Cacheado 30 min.
+    Las comisiones son las estimadas por procesar_orders — suficiente para comparar.
+    """
+    try:
+        orders = get_tn_orders(desde_str, hasta_str)
+    except Exception:
+        return pd.DataFrame()
+    if not orders:
+        return pd.DataFrame()
+    d_desde = date.fromisoformat(desde_str)
+    d_hasta = date.fromisoformat(hasta_str)
+    filtrados = []
+    for o in orders:
+        try:
+            dt = pd.to_datetime(o.get("created_at", ""))
+            if dt.tzinfo:
+                dt = dt.tz_convert(None)
+            if d_desde <= dt.date() <= d_hasta:
+                filtrados.append(o)
+        except Exception:
+            filtrados.append(o)
+    return procesar_orders(filtrados) if filtrados else pd.DataFrame()
+
 # ── Búsqueda ───────────────────────────────────────────────────────────────────
 if buscar:
     _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=True)
@@ -2998,101 +3024,123 @@ if st.session_state.df_tn is not None:
                     return f"${n/1_000:.0f}K"
                 return f"${n:.0f}"
 
-            _ACCESORIOS_KW = ("estuche", "funda", "micro sd", "microsd", "lectora", "cable", "joystick cap")
+            # ── RESUMEN EJECUTIVO — el neto real del período, no el bruto ──────
+            _tc_dash = st.session_state.tipo_cambio_sf or (int(dolar_blue) if dolar_blue else 1200)
+            _costos_gs_dash = st.session_state.get("costos_consolas") or gs_read("CostosConsolas") or {}
+            _gastos_dash = gs_read("GastosFijos") or {}
 
-            def _es_accesorio(nombre):
-                n = nombre.lower()
-                return any(kw in n for kw in _ACCESORIOS_KW)
+            _res_act = calcular_resultado_periodo(
+                df_tn, fecha_desde, fecha_hasta, _tc_dash,
+                st.session_state.pct_iva, st.session_state.pauta_manual,
+                costos_gs=_costos_gs_dash, gastos_fijos_dict=_gastos_dash,
+            )
 
-            # Helper de card uniforme (mismo patrón que Salud Financiera)
-            def _kpi_dash(label, value, sub="", val_color=None, accent=False):
-                vc = val_color or MG_TEXT
-                border = f"border-left:2px solid {MG_RED};padding-left:0.75rem;" if accent else ""
-                sub_html = (
-                    f'<div style="font-size:0.68rem;color:{MG_MUTED};margin-top:0.25rem;'
-                    f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{sub}</div>'
-                    if sub else
-                    f'<div style="font-size:0.68rem;color:transparent;margin-top:0.25rem;">—</div>'
-                )
-                return (
-                    f'<div style="background:{MG_SURF};border-radius:8px;padding:0.9rem 1rem;'
-                    f'min-height:90px;display:flex;flex-direction:column;justify-content:flex-start;{border}">'
-                    f'<div style="font-size:0.58rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
-                    f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;'
-                    f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{label}</div>'
-                    f'<div style="font-size:1.35rem;font-weight:700;color:{vc};line-height:1.1;">{value}</div>'
-                    f'{sub_html}'
-                    f'</div>'
-                )
+            # Período anterior equivalente (mismos días, terminando el día previo)
+            _dias_eq = _res_act["dias_periodo"]
+            _prev_hasta = fecha_desde - timedelta(days=1)
+            _prev_desde = _prev_hasta - timedelta(days=_dias_eq - 1)
+            _df_prev = _df_periodo_liviano(str(_prev_desde), str(_prev_hasta))
+            _pauta_prev = 0
+            _meta_prev = get_meta_spend(str(_prev_desde), str(_prev_hasta))
+            if _meta_prev:
+                _spend_prev, _cur_prev = _meta_prev
+                _pauta_prev = round(_spend_prev) if _cur_prev == "ARS" else round(_spend_prev * _tc_dash)
+            _res_prev = calcular_resultado_periodo(
+                _df_prev, _prev_desde, _prev_hasta, _tc_dash,
+                st.session_state.pct_iva, _pauta_prev,
+                costos_gs=_costos_gs_dash, gastos_fijos_dict=_gastos_dash,
+            )
 
-            # ── Métricas base — separadas por pasarela ──
-            mask_pn = df_tn["Pasarela"] == "PN" if "Pasarela" in df_tn.columns else pd.Series([False]*len(df_tn))
-            mask_mp = df_tn["Pasarela"].isin(["MP", "Convenir"]) if "Pasarela" in df_tn.columns else pd.Series([False]*len(df_tn))
+            _rf_act = _res_act["resultado_final"]
+            _rf_prev = _res_prev["resultado_final"]
+            _delta_txt = ""
+            if _res_prev["ordenes"] > 0 and _rf_prev != 0:
+                _delta_pct = (_rf_act - _rf_prev) / abs(_rf_prev) * 100
+                _arrow = "▲" if _delta_pct >= 0 else "▼"
+                _delta_txt = f"{_arrow} {abs(_delta_pct):.0f}% vs período anterior ({fmt(_rf_prev)})"
+            elif _res_prev["ordenes"] > 0:
+                _delta_txt = f"vs período anterior: {fmt(_rf_prev)}"
 
-            bruto_pn = df_tn.loc[mask_pn, "Total ($)"].sum() if mask_pn.any() else 0
-            com_pn   = df_tn.loc[mask_pn, "Comision PN ($)"].sum() if mask_pn.any() else 0
-            pct_pn   = (com_pn / bruto_pn * 100) if bruto_pn > 0 else 0.0
+            _rf_color = "#4ade80" if _rf_act >= 0 else MG_RED
+            _rf_icon = "🟢" if _rf_act >= 0 else "🔴"
+            st.markdown(
+                f'<div style="background:{MG_SURF};border-radius:10px;padding:1.2rem 1.5rem;'
+                f'border-left:3px solid {_rf_color};margin-bottom:1rem;">'
+                f'<div style="font-size:0.62rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
+                f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;">'
+                f'{_rf_icon} Resultado neto del período — {_res_act["dias_periodo"]} días '
+                f'(margen − IVA − pauta − gastos fijos)</div>'
+                f'<div style="font-size:2.2rem;font-weight:700;color:{_rf_color};">{fmt(_rf_act)}</div>'
+                f'<div style="font-size:0.78rem;color:{MG_MUTED};margin-top:0.3rem;">{_delta_txt}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
-            bruto_mp = df_tn.loc[mask_mp, "Total ($)"].sum() if mask_mp.any() else 0
-            com_mp   = df_tn.loc[mask_mp, "Comision PN ($)"].sum() if mask_mp.any() else 0
-            pct_mp   = (com_mp / bruto_mp * 100) if bruto_mp > 0 else 0.0
+            # ── KPIs con delta vs período anterior ─────────────────────────────
+            def _delta_sub(actual, anterior, es_plata=True):
+                if _res_prev["ordenes"] == 0 or not anterior:
+                    return ""
+                d = (actual - anterior) / abs(anterior) * 100
+                a = "▲" if d >= 0 else "▼"
+                prev_s = fmt(anterior) if es_plata else f"{anterior:,.0f}"
+                return f"{a} {abs(d):.0f}% (antes {prev_s})"
 
-            total_facturado    = df_tn["Total ($)"].sum()
-            total_comision     = com_pn + com_mp
-            neto_cobrado       = total_facturado - total_comision
-            costo_ponderado_pn = round(total_comision / total_facturado * 100, 2) if total_facturado > 0 else 0
-            ticket_prom        = total_facturado / len(df_tn) if len(df_tn) > 0 else 0
+            ticket_prom = _res_act["facturacion_bruta"] / _res_act["ordenes"] if _res_act["ordenes"] else 0
+            _ticket_prev = _res_prev["facturacion_bruta"] / _res_prev["ordenes"] if _res_prev["ordenes"] else 0
+            _mg_pct = (_res_act["margen_bruto"] / _res_act["facturacion_bruta"] * 100) if _res_act["facturacion_bruta"] else 0
 
-            # ── Fila 1: Resumen ventas (4 cards alineadas) ─────────────────────
             r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-            r1c1.markdown(
-                _kpi_dash("Órdenes", str(len(df_tn)), f"ticket promedio {fmt(ticket_prom)}"),
-                unsafe_allow_html=True,
-            )
-            r1c2.markdown(
-                _kpi_dash("Facturación bruta", fmt(total_facturado), "total vendido"),
-                unsafe_allow_html=True,
-            )
-            r1c3.markdown(
-                _kpi_dash("Comisiones totales", fmt(total_comision), f"PN + MP · {costo_ponderado_pn:.2f}%", val_color=MG_RED),
-                unsafe_allow_html=True,
-            )
-            r1c4.markdown(
-                _kpi_dash("Neto cobrado", fmt(neto_cobrado), "después de comisiones"),
-                unsafe_allow_html=True,
-            )
+            r1c1.markdown(kpi_card(
+                "Facturación bruta", fmt(_res_act["facturacion_bruta"]),
+                _delta_sub(_res_act["facturacion_bruta"], _res_prev["facturacion_bruta"]),
+            ), unsafe_allow_html=True)
+            r1c2.markdown(kpi_card(
+                "Órdenes", str(_res_act["ordenes"]),
+                _delta_sub(_res_act["ordenes"], _res_prev["ordenes"], es_plata=False) or f"ticket prom {fmt(ticket_prom)}",
+            ), unsafe_allow_html=True)
+            r1c3.markdown(kpi_card(
+                "Ticket promedio", fmt(ticket_prom),
+                _delta_sub(ticket_prom, _ticket_prev),
+            ), unsafe_allow_html=True)
+            r1c4.markdown(kpi_card(
+                "Margen bruto", fmt(_res_act["margen_bruto"]),
+                f"{_mg_pct:.1f}% sobre bruto · " + (_delta_sub(_res_act["margen_bruto"], _res_prev["margen_bruto"]) or "neto − costos − envíos"),
+                val_color="#4ade80" if _res_act["margen_bruto"] >= 0 else MG_RED,
+            ), unsafe_allow_html=True)
 
-            # ── Fila 2: Costos por pasarela (2 cards) ──────────────────────────
+            # ── ALERTAS ACCIONABLES ────────────────────────────────────────────
+            _alertas = []
+            # 1) Productos vendidos sin costo cargado → margen inflado
+            _prods_vendidos = set()
+            for _, _row_a in df_tn.iterrows():
+                for _p in str(_row_a.get("Productos", "")).split(" / "):
+                    if _p.strip():
+                        _prods_vendidos.add(_p.strip())
+            _sin_costo = sorted(p for p in _prods_vendidos if get_fob_usd(p, _costos_gs_dash) <= 0)
+            if _sin_costo:
+                _muestra = ", ".join(_sin_costo[:4]) + ("…" if len(_sin_costo) > 4 else "")
+                _alertas.append(f"💸 **{len(_sin_costo)} producto(s) vendidos sin costo cargado** (margen inflado): {_muestra} → cargalos en 💻 Costos de consolas")
+            # 2) Candidatas a efectivo sin marcar
+            if "Pasarela" in df_tn.columns:
+                _marcadas_dash = st.session_state.get("ordenes_efectivo", set()) or set()
+                _n_conv = int((df_tn["Pasarela"] == "Convenir").sum())
+                _n_conv_sin = int(df_tn[
+                    (df_tn["Pasarela"] == "Convenir") & (~df_tn["Orden"].astype(str).isin(_marcadas_dash))
+                ].shape[0]) if _n_conv else 0
+                if _n_conv_sin:
+                    _alertas.append(f"💵 **{_n_conv_sin} orden(es) parecen efectivo** (a convenir sin pago MP) → marcalas en 🔍 Detalle y ajustes")
+            # 3) Stock crítico (si hay stock cargado en sesión)
+            _stock_dash = st.session_state.get("stock_tn")
+            if _stock_dash is not None and not _stock_dash.empty:
+                _stock_num = _stock_dash[_stock_dash["Stock"].apply(lambda v: isinstance(v, (int, float)))]
+                _agotados = _stock_num.groupby("Producto")["Stock"].sum()
+                _criticos = _agotados[_agotados <= 3]
+                if len(_criticos):
+                    _alertas.append(f"📦 **{len(_criticos)} producto(s) con stock crítico (≤3 u)** → revisá 📦 Reposición")
+            for _a in _alertas:
+                st.warning(_a)
+
             st.markdown("")
-            r2c1, r2c2 = st.columns(2)
-            r2c1.markdown(
-                _kpi_dash(
-                    "🔵 Costo Pago Nube",
-                    fmt(com_pn),
-                    f"sobre {fmt(bruto_pn)} · {pct_pn:.2f}% efectivo",
-                    val_color=MG_RED,
-                ),
-                unsafe_allow_html=True,
-            )
-            r2c2.markdown(
-                _kpi_dash(
-                    "💳 Costo Mercado Pago",
-                    fmt(com_mp),
-                    f"sobre {fmt(bruto_mp)} · {pct_mp:.2f}% efectivo",
-                    val_color=MG_RED,
-                    accent=True,
-                ),
-                unsafe_allow_html=True,
-            )
-
-            st.markdown("")
-
-            # ── Toggle accesorios (afecta los tops de productos) ───────────────
-            _excluir_acc = st.toggle(
-                "Excluir accesorios (estuches, micros SD, etc.)",
-                value=False,
-                key="dash_excluir_acc",
-            )
 
             # ── Ventas por día (BARRAS) + Top 10 por unidades — alineadas ─────
             _CHART_HEIGHT = 360
@@ -3124,8 +3172,6 @@ if st.session_state.df_tn is not None:
                     for p in str(row.get("Productos", "")).split(" / "):
                         p = p.strip()
                         if p:
-                            if _excluir_acc and _es_accesorio(p):
-                                continue
                             top_prods[p] = top_prods.get(p, 0) + 1
                 if top_prods:
                     df_tp = pd.DataFrame(list(top_prods.items()), columns=["Producto", "Unidades"])
@@ -3151,13 +3197,14 @@ if st.session_state.df_tn is not None:
                     )
                     st.plotly_chart(fig_tp, use_container_width=True)
 
-            # ── Top 10 facturación (full width) ───────────────────────────────
+            # ── Top 10 facturación (full width) — prorrateo por precio real ────
+            # Usa el precio unitario de cada producto en la orden (TN API), no
+            # una división pareja del total entre productos.
             top_revenue = {}
-            for _, row in df_tn.iterrows():
-                prods_list = [p.strip() for p in str(row.get("Productos", "")).split(" / ") if p.strip()]
-                n_prods = max(len(prods_list), 1)
-                for p in prods_list:
-                    top_revenue[p] = top_revenue.get(p, 0) + row.get("Total ($)", 0) / n_prods
+            _rows_rev = _build_product_rows_from_raw(st.session_state.get("orders_raw", []) or [])
+            for _pr in _rows_rev:
+                _n = _pr["Producto"]
+                top_revenue[_n] = top_revenue.get(_n, 0) + float(_pr.get("Precio neto ($)", 0) or 0)
             if top_revenue:
                 df_rev = pd.DataFrame(list(top_revenue.items()), columns=["Producto", "Monto ($)"])
                 df_rev["Monto ($)"] = df_rev["Monto ($)"].round(0)
@@ -3185,74 +3232,7 @@ if st.session_state.df_tn is not None:
                 )
                 st.plotly_chart(fig_rev, use_container_width=True)
 
-            # ── Donuts separados: Pago Nube vs Mercado Pago ───────────────────
-            st.markdown(
-                f'<p style="font-size:0.72rem;color:{MG_MUTED};font-family:\'Space Mono\',monospace;'
-                f'letter-spacing:0.06em;text-transform:uppercase;margin-top:1rem;margin-bottom:0.4rem;">'
-                f'Distribución de comisiones por pasarela</p>',
-                unsafe_allow_html=True,
-            )
-
-            def _donut_pasarela(df_subset, titulo, color_main):
-                """Donut con top 3 medios de pago + 'Resto' para una pasarela."""
-                if df_subset.empty:
-                    return None
-                cm = df_subset.groupby("Medio de Pago").agg(
-                    Comision=("Comision PN ($)", "sum"),
-                ).reset_index().sort_values("Comision", ascending=False)
-                cm = cm[cm["Comision"] > 0]
-                if cm.empty:
-                    return None
-                top3 = cm.head(3).copy()
-                resto = cm.iloc[3:]
-                if not resto.empty:
-                    resto_row = pd.DataFrame([{
-                        "Medio de Pago": "Resto",
-                        "Comision": resto["Comision"].sum(),
-                    }])
-                    df_donut = pd.concat([top3, resto_row], ignore_index=True)
-                else:
-                    df_donut = top3.copy()
-
-                fig = px.pie(
-                    df_donut, names="Medio de Pago", values="Comision",
-                    title=titulo,
-                    color_discrete_sequence=[color_main, "#fbbf24", "#a78bfa", MG_DIM],
-                    hole=0.55,
-                )
-                fig.update_traces(
-                    textinfo="label+percent",
-                    textfont_size=11,
-                    hovertemplate="<b>%{label}</b><br>$%{value:,.0f} (%{percent})<extra></extra>",
-                )
-                fig.update_layout(
-                    showlegend=False,
-                    height=360,
-                    margin=dict(t=50, b=20, l=10, r=10),
-                )
-                return fig
-
-            col_dpn, col_dmp = st.columns(2)
-            with col_dpn:
-                fig_dpn = _donut_pasarela(
-                    df_tn[mask_pn] if mask_pn.any() else pd.DataFrame(),
-                    f"🔵 Pago Nube — total {fmt(com_pn)} ({pct_pn:.2f}%)",
-                    "#009EE3",
-                )
-                if fig_dpn is not None:
-                    st.plotly_chart(fig_dpn, use_container_width=True)
-                else:
-                    st.info("No hay órdenes vía Pago Nube en el período.")
-            with col_dmp:
-                fig_dmp = _donut_pasarela(
-                    df_tn[mask_mp] if mask_mp.any() else pd.DataFrame(),
-                    f"💳 Mercado Pago — total {fmt(com_mp)} ({pct_mp:.2f}%)",
-                    MG_RED,
-                )
-                if fig_dmp is not None:
-                    st.plotly_chart(fig_dmp, use_container_width=True)
-                else:
-                    st.info("No hay órdenes vía Mercado Pago en el período.")
+            # Comisiones por pasarela y medios de pago: ver 💳 Estadísticas de pago.
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 2: DETALLE Y AJUSTES
