@@ -82,6 +82,21 @@ Todo lo decidido quedó implementado, commiteado y pusheado (7 commits, `1c9c834
   fusionarse (por ahora queda: tiene marcar-efectivo y debug de órdenes).
 - Bruno tenía IVA en 0.00% en la config — avisado dos veces.
 
+## Sesión 2026-07-06 (tarde) — Stock valuado + Audiencias
+
+- Dashboard: sección "💼 Stock valuado" — snapshots de HistorialStock valuados a
+  costo y precio de venta, KPIs de capital posicionado + curva de evolución.
+  El Dashboard auto-carga stock y registra snapshot al abrirse.
+- HistorialStock ya NO se borra: `compactar_historial()` en velocidad_restock
+  (TDD, 5 tests nuevos, 25 total) — diario 180 días, semanal para atrás.
+  La curva de capital crece de por vida. La historia arranca ~jun-2026 (TN no
+  expone stock histórico; lo anterior no existe como dato).
+- Nueva solapa "🎯 Audiencias" (para el equipo de paid media): geo de ventas
+  reales por provincia/ciudad (procesar_orders ahora captura Ciudad),
+  concentración 80/20, demografía edad×género de Meta Ads con CPA/ROAS por
+  segmento (`get_meta_demograficos`), y resumen copiable para el media buyer.
+- Menú quedó en 13 solapas.
+
 ## Pendiente para próximas sesiones
 
 1. **Bruno debe revisar** las solapas nuevas al despertar (Dashboard, Reposición,
