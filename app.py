@@ -5168,15 +5168,24 @@ if st.session_state.df_tn is not None:
                     import base64 as _b64mod
                     _media = _img_cat.type or "image/png"
                     _b64img = _b64mod.b64encode(_img_cat.getvalue()).decode()
+                    # El match lo hace Claude directo contra los nombres de la tabla
+                    # (mucho mejor que heurísticas para "10 x 556" → "RG556") con
+                    # Haiku, que para una tabla de precios sobra y es ~4x más barato.
+                    _keys_tabla = sorted(k for k in st.session_state.costos_consolas if not k.startswith("_"))
+                    _lista_tabla = "\n".join(f"- {k}" for k in _keys_tabla)
                     _prompt_cat = (
-                        "Esta imagen es una lista de precios de un proveedor de consolas retro portátiles "
-                        "(Anbernic, Powkiddy, Miyoo, Trimui, Retroid, AYN, etc.). Extraé TODOS los productos "
-                        "con su precio unitario en USD. Respondé SOLO con un array JSON válido, sin texto extra:\n"
-                        '[{"producto": "nombre tal como aparece", "precio_usd": 123.45}]\n'
-                        "Si un producto tiene variantes con precios distintos (RAM/almacenamiento), una entrada "
-                        "por variante incluyendo la variante en el nombre. Ignorá precios que no sean USD."
+                        "Imagen: lista de precios de un proveedor de consolas retro. "
+                        "Matcheá cada producto de la imagen con UNA fila de MI TABLA (nombres exactos abajo). "
+                        "Respondé SOLO este JSON, sin texto extra:\n"
+                        '{"matches":[{"producto_tabla":"<nombre EXACTO de mi tabla>","producto_imagen":"<como aparece en la imagen>","precio_usd":0.0}],'
+                        '"sin_match":["<producto de la imagen sin correspondencia clara>"]}\n'
+                        "Reglas: precio UNITARIO en USD (no el total de la fila); los nombres de la imagen "
+                        "suelen traer la cantidad adelante ('10 x 556' es el modelo 556, '20 RG 40XXH' es RG 40XX H); "
+                        "elegí cualquier variante de color de mi tabla del modelo correcto; NO confundas modelos "
+                        "parecidos (34XX ≠ 34XXSP ≠ 35XX); si dudás, va a sin_match.\n"
+                        f"MI TABLA:\n{_lista_tabla}"
                     )
-                    with st.spinner("Leyendo catálogo con Claude..."):
+                    with st.spinner("Leyendo catálogo con Claude (Haiku)..."):
                         try:
                             _r_cat = requests.post(
                                 "https://api.anthropic.com/v1/messages",
@@ -5186,8 +5195,8 @@ if st.session_state.df_tn is not None:
                                     "content-type": "application/json",
                                 },
                                 json={
-                                    "model": "claude-sonnet-4-6",
-                                    "max_tokens": 4000,
+                                    "model": "claude-haiku-4-5-20251001",
+                                    "max_tokens": 3000,
                                     "messages": [{"role": "user", "content": [
                                         {"type": "image", "source": {"type": "base64", "media_type": _media, "data": _b64img}},
                                         {"type": "text", "text": _prompt_cat},
@@ -5197,61 +5206,49 @@ if st.session_state.df_tn is not None:
                             )
                             if _r_cat.status_code != 200:
                                 st.error(f"Error de la API: {_r_cat.status_code} — {_r_cat.text[:300]}")
-                                _items_cat = None
+                                _data_cat = None
                             else:
                                 _txt_cat = "".join(
                                     b.get("text", "") for b in _r_cat.json().get("content", [])
                                 ).strip()
                                 if _txt_cat.startswith("```"):
                                     _txt_cat = re.sub(r"^```(?:json)?\s*|\s*```$", "", _txt_cat, flags=re.S)
-                                _items_cat = json.loads(_txt_cat)
+                                _data_cat = json.loads(_txt_cat)
                         except Exception as _e_cat:
                             st.error(f"No pude leer la imagen: {_e_cat}")
-                            _items_cat = None
+                            _data_cat = None
 
-                    if _items_cat:
-                        # Matchear contra la tabla actual por nombre compacto
-                        _keys_tabla = [k for k in st.session_state.costos_consolas if not k.startswith("_")]
-                        _kc_map = {_norm_compact(k): k for k in _keys_tabla if _norm_compact(k)}
-
-                        def _match_cat(nombre):
-                            nc = _norm_compact(nombre)
-                            if not nc:
-                                return None
-                            if nc in _kc_map:
-                                return _kc_map[nc]
-                            _best, _best_len = None, 0
-                            for kc, k in _kc_map.items():
-                                if nc in kc or kc in nc:
-                                    _l = min(len(kc), len(nc))
-                                    if _l > _best_len:
-                                        _best, _best_len = k, _l
-                            return _best if _best_len >= 6 else None
-
-                        _props, _sin_match = [], []
-                        for _it in _items_cat:
+                    if _data_cat is not None:
+                        _keys_set = set(_keys_tabla)
+                        _props, _sin_match = [], [str(x) for x in (_data_cat.get("sin_match") or [])]
+                        for _it in (_data_cat.get("matches") or []):
                             try:
-                                _nom_c = str(_it.get("producto", "")).strip()
+                                _k_match = str(_it.get("producto_tabla", "")).strip()
+                                _nom_img = str(_it.get("producto_imagen", "")).strip()
                                 _pre_c = float(_it.get("precio_usd", 0) or 0)
                             except Exception:
                                 continue
-                            if not _nom_c or _pre_c <= 0:
+                            if _pre_c <= 0:
                                 continue
-                            _k_match = _match_cat(_nom_c)
-                            if _k_match is None:
-                                _sin_match.append(f"{_nom_c} (${_pre_c:.2f})")
+                            if _k_match not in _keys_set:
+                                _sin_match.append(f"{_nom_img or _k_match} (${_pre_c:.2f})")
                                 continue
                             _fob_act = float((st.session_state.costos_consolas.get(_k_match) or {}).get("fob_usd", 0) or 0)
                             _props.append({
                                 "Aplicar": abs(_pre_c - _fob_act) > 0.01,
                                 "Producto (tabla)": _k_match,
-                                "Producto (catálogo)": _nom_c,
+                                "Producto (catálogo)": _nom_img,
                                 "FOB actual": round(_fob_act, 2),
                                 "FOB nuevo": round(_pre_c, 2),
                                 "Δ %": round((_pre_c - _fob_act) / _fob_act * 100, 1) if _fob_act > 0 else None,
                             })
                         st.session_state.costos_img_props = _props
                         st.session_state.costos_img_sin_match = _sin_match
+                        if not _props:
+                            st.warning(
+                                "La imagen se leyó pero ningún producto matcheó con tu tabla. "
+                                + (f"Sin match: {' · '.join(_sin_match[:10])}" if _sin_match else "No se detectaron productos con precio.")
+                            )
 
                 # Propuesta persistida en sesión (sobrevive reruns)
                 _props_ses = st.session_state.get("costos_img_props")
@@ -5279,9 +5276,16 @@ if st.session_state.df_tn is not None:
                         _costos_upd = st.session_state.costos_consolas
                         for _, _rp in _df_props[_df_props["Aplicar"]].iterrows():
                             _k = _rp["Producto (tabla)"]
-                            if _k in _costos_upd and isinstance(_costos_upd[_k], dict):
-                                _costos_upd[_k]["fob_usd"] = float(_rp["FOB nuevo"])
-                                _costos_upd[_k].pop("costo_total_usd", None)  # se recalcula
+                            # El precio va a la fila matcheada Y a todas sus variantes
+                            # de color (mismo nombre compacto)
+                            _kc_match = _norm_compact(_k)
+                            for _k_twin in list(_costos_upd.keys()):
+                                if _k_twin.startswith("_"):
+                                    continue
+                                if _k_twin == _k or _norm_compact(_k_twin) == _kc_match:
+                                    if isinstance(_costos_upd.get(_k_twin), dict):
+                                        _costos_upd[_k_twin]["fob_usd"] = float(_rp["FOB nuevo"])
+                                        _costos_upd[_k_twin].pop("costo_total_usd", None)  # se recalcula
                         gs_write("CostosConsolas", _costos_upd)
                         st.session_state.costos_consolas = _costos_upd
                         st.session_state.costos_img_props = None
