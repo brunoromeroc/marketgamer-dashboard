@@ -2371,6 +2371,42 @@ def _variant_label(v):
             partes.append(txt)
     return ", ".join(partes)
 
+def _base_variante(nombre):
+    """Separa 'Producto (Variante)' → (base, variante). Sin paréntesis → (nombre, '')."""
+    m = re.match(r"^(.*?)\s*\(([^)]*)\)\s*$", str(nombre))
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return str(nombre).strip(), ""
+
+def _es_variante_color(var):
+    """True si la variante no tiene dígitos → color/estética. Con dígitos = specs
+    (RAM/almacenamiento), que tienen precio propio y NO se propagan."""
+    return not any(ch.isdigit() for ch in var)
+
+def propagar_fob_variantes(costos, nombre, fob):
+    """Propaga el FOB a todas las variantes de solo-color del mismo producto base.
+
+    Regla de Bruno: si solo cambia el color, el precio es el mismo; solo las
+    variantes con specs distintas (dígitos en la variante) tienen precio propio.
+    Cubre también gemelas por nombre compacto y typos de TN en el color
+    ('Blanco Trnasparente') porque compara por producto base. Devuelve cuántas
+    filas actualizó. Muta `costos` in place.
+    """
+    base, var = _base_variante(nombre)
+    if not _es_variante_color(var):
+        return 0
+    nc = _norm_compact(nombre)
+    n = 0
+    for k in list(costos.keys()):
+        if k.startswith("_") or k == nombre or not isinstance(costos.get(k), dict):
+            continue
+        kb, kv = _base_variante(k)
+        if (kb == base and _es_variante_color(kv)) or _norm_compact(k) == nc:
+            costos[k]["fob_usd"] = float(fob)
+            costos[k].pop("costo_total_usd", None)
+            n += 1
+    return n
+
 def procesar_orders(orders):
     filas = []
     for o in orders:
@@ -5121,18 +5157,30 @@ if st.session_state.df_tn is not None:
                 # Productos visibles en el editor (puede ser un subconjunto si hay filtro)
                 _prods_visibles = set(df_edit_base["Producto"].tolist())
                 _editor_prods = set()
+                # FOB original de cada fila visible, para detectar qué cambió el usuario
+                _fob_orig = dict(zip(df_edit_base["Producto"], df_edit_base["FOB (USD)"]))
+                _fobs_cambiados = {}
 
                 for _, row in edited_df.iterrows():
                     name = str(row.get("Producto", "")).strip()
                     if not name:
                         continue
                     _editor_prods.add(name)
+                    _fob_row = float(row["FOB (USD)"])
+                    if name in _fob_orig and abs(_fob_row - float(_fob_orig[name] or 0)) > 0.001:
+                        _fobs_cambiados[name] = _fob_row
                     nuevos_costos[name] = {
-                        "fob_usd": float(row["FOB (USD)"]),
+                        "fob_usd": _fob_row,
                         "peso_kg": float(row["Peso (kg)"]),
                         "costo_import_usd": float(row["Import (USD)"]),
                         "costo_total_usd": float(row["Total (USD)"]),
                     }
+
+                # Propagar los FOB editados a las variantes de solo-color del
+                # mismo producto (specs con dígitos NO se tocan)
+                _n_propagadas = 0
+                for _name_c, _fob_c in _fobs_cambiados.items():
+                    _n_propagadas += propagar_fob_variantes(nuevos_costos, _name_c, _fob_c)
 
                 # Solo eliminar productos que estaban visibles y el usuario borró explícitamente
                 # Los productos ocultos por búsqueda/filtro NO se tocan
@@ -5143,7 +5191,10 @@ if st.session_state.df_tn is not None:
                 st.session_state._costos_needs_refresh = True
                 gs_backup_costos(motivo="pre-guardado manual")
                 ok = gs_write("CostosConsolas", nuevos_costos)
-                st.success("✅ Guardado en Google Sheets (backup previo hecho)" if ok else "⚠️ Solo en sesión")
+                _msg_save = "✅ Guardado en Google Sheets (backup previo hecho)" if ok else "⚠️ Solo en sesión"
+                if _n_propagadas:
+                    _msg_save += f" · precio propagado a {_n_propagadas} variante(s) de color"
+                st.success(_msg_save)
                 st.rerun()
 
         st.divider()
@@ -5276,16 +5327,12 @@ if st.session_state.df_tn is not None:
                         _costos_upd = st.session_state.costos_consolas
                         for _, _rp in _df_props[_df_props["Aplicar"]].iterrows():
                             _k = _rp["Producto (tabla)"]
-                            # El precio va a la fila matcheada Y a todas sus variantes
-                            # de color (mismo nombre compacto)
-                            _kc_match = _norm_compact(_k)
-                            for _k_twin in list(_costos_upd.keys()):
-                                if _k_twin.startswith("_"):
-                                    continue
-                                if _k_twin == _k or _norm_compact(_k_twin) == _kc_match:
-                                    if isinstance(_costos_upd.get(_k_twin), dict):
-                                        _costos_upd[_k_twin]["fob_usd"] = float(_rp["FOB nuevo"])
-                                        _costos_upd[_k_twin].pop("costo_total_usd", None)  # se recalcula
+                            _fob_n = float(_rp["FOB nuevo"])
+                            if isinstance(_costos_upd.get(_k), dict):
+                                _costos_upd[_k]["fob_usd"] = _fob_n
+                                _costos_upd[_k].pop("costo_total_usd", None)
+                            # y a todas sus variantes de solo-color
+                            propagar_fob_variantes(_costos_upd, _k, _fob_n)
                         gs_write("CostosConsolas", _costos_upd)
                         st.session_state.costos_consolas = _costos_upd
                         st.session_state.costos_img_props = None
@@ -5391,6 +5438,8 @@ if st.session_state.df_tn is not None:
                         _entry["fob_usd"] = float(_rm["FOB (USD)"])
                         _entry.pop("costo_total_usd", None)
                         _costos_mig[_k_rec] = _entry
+                        # también a las variantes de solo-color hermanas
+                        propagar_fob_variantes(_costos_mig, _k_rec, float(_rm["FOB (USD)"]))
                     gs_write("CostosConsolas", _costos_mig)
                     st.session_state.costos_consolas = _costos_mig
                     st.session_state._costos_needs_refresh = True
