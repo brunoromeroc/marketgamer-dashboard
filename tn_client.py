@@ -1,5 +1,5 @@
 # ⚠ GENERADO desde Market Gamer - Core (sync/sync.py) — NO editar aca.
-# Fuente: lib/tn_client.py (Market Gamer - Core) · hash 4069f7e7f367
+# Fuente: lib/tn_client.py (Market Gamer - Core) · hash f78db9691264
 
 """
 tn_client — cliente HTTP de la API de Tienda Nube (store Market Gamer 6623036).
@@ -132,6 +132,17 @@ def put(path, body, token=None, timeout=30, user_agent=None, _http=_http):
     del item y sigue con el lote; un timeout no la corta)."""
     try:
         return request("PUT", path, token=token, body=body, timeout=timeout,
+                       user_agent=user_agent, _http=_http)
+    except Exception as e:
+        return 0, {"error": str(e)}
+
+
+def post(path, body, token=None, timeout=60, user_agent=None, _http=_http):
+    """(status, data). Mismo contrato que put(): NO levanta nunca. Timeout mas
+    generoso por default (60s): el caso de uso principal es crear recursos con
+    payload grande (imagenes de producto en base64)."""
+    try:
+        return request("POST", path, token=token, body=body, timeout=timeout,
                        user_agent=user_agent, _http=_http)
     except Exception as e:
         return 0, {"error": str(e)}
