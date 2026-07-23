@@ -60,6 +60,22 @@ Feedback de Bruno sobre la tabla de margen teórico (estaba recargada):
   sheet `PreciosCompetencia` (session key `precios_competencia`). El valor manual
   prevalece sobre el snapshot COMPETENCIA. Posición se recalcula del mercado efectivo.
 
+### Iteración (mismo día) — Fusión en UNA sola tabla de Precios
+Feedback de Bruno: quiere todo en una tabla; el costo debe contemplar los mismos
+costos que Margen real (packaging + envío estaban afuera), y una columna del margen
+a 6 cuotas para asegurar mínimo 20%.
+- Se ELIMINÓ la tabla separada "Rentabilidad a 6 cuotas" (subheader, df_cuotas, df_6c,
+  gráfico de degradación) — todo fusionado en la tabla principal.
+- **Costo ($)** ahora = producto (FOB+import×dólar) + packaging + IVA + envío (idéntico
+  a los costos de la solapa Margen real).
+- Columnas finales: Producto · Precio · Mercado · Posición · Costo · Margen $ · Margen % ·
+  **Margen 6c $ · Margen 6c %**.
+- **Margen** = a transferencia (mejor caso). **Margen 6c** = a 6 cuotas (peor caso),
+  coloreado contra un mínimo configurable (default 20%, input `min_6c_pr`; tasa 6c
+  configurable `tasa_6c_pr` default 23,70%).
+- Alertas arriba: cuántos pierden plata / no aseguran el 20% mínimo en 6c.
+- Un solo download combinado (precios_margenes.csv).
+
 ### Pendiente inmediato
 - Bruno revisa las 3 solapas con datos reales y valida.
 - Cambios de precio en TN vía MCP: pendientes de que Bruno los apruebe uno por uno.

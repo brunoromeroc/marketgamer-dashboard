@@ -5840,6 +5840,17 @@ if st.session_state.df_tn is not None:
             m3.metric("Packaging/u", fmt(packaging_ars))
             m4.metric("IVA", f"{iva_mt}%")
 
+            # ── Parámetros de 6 cuotas (el peor caso que ofrecés) ──
+            _cc1, _cc2 = st.columns(2)
+            _tasa_6c = _cc1.number_input(
+                "Tasa 6 cuotas (%)", value=23.70, step=0.1, key="tasa_6c_pr",
+                help="Costo de ofrecer 6 cuotas sin interés. Es tu peor caso de comisión.",
+            ) / 100
+            _min_6c = _cc2.number_input(
+                "Margen mínimo a 6 cuotas (%)", value=20.0, step=1.0, key="min_6c_pr",
+                help="El piso que querés asegurar aún cuando el cliente paga en 6 cuotas.",
+            )
+
             # ── Construir tabla completa ──
             rows_mt = []
             for prod, datos in todos_productos.items():
@@ -5849,11 +5860,16 @@ if st.session_state.df_tn is not None:
                 marca = _inferir_marca(prod)
 
                 costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
-                costo_total_ars = round(costo_total_usd * _tc_mt, 0)   # total de "Costos de consolas"
+                costo_prod_ars = round(costo_total_usd * _tc_mt, 0)   # FOB+import de Costos de consolas
                 costo_iva = round(precio_prom * (iva_mt / 100), 0)
-                comision_est = round(precio_prom * _tasa_transf, 0)    # comisión a transferencia
-                margen_teorico = round(precio_prom - costo_total_ars - packaging_ars - costo_iva - comision_est - envio_prom, 0)
+                # Costo full = mismos costos que la solapa Margen real (prod + packaging + IVA + envío)
+                costo_full = round(costo_prod_ars + packaging_ars + costo_iva + envio_prom, 0)
+                # Margen a transferencia (mejor caso, tu PN real)
+                margen_teorico = round(precio_prom - costo_full - round(precio_prom * _tasa_transf, 0), 0)
                 margen_pct = round(margen_teorico / precio_prom * 100, 1) if precio_prom > 0 else 0
+                # Margen a 6 cuotas (peor caso que ofrecés) — el piso a proteger
+                margen_6c = round(precio_prom - costo_full - round(precio_prom * _tasa_6c, 0), 0)
+                margen_6c_pct = round(margen_6c / precio_prom * 100, 1) if precio_prom > 0 else 0
 
                 # ── Semáforo de competencia (mercado manual o snapshot) ──
                 mercado = _mercado_efectivo(prod)
@@ -5877,9 +5893,11 @@ if st.session_state.df_tn is not None:
                     "Precio ($)": round(precio_prom, 0),
                     "Mercado ($)": mercado,
                     "Posición": posicion,
-                    "Costo ($)": costo_total_ars,
+                    "Costo ($)": costo_full,
                     "Margen ($)": margen_teorico,
                     "Margen (%)": margen_pct,
+                    "Margen 6c ($)": margen_6c,
+                    "Margen 6c (%)": margen_6c_pct,
                     "_fuente": fuente,
                 })
 
@@ -5898,12 +5916,22 @@ if st.session_state.df_tn is not None:
                 df_mt = df_mt[df_mt["Marca"].isin(marcas_sel)]
 
             st.caption(
-                f"Mostrando **{len(df_mt)}** productos. Precio de catálogo TN (o promedio "
-                f"vendido en el período). **Costo** = total de Costos de consolas (FOB + import) "
-                f"al dólar de hoy. **Margen** = precio − costo − IVA − packaging − comisión "
-                f"transferencia − envío. **Mercado/Posición** = tu carga manual o el snapshot "
-                f"del {COMPETENCIA_FECHA}."
+                f"Mostrando **{len(df_mt)}** productos. **Costo** = producto (FOB+import × dólar) "
+                f"+ packaging + IVA + envío (los mismos costos que Margen real). "
+                f"**Margen** = a transferencia (mejor caso). **Margen 6c** = a 6 cuotas "
+                f"(peor caso), coloreado contra tu mínimo de **{_min_6c:.0f}%**. "
+                f"**Mercado/Posición** = tu carga manual o el snapshot del {COMPETENCIA_FECHA}."
             )
+
+            # ── Alerta de 6 cuotas: cuántos no aseguran el mínimo ──
+            _n_bajo_6c = int((df_mt["Margen 6c (%)"] < _min_6c).sum())
+            _n_neg_6c = int((df_mt["Margen 6c (%)"] < 0).sum())
+            if _n_neg_6c:
+                st.error(f"🔴 **{_n_neg_6c} producto(s) pierden plata en 6 cuotas** — el precio de lista no cubre el peor caso.")
+            if _n_bajo_6c:
+                st.warning(f"⚠️ **{_n_bajo_6c} de {len(df_mt)} productos** no aseguran el {_min_6c:.0f}% mínimo en 6 cuotas. Mirá la columna **Margen 6c %**.")
+            else:
+                st.success(f"✅ Todos aseguran el {_min_6c:.0f}% mínimo aún en 6 cuotas.")
 
             # ── Resumen de oportunidades de precio (de la competencia) ──
             _df_comp = df_mt[df_mt["Posición"] != ""].copy()
@@ -5953,20 +5981,19 @@ if st.session_state.df_tn is not None:
                     else:
                         st.error("No se pudo guardar en Google Sheets.")
 
-            # ── Tabla principal ──
+            # ── Tabla única (todo en una) ──
             df_display = df_mt.drop(columns=["_fuente", "Marca"]).copy()
 
-            def _color_row_margen(row):
-                v = row["Margen (%)"]
-                if v >= 20:
-                    color = "background-color: #1e4620; color: #4ade80"
-                elif v >= 10:
-                    color = "background-color: #3a3000; color: #fbbf24"
+            def _color_margen_gen(v, minimo):
+                if not isinstance(v, (int, float)) or pd.isna(v):
+                    return ""
+                if v >= minimo:
+                    return "background-color: #1e4620; color: #4ade80"
+                elif v >= minimo * 0.5:
+                    return "background-color: #3a3000; color: #fbbf24"
                 elif v >= 0:
-                    color = "background-color: #2a1a00; color: #fb923c"
-                else:
-                    color = "background-color: #3a0f0f; color: #f87171"
-                return [color if c == "Margen (%)" else "" for c in row.index]
+                    return "background-color: #2a1a00; color: #fb923c"
+                return "background-color: #3a0f0f; color: #f87171"
 
             def _fmt_money_opt(v):
                 return f"${v:,.0f}" if isinstance(v, (int, float)) and pd.notna(v) else "—"
@@ -5979,8 +6006,11 @@ if st.session_state.df_tn is not None:
                         "Costo ($)": "${:,.0f}",
                         "Margen ($)": "${:,.0f}",
                         "Margen (%)": "{:.1f}%",
+                        "Margen 6c ($)": "${:,.0f}",
+                        "Margen 6c (%)": "{:.1f}%",
                     })
-                    .apply(_color_row_margen, axis=1),
+                    .map(lambda v: _color_margen_gen(v, 20), subset=["Margen (%)"])
+                    .map(lambda v: _color_margen_gen(v, _min_6c), subset=["Margen 6c (%)"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -5988,205 +6018,17 @@ if st.session_state.df_tn is not None:
                     "Mercado ($)": st.column_config.TextColumn("Mercado", width="small"),
                     "Posición": st.column_config.TextColumn("Posición", width="small"),
                     "Margen (%)": st.column_config.TextColumn("Margen %", width="small"),
-                },
-            )
-
-            # ══════════════════════════════════════════════════════════════
-            # RENTABILIDAD A 6 CUOTAS — el peor caso que Bruno sí ofrece
-            # (~50% de los clientes paga en 6; nunca se ofrecen 12 cuotas)
-            # ══════════════════════════════════════════════════════════════
-            _margen_obj_pr = float(st.session_state.get("margen_objetivo", 30))
-            st.subheader("💳 Rentabilidad a 6 cuotas — tu piso a proteger")
-            st.caption(
-                f"El ~50% de tus clientes paga en **6 cuotas** y no ofrecés 12, así que el margen "
-                f"a 6 cuotas es el piso real de cada precio de lista. Coloreado contra tu objetivo "
-                f"de **{_margen_obj_pr:.0f}%** (editable en ⚙️ Config financiera). "
-                f"La última columna te dice a cuánto subir el precio para asegurar el objetivo aún en 6 cuotas."
-            )
-
-            cuotas_config = {
-                "Débito/Trans": 0.0415,
-                "1 cuota": 0.0415,
-                "3 cuotas": 0.1420,
-                "6 cuotas": 0.2370,
-            }
-
-            with st.expander("⚙️ Ajustar tasas por cuota", expanded=False):
-                tc_cols = st.columns(len(cuotas_config))
-                cuotas_ajustadas = {}
-                for i, (label, default) in enumerate(cuotas_config.items()):
-                    with tc_cols[i]:
-                        cuotas_ajustadas[label] = st.number_input(
-                            f"{label} (%)", value=round(default * 100, 2),
-                            step=0.1, key=f"cuota_mt_{label}",
-                        ) / 100
-
-            _tasa_6c = cuotas_ajustadas.get("6 cuotas", 0.2370)
-            _denom_obj_6c = 1 - (iva_mt / 100) - _tasa_6c - (_margen_obj_pr / 100)
-
-            rows_cuotas = []
-            for prod, datos in todos_productos.items():
-                precio = datos["precio"]
-                if precio <= 0:
-                    continue
-
-                costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
-                costo_total_ars = costo_total_usd * _tc_mt
-                costo_iva = round(precio * (iva_mt / 100), 0)
-                costo_full = round(costo_total_ars + packaging_ars + costo_iva, 0)
-
-                row_data = {
-                    "Producto": prod,
-                    "Precio ($)": round(precio, 0),
-                    "Costo full ($)": costo_full,
-                }
-
-                for label, tasa in cuotas_ajustadas.items():
-                    comision = round(precio * tasa, 0)
-                    margen = round(precio - costo_full - comision - envio_prom, 0)
-                    margen_pct = round(margen / precio * 100, 1) if precio > 0 else 0
-                    row_data[f"M {label} ($)"] = margen
-                    row_data[f"M {label} (%)"] = margen_pct
-
-                # ── Foco 6 cuotas + acción sugerida para asegurar el objetivo ──
-                # Si el precio p/objetivo supera el techo de mercado, no tiene sentido
-                # sugerirlo: la salida real es mover a esos clientes a transferencia/débito.
-                _m6_pct = row_data["M 6 cuotas (%)"]
-                _comp_pr = match_competencia(prod)
-                _mkt_max = _comp_pr.get("max") if (_comp_pr and not _comp_pr.get("solo")) else None
-                if _m6_pct >= _margen_obj_pr:
-                    row_data["Acción"] = "✅ cumple objetivo"
-                elif costo_total_usd > 0 and _denom_obj_6c > 0.01:
-                    _p_obj = (costo_total_ars + packaging_ars + envio_prom) / _denom_obj_6c
-                    _p_obj = int(-(-_p_obj // 5000) * 5000)   # redondeo arriba a $5.000
-                    _subir = max(0, _p_obj - round(precio, 0))
-                    if _mkt_max and _p_obj > _mkt_max * 1.05:
-                        row_data["Acción"] = f"⚠️ fuera de mercado (máx ${_mkt_max:,.0f}) → transferencia/débito"
-                    else:
-                        row_data["Acción"] = f"↑ subir a ${_p_obj:,.0f} (+${_subir:,.0f})"
-                else:
-                    row_data["Acción"] = "— sin costo cargado"
-
-                rows_cuotas.append(row_data)
-
-            df_cuotas = pd.DataFrame(rows_cuotas).sort_values("Precio ($)", ascending=False)
-
-            # Aplicar filtro de marca a cuotas también
-            if marcas_sel:
-                df_cuotas_filt = df_cuotas[df_cuotas["Producto"].apply(
-                    lambda p: _inferir_marca(p) in marcas_sel
-                )]
-            else:
-                df_cuotas_filt = df_cuotas
-
-            # ── Tabla FOCO 6 cuotas (ordenada por margen 6c, peor arriba) ──
-            df_6c = df_cuotas_filt[[
-                "Producto", "Precio ($)", "Costo full ($)",
-                "M 6 cuotas ($)", "M 6 cuotas (%)", "Acción",
-            ]].copy().sort_values("M 6 cuotas (%)", ascending=True)
-            df_6c = df_6c.rename(columns={
-                "M 6 cuotas ($)": "Margen 6c ($)",
-                "M 6 cuotas (%)": "Margen 6c (%)",
-            })
-
-            _bajo_obj = int((df_6c["Margen 6c (%)"] < _margen_obj_pr).sum())
-            _neg = int((df_6c["Margen 6c (%)"] < 0).sum())
-            _fuera = int(df_6c["Acción"].str.startswith("⚠️").sum())
-            if _neg:
-                st.error(f"🔴 **{_neg} producto(s) pierden plata en 6 cuotas** — el precio de lista no cubre el peor caso.")
-            if _bajo_obj:
-                _extra = f" — de esos, **{_fuera}** no llegan ni subiendo a precio de mercado (movelos a transferencia/débito)." if _fuera else "."
-                st.warning(f"⚠️ **{_bajo_obj} de {len(df_6c)} productos** no llegan al objetivo de {_margen_obj_pr:.0f}% en 6 cuotas{_extra} Mirá la columna **Acción**.")
-            else:
-                st.success(f"✅ Todos los productos llegan al objetivo de {_margen_obj_pr:.0f}% aún en 6 cuotas.")
-
-            def _color_6c_pct(v):
-                if not isinstance(v, (int, float)):
-                    return ""
-                if v >= _margen_obj_pr:
-                    return "background-color: #1e4620; color: #4ade80"
-                elif v >= _margen_obj_pr * 0.8:
-                    return "background-color: #3a3000; color: #fbbf24"
-                elif v >= 0:
-                    return "background-color: #2a1a00; color: #fb923c"
-                return "background-color: #3a0f0f; color: #f87171"
-
-            st.dataframe(
-                df_6c.style
-                    .format({
-                        "Precio ($)": "${:,.0f}",
-                        "Costo full ($)": "${:,.0f}",
-                        "Margen 6c ($)": "${:,.0f}",
-                        "Margen 6c (%)": "{:.1f}%",
-                    })
-                    .map(_color_6c_pct, subset=["Margen 6c (%)"]),
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "Producto": st.column_config.TextColumn("Producto", width="medium"),
+                    "Margen 6c ($)": st.column_config.TextColumn("Margen 6c $", width="small"),
                     "Margen 6c (%)": st.column_config.TextColumn("Margen 6c %", width="small"),
-                    "Acción": st.column_config.TextColumn("Acción p/objetivo", width="large"),
                 },
             )
 
-            # Gráfico comparativo para un producto seleccionado (detalle degradación)
-            with st.expander("📉 Ver cómo se degrada el margen por cuotas (por producto)", expanded=False):
-                prod_sel_cuotas = st.selectbox(
-                    "Producto:",
-                    df_cuotas_filt["Producto"].tolist(),
-                    key="sel_cuotas_mt",
-                )
-                if prod_sel_cuotas:
-                    row_sel = df_cuotas_filt[df_cuotas_filt["Producto"] == prod_sel_cuotas].iloc[0]
-                    chart_data = []
-                    for label in cuotas_ajustadas.keys():
-                        chart_data.append({
-                            "Cuotas": label,
-                            "Margen ($)": row_sel[f"M {label} ($)"],
-                            "Margen (%)": row_sel[f"M {label} (%)"],
-                            "Tasa PN (%)": round(cuotas_ajustadas[label] * 100, 2),
-                        })
-                    df_chart_cuotas = pd.DataFrame(chart_data)
+            st.download_button(
+                "⬇️ Descargar tabla de precios y márgenes",
+                df_display.to_csv(index=False).encode("utf-8"),
+                "precios_margenes.csv", "text/csv",
+            )
 
-                    fig_cuotas = go.Figure()
-                    colors_cuotas = [
-                        "#00C49F" if m >= 0 else "#FF5733"
-                        for m in df_chart_cuotas["Margen ($)"]
-                    ]
-                    fig_cuotas.add_trace(go.Bar(
-                        x=df_chart_cuotas["Cuotas"],
-                        y=df_chart_cuotas["Margen ($)"],
-                        name="Margen ($)",
-                        marker_color=colors_cuotas,
-                        text=df_chart_cuotas["Margen ($)"].apply(lambda x: f"${x:,.0f}"),
-                        textposition="outside",
-                    ))
-                    fig_cuotas.add_trace(go.Scatter(
-                        x=df_chart_cuotas["Cuotas"],
-                        y=df_chart_cuotas["Margen (%)"],
-                        name="Margen (%)",
-                        mode="lines+markers+text",
-                        line=dict(color="#009EE3", width=3),
-                        marker=dict(size=10),
-                        text=df_chart_cuotas["Margen (%)"].apply(lambda x: f"{x:.1f}%"),
-                        textposition="top center",
-                        yaxis="y2",
-                    ))
-                    fig_cuotas.update_layout(
-                        title=f"Margen por cuotas — {prod_sel_cuotas} (Precio: {fmt(row_sel['Precio ($)'])})",
-                        yaxis=dict(title="Margen ($)", tickformat="$,.0f"),
-                        yaxis2=dict(title="Margen (%)", overlaying="y", side="right", ticksuffix="%", showgrid=False),
-                        legend=dict(orientation="h", y=-0.15),
-                        hovermode="x unified",
-                    )
-                    st.plotly_chart(fig_cuotas, use_container_width=True)
-
-            col_dl1, col_dl2 = st.columns(2)
-            with col_dl1:
-                st.download_button("⬇️ Descargar margen teórico",
-                    df_mt.to_csv(index=False).encode("utf-8"), "margen_teorico.csv", "text/csv")
-            with col_dl2:
-                st.download_button("⬇️ Descargar rentabilidad por cuotas",
-                    df_cuotas.to_csv(index=False).encode("utf-8"), "rentabilidad_cuotas.csv", "text/csv")
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 9: MARGEN REAL POR CONSOLA
