@@ -442,6 +442,15 @@ BRAND_CATALOG = {
     "retroidflip2":"Retroid","retroidg2":"Retroid",
 }
 
+def _inferir_marca(nombre):
+    """Detecta la marca de un producto por su nombre usando BRAND_CATALOG.
+    Devuelve 'Otra' si no matchea (accesorios, modelos desconocidos)."""
+    nc = _norm_compact(nombre)
+    for key, marca in BRAND_CATALOG.items():
+        if key in nc:
+            return marca
+    return "Otra"
+
 # ── Google Sheets ──────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_gsheet_client():
@@ -5109,6 +5118,24 @@ if st.session_state.df_tn is not None:
 
             # ── Preparar DF para el editor ──
             df_edit_base = st.session_state.costos_df_editor.copy().sort_values("Producto").reset_index(drop=True)
+            # Clasificar por marca (columna read-only + filtro)
+            df_edit_base.insert(1, "Marca", df_edit_base["Producto"].map(_inferir_marca))
+
+            # Filtro por marca (pills multi-select). Contamos productos por marca.
+            _conteo_marcas = df_edit_base["Marca"].value_counts()
+            marcas_disponibles = sorted(_conteo_marcas.index.tolist())
+            marcas_sel = st.pills(
+                "Marca",
+                options=marcas_disponibles,
+                format_func=lambda m: f"{m} ({_conteo_marcas.get(m, 0)})",
+                default=marcas_disponibles,
+                selection_mode="multi",
+                key="costos_filtro_marca",
+                label_visibility="collapsed",
+            )
+            if marcas_sel:
+                df_edit_base = df_edit_base[df_edit_base["Marca"].isin(marcas_sel)].copy()
+
             if busqueda.strip():
                 mask = df_edit_base["Producto"].str.contains(busqueda.strip(), case=False, na=False)
                 df_edit_base = df_edit_base[mask].copy()
@@ -5128,6 +5155,7 @@ if st.session_state.df_tn is not None:
                 df_edit_base,
                 column_config={
                     "Producto": st.column_config.TextColumn("Producto", width="large"),
+                    "Marca": st.column_config.TextColumn("Marca", disabled=True, width="small", help="Inferida del nombre. 'Otra' = accesorio o modelo no catalogado."),
                     "Peso (kg)": st.column_config.NumberColumn("Peso (kg)", min_value=0.0, step=0.01, format="%.3f"),
                     "FOB (USD)": st.column_config.NumberColumn("FOB (USD)", min_value=0.0, step=0.5, format="$%.2f"),
                     "Import (USD)": st.column_config.NumberColumn("Import (USD)", disabled=True, format="$%.2f"),
@@ -5679,13 +5707,7 @@ if st.session_state.df_tn is not None:
         if not todos_productos:
             st.info("No hay productos disponibles. Verificá que TN esté conectado.")
         else:
-            # ── Inferir marca de cada producto ──
-            def _inferir_marca(nombre):
-                nc = _norm_compact(nombre)
-                for key, marca in BRAND_CATALOG.items():
-                    if key in nc:
-                        return marca
-                return "Otra"
+            # ── Inferir marca de cada producto (usa _inferir_marca global) ──
 
             # ── Métricas del período ──
             if not df_tn.empty:
