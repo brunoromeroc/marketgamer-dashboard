@@ -1,8 +1,44 @@
 # Estado Market Gamer Dashboard
 
-**Última sesión:** 2026-07-06 (nocturna, Bruno durmiendo — carta blanca para ejecutar)
+**Última sesión:** 2026-07-23 (/programar — margen verdadero USD + competencia)
 **Modo activo:** /programar
-**Versión actual:** v0.9.0 (caption en "Detalle y ajustes")
+**Versión actual:** v0.10.0 (margen USD histórico, KPI objetivo, piso+competencia)
+
+---
+
+## Sesión 2026-07-23 — Margen verdadero + posicionamiento competitivo
+
+Contexto: Bruno quiere levantar el margen (25,3% pond. real). Se conectó el **MCP
+oficial de Tienda Nube** (admin-mcp.tiendanube.com) a esta sesión — permite consultar
+y editar catálogo/precios/stock en vivo. Se hizo relevamiento de competencia con 5
+agentes → `docs/analisis-competencia-2026-07.md`.
+
+### Implementado (todo en app.py, sintaxis OK + smoke tests pasan)
+1. **Serie histórica del blue**: `get_blue_historico()` (Bluelytics evolution.json,
+   4597 días, cache 24h) + `blue_en_fecha()` (busca hasta 7 días atrás en finde/feriado,
+   fallback = dólar de hoy).
+2. **Margen VERDADERO en USD** en 📈 Margen real: cada venta convertida al blue del
+   día en que se vendió → neutro a la devaluación. KPIs (total/pond/unidad USD),
+   brecha ARS-vs-USD explicada, evolución mensual USD/u, y columnas USD por producto
+   en la tabla df_avg. Es el margen para curar precios.
+3. **Margen objetivo** (slider en ⚙️ Config financiera, `cfg_margen_obj`, default 30% —
+   elegido por Bruno). En Dashboard: card Margen bruto muestra "objetivo X% · ▲pp vs
+   antes" + barra de progreso hacia la meta.
+4. **Precio piso + semáforo competencia** en 💰 Precios: columnas Piso ($), Aire s/piso,
+   Mercado med ($), Posición (🔴caro/🟢alineado/🔵barato/⭐solo). Datos en constante
+   `COMPETENCIA` (snapshot 23/07/2026, regenerable). Resumen de oportunidades arriba
+   de la tabla (subir/único/caro).
+
+### Decisiones de Bruno (AskUserQuestion)
+- Precios en TN: **no tocar todavía** — implementar dashboard primero, él ajusta luego.
+- Margen objetivo: **30%**.
+- RG 35XX y R36S (rojos estructurales): **dejar como están** por ahora (solo marcados
+  en el semáforo). NO se liquidaron.
+
+### Pendiente inmediato
+- Bruno revisa las 3 solapas con datos reales y valida.
+- Cambios de precio en TN vía MCP: pendientes de que Bruno los apruebe uno por uno.
+- Falta /smart-commit + push (no commiteado aún).
 
 ---
 

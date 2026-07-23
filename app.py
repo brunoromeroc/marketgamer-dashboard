@@ -451,6 +451,44 @@ def _inferir_marca(nombre):
             return marca
     return "Otra"
 
+# ── Competencia — snapshot de relevamiento (23/07/2026) ─────────────────────────
+# Precios de mercado ACTIVO en Argentina (ML + tiendas). "med" = mediana; "solo"=True
+# marca productos donde MG es prácticamente el único vendedor local (poder de precio).
+# Regenerar corriendo el relevamiento de competencia (ver docs/analisis-competencia-*).
+COMPETENCIA_FECHA = "23/07/2026"
+COMPETENCIA = {
+    "R36s Market Gamer":      {"min": 80000,  "med": 90000,   "max": 140000,  "n": 8, "nota": "commodity, ML lo vende casi al costo"},
+    "Anbernic RG 35XX":       {"min": 123000, "med": 140000,  "max": 151000,  "n": 4, "nota": "margen estructural flaco (FOB alto)"},
+    "Anbernic RG 35XXSP":     {"min": 154000, "med": 162600,  "max": 198000,  "n": 3, "nota": ""},
+    "Anbernic 34XXSP":        {"min": 211000, "med": 305000,  "max": 360000,  "n": 3, "nota": "solo import/ML"},
+    "Anbernic RG 40XX V":     {"min": 198000, "med": 198000,  "max": 198000,  "n": 1, "nota": "mercado local escaso"},
+    "Anbernic RG CUBE XX":    {"min": 227000, "med": 265000,  "max": 310000,  "n": 3, "nota": ""},
+    "Anbernic RG 406V":       {"min": 495000, "med": 565000,  "max": 640000,  "n": 4, "nota": "rivales ~$478k por transferencia"},
+    "Anbernic RG 557":        {"min": 927000, "med": 927000,  "max": 927000,  "n": 1, "nota": "oferta local muy escasa"},
+    "Retroid Pocket 4":       {"min": 399000, "med": 475000,  "max": 511000,  "n": 2, "nota": "Retro Store domina la oferta"},
+    "Retroid Pocket G2":      {"min": 715000, "med": 715000,  "max": 715000,  "n": 1, "nota": "Onitech c/stock inmediato"},
+    "AYN ODIN 3":             {"min": 899000, "med": 1050000, "max": 1198600, "n": 2, "nota": "los baratos son a pedido (60 días)"},
+    "Powkiddy V90S":          {"min": 99000,  "med": 99900,   "max": 140000,  "n": 3, "nota": "ref. V90 (V90S casi sin oferta local)"},
+    "Powkiddy RGB30":         {"min": 199000, "med": 243000,  "max": 287000,  "n": 2, "nota": ""},
+    "Powkiddy X55":           {"min": 328000, "med": 341000,  "max": 355000,  "n": 3, "nota": ""},
+    "Trimui Smart Pro":       {"min": 195000, "med": 215000,  "max": 237000,  "n": 3, "nota": ""},
+    "Trimui Smart Pro S":     {"min": 319000, "med": 359000,  "max": 399000,  "n": 1, "nota": "solo TeraTech"},
+    "Trimui Brick":           {"min": 220000, "med": 235000,  "max": 250000,  "n": 2, "nota": ""},
+    "Miyoo Mini Plus":        {"min": 144000, "med": 159700,  "max": 195000,  "n": 3, "nota": "producto de volumen, margen fino"},
+    "Miyoo Flip V2":          {"min": 198000, "med": 217000,  "max": 237000,  "n": 1, "nota": "dato viejo, sin oferta activa hoy"},
+    # Productos donde MG es el único vendedor local relevante:
+    "Anbernic RG 476 H":      {"solo": True, "nota": "sin oferta local"},
+    "Anbernic RG VITA PRO":   {"solo": True, "nota": "único vendedor local"},
+    "Miyoo A30":              {"solo": True, "nota": "sin oferta local activa"},
+    "Miyoo Mini Flip":        {"solo": True, "nota": "sin oferta local activa"},
+    "Powkiddy V10":           {"solo": True, "nota": "mercado local casi inexistente"},
+}
+_COMPETENCIA_NORM = {_norm_compact(k): v for k, v in COMPETENCIA.items()}
+
+def match_competencia(nombre):
+    """Busca datos de competencia para un producto por nombre normalizado."""
+    return _COMPETENCIA_NORM.get(_norm_compact(nombre))
+
 # ── Google Sheets ──────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_gsheet_client():
@@ -2355,6 +2393,38 @@ def get_dolar_blue():
         pass
     return None
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_blue_historico():
+    """Serie diaria del blue venta (Bluelytics evolution). {'YYYY-MM-DD': valor}."""
+    try:
+        r = requests.get("https://api.bluelytics.com.ar/v2/evolution.json", timeout=15)
+        if r.status_code == 200:
+            return {
+                e["date"]: float(e["value_sell"])
+                for e in r.json()
+                if e.get("source") == "Blue" and e.get("value_sell")
+            }
+    except Exception:
+        pass
+    return {}
+
+def blue_en_fecha(fecha_str, serie, fallback):
+    """Blue venta en una fecha ISO; si no cotizó ese día (finde/feriado) busca
+    hasta 7 días hacia atrás. Sin serie o sin fecha → fallback (dólar de hoy)."""
+    if not serie or not fecha_str:
+        return fallback
+    if fecha_str in serie:
+        return serie[fecha_str]
+    try:
+        f = date.fromisoformat(fecha_str)
+        for d in range(1, 8):
+            k = str(f - timedelta(days=d))
+            if k in serie:
+                return serie[k]
+    except Exception:
+        pass
+    return fallback
+
 # ── Procesamiento de datos ─────────────────────────────────────────────────────
 def _extraer_nombre_producto(n):
     if isinstance(n, str):
@@ -2721,6 +2791,12 @@ with st.sidebar:
         if "cfg_pkg" not in st.session_state:
             st.session_state.cfg_pkg = 2500
         _pkg_sf = st.number_input("📦 Packaging/u ($)", key="cfg_pkg", step=500)
+        if "cfg_margen_obj" not in st.session_state:
+            st.session_state.cfg_margen_obj = 30
+        _margen_obj_sf = st.slider(
+            "🎯 Margen objetivo (%)", 15, 50, step=1, key="cfg_margen_obj",
+            help="Meta de margen ponderado. Se muestra en el Dashboard y en Precios.",
+        )
 
         # Pauta Meta — auto-fetch, se re-aplica sola al cambiar el período
         _meta_result_sb = get_meta_spend(str(fecha_desde), str(fecha_hasta))
@@ -2743,6 +2819,7 @@ with st.sidebar:
     st.session_state.pct_iva = _iva_sf
     st.session_state.pauta_manual = _pauta_sf
     st.session_state.packaging_global = _pkg_sf
+    st.session_state.margen_objetivo = _margen_obj_sf
 
 # ── Helper: cargar y cruzar datos ─────────────────────────────────────────────
 def _cargar_datos(fecha_desde, fecha_hasta, mostrar_success=False):
@@ -3264,11 +3341,39 @@ if st.session_state.df_tn is not None:
                 "Ticket promedio", fmt(ticket_prom),
                 _delta_sub(ticket_prom, _ticket_prev),
             ), unsafe_allow_html=True)
+            _mg_obj = float(st.session_state.get("margen_objetivo", 30))
+            _mg_prev_pct = (_res_prev["margen_bruto"] / _res_prev["facturacion_bruta"] * 100) if _res_prev["facturacion_bruta"] else 0
+            _mg_pp_delta = _mg_pct - _mg_prev_pct
+            _mg_pp_txt = ""
+            if _res_prev["ordenes"] > 0 and _mg_prev_pct:
+                _a = "▲" if _mg_pp_delta >= 0 else "▼"
+                _mg_pp_txt = f" · {_a} {abs(_mg_pp_delta):.1f}pp vs antes"
             r1c4.markdown(kpi_card(
                 "Margen bruto", fmt(_res_act["margen_bruto"]),
-                f"{_mg_pct:.1f}% sobre bruto · " + (_delta_sub(_res_act["margen_bruto"], _res_prev["margen_bruto"]) or "neto − costos − envíos"),
+                f"{_mg_pct:.1f}% sobre bruto · objetivo {_mg_obj:.0f}%{_mg_pp_txt}",
                 val_color="#4ade80" if _res_act["margen_bruto"] >= 0 else MG_RED,
             ), unsafe_allow_html=True)
+
+            # ── Margen % vs objetivo: barra de progreso hacia la meta ──
+            _mg_ratio = max(0.0, min(_mg_pct / _mg_obj, 1.0)) if _mg_obj > 0 else 0
+            _mg_bar_color = "#4ade80" if _mg_pct >= _mg_obj else "#fbbf24" if _mg_pct >= _mg_obj * 0.8 else MG_RED
+            _mg_falta = _mg_obj - _mg_pct
+            if _mg_pct >= _mg_obj:
+                _mg_msg = f"✅ Objetivo alcanzado (+{-_mg_falta:.1f}pp de colchón)"
+            else:
+                _mg_msg = f"Faltan <b>{_mg_falta:.1f}pp</b> para el objetivo de {_mg_obj:.0f}%"
+            st.markdown(
+                f'<div style="background:{MG_SURF};border-radius:8px;padding:0.7rem 1rem;margin-bottom:1rem;">'
+                f'<div style="display:flex;justify-content:space-between;font-size:0.68rem;'
+                f'color:{MG_MUTED};font-family:\'Space Mono\',monospace;text-transform:uppercase;'
+                f'letter-spacing:0.06em;margin-bottom:0.35rem;">'
+                f'<span>📈 Margen bruto {_mg_pct:.1f}%</span><span>meta {_mg_obj:.0f}%</span></div>'
+                f'<div style="background:{MG_DIM};border-radius:6px;height:10px;overflow:hidden;">'
+                f'<div style="width:{_mg_ratio*100:.0f}%;height:100%;background:{_mg_bar_color};"></div></div>'
+                f'<div style="font-size:0.74rem;color:{MG_MUTED};margin-top:0.35rem;">{_mg_msg}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
             # ── ALERTAS ACCIONABLES ────────────────────────────────────────────
             _alertas = []
@@ -5741,10 +5846,42 @@ if st.session_state.df_tn is not None:
                 margen_teorico = round(precio_prom - costo_full - comision_est - envio_prom, 0)
                 margen_pct = round(margen_teorico / precio_prom * 100, 1) if precio_prom > 0 else 0
 
+                # ── Precio piso (margen 0) — el "hasta acá puedo bajar" ──
+                _denom_piso = 1 - (iva_mt / 100) - tasa_ponderada
+                if costo_total_usd > 0 and _denom_piso > 0.01:
+                    precio_piso = round((costo_total_ars + packaging_ars + envio_prom) / _denom_piso, 0)
+                    aire_piso = round((precio_prom - precio_piso) / precio_piso * 100, 0) if precio_piso > 0 else None
+                else:
+                    precio_piso = None
+                    aire_piso = None
+
+                # ── Semáforo de competencia ──
+                _comp = match_competencia(prod)
+                if _comp is None:
+                    posicion, mercado_med = "", None
+                elif _comp.get("solo"):
+                    posicion, mercado_med = "⭐ Solo local", None
+                else:
+                    mercado_med = _comp.get("med")
+                    if mercado_med and precio_prom > 0:
+                        _rel = (precio_prom - mercado_med) / mercado_med * 100
+                        if _rel >= 12:
+                            posicion = "🔴 Caro"
+                        elif _rel <= -12:
+                            posicion = "🔵 Barato"
+                        else:
+                            posicion = "🟢 Alineado"
+                    else:
+                        posicion, mercado_med = "", None
+
                 rows_mt.append({
                     "Marca": marca,
                     "Producto": prod,
                     "Precio ($)": round(precio_prom, 0),
+                    "Piso ($)": precio_piso,
+                    "Aire s/piso (%)": aire_piso,
+                    "Mercado med ($)": mercado_med,
+                    "Posición": posicion,
                     "Costo prod ($)": round(costo_total_ars, 0),
                     "Costo full ($)": costo_full,
                     "Comisión PN ($)": comision_est,
@@ -5773,8 +5910,27 @@ if st.session_state.df_tn is not None:
                 f"Mostrando **{len(df_mt)}** productos "
                 f"({df_mt[df_mt['_fuente']=='vendido'].shape[0]} vendidos en el período, "
                 f"{df_mt[df_mt['_fuente']=='catálogo'].shape[0]} solo en catálogo TN). "
-                "Precio de catálogo TN para productos no vendidos en el período."
+                "Precio de catálogo TN para productos no vendidos en el período. "
+                f"**Piso** = precio con margen 0 (hasta acá podés bajar). "
+                f"**Mercado/Posición** = relevamiento de competencia del {COMPETENCIA_FECHA}."
             )
+
+            # ── Resumen de oportunidades de precio (de la competencia) ──
+            _df_comp = df_mt[df_mt["Posición"] != ""].copy()
+            if not _df_comp.empty:
+                _caros = _df_comp[_df_comp["Posición"] == "🔴 Caro"]["Producto"].tolist()
+                _baratos = _df_comp[_df_comp["Posición"] == "🔵 Barato"]["Producto"].tolist()
+                _solos = _df_comp[_df_comp["Posición"] == "⭐ Solo local"]["Producto"].tolist()
+                _op1, _op2, _op3 = st.columns(3)
+                with _op1:
+                    st.markdown(f"**🔵 Podés subir ({len(_baratos)})**")
+                    st.caption(", ".join(_baratos) if _baratos else "—")
+                with _op2:
+                    st.markdown(f"**⭐ Sos el único ({len(_solos)})**")
+                    st.caption(", ".join(_solos) if _solos else "—")
+                with _op3:
+                    st.markdown(f"**🔴 Estás caro ({len(_caros)})**")
+                    st.caption(", ".join(_caros) if _caros else "—")
 
             # ── Tabla principal ──
             df_display = df_mt.drop(columns=["_fuente"]).copy()
@@ -5791,10 +5947,19 @@ if st.session_state.df_tn is not None:
                     color = "background-color: #3a0f0f; color: #f87171"
                 return [color if c == "Margen (%)" else "" for c in row.index]
 
+            def _fmt_money_opt(v):
+                return f"${v:,.0f}" if isinstance(v, (int, float)) and pd.notna(v) else "—"
+
+            def _fmt_aire(v):
+                return f"+{v:.0f}%" if isinstance(v, (int, float)) and pd.notna(v) else "—"
+
             st.dataframe(
                 df_display.style
                     .format({
                         "Precio ($)": "${:,.0f}",
+                        "Piso ($)": _fmt_money_opt,
+                        "Aire s/piso (%)": _fmt_aire,
+                        "Mercado med ($)": _fmt_money_opt,
                         "Costo prod ($)": "${:,.0f}",
                         "Costo full ($)": "${:,.0f}",
                         "Comisión PN ($)": "${:,.0f}",
@@ -5808,6 +5973,10 @@ if st.session_state.df_tn is not None:
                 column_config={
                     "Marca": st.column_config.TextColumn("Marca", width="small"),
                     "Producto": st.column_config.TextColumn("Producto", width="large"),
+                    "Piso ($)": st.column_config.TextColumn("Piso", width="small"),
+                    "Aire s/piso (%)": st.column_config.TextColumn("Aire", width="small"),
+                    "Mercado med ($)": st.column_config.TextColumn("Mercado", width="small"),
+                    "Posición": st.column_config.TextColumn("Posición", width="small"),
                     "Uds vendidas": st.column_config.NumberColumn("Uds", width="small"),
                     "Margen (%)": st.column_config.TextColumn("Margen %", width="small"),
                 },
@@ -5989,6 +6158,9 @@ if st.session_state.df_tn is not None:
             if not product_rows_mr:
                 st.info("No hay datos de productos.")
             else:
+                # Serie histórica del blue para el margen verdadero en USD
+                _serie_blue_mr = get_blue_historico()
+
                 # Calcular margen real por cada línea de producto
                 rows_real = []
                 for pr in product_rows_mr:
@@ -6008,10 +6180,22 @@ if st.session_state.df_tn is not None:
                     neto = precio_neto - comision
                     margen = round(neto - costo_full - envio, 0)
 
+                    # ── Margen VERDADERO en USD (neutro a la devaluación) ──
+                    # Convierte lo cobrado al blue del día de la venta y le resta
+                    # el costo que ya está en USD. Compara enero vs julio sin trampa.
+                    _blue_venta = blue_en_fecha(pr.get("Fecha", ""), _serie_blue_mr, _tc_mr)
+                    _neto_usd = neto / _blue_venta if _blue_venta > 0 else 0
+                    _iva_usd = costo_iva / _blue_venta if _blue_venta > 0 else 0
+                    _pkg_usd = packaging_mr / _blue_venta if _blue_venta > 0 else 0
+                    _envio_usd = envio / _blue_venta if _blue_venta > 0 else 0
+                    _margen_usd = _neto_usd - costo_total_usd - _iva_usd - _pkg_usd - _envio_usd
+
                     rows_real.append({
                         "Producto": prod,
                         "Medio de Pago": pr["Medio de Pago"],
                         "Cuotas": pr["Cuotas"],
+                        "Fecha": pr.get("Fecha", ""),
+                        "Blue venta": round(_blue_venta, 0),
                         "Precio lista ($)": round(precio_lista, 0),
                         "Descuento ($)": round(descuento, 0),
                         "Precio neto ($)": round(precio_neto, 0),
@@ -6025,6 +6209,8 @@ if st.session_state.df_tn is not None:
                         "Envío ($)": round(envio, 0),
                         "Margen ($)": margen,
                         "Margen (%)": round(margen / precio_neto * 100, 1) if precio_neto > 0 else 0,
+                        "Margen (USD)": round(_margen_usd, 2),
+                        "Margen USD (%)": round(_margen_usd / _neto_usd * 100, 1) if _neto_usd > 0 else 0,
                     })
 
                 df_real = pd.DataFrame(rows_real)
@@ -6049,6 +6235,8 @@ if st.session_state.df_tn is not None:
                         Envio_prom=("Envío ($)", "mean"),
                         Margen_prom=("Margen ($)", "mean"),
                         Margen_pct_prom=("Margen (%)", "mean"),
+                        Margen_usd_prom=("Margen (USD)", "mean"),
+                        Margen_usd_pct_prom=("Margen USD (%)", "mean"),
                     ).reset_index()
                     df_avg.columns = [
                         "Producto", "Ventas", "Precio lista prom ($)", "Descuento prom ($)",
@@ -6056,6 +6244,7 @@ if st.session_state.df_tn is not None:
                         "FOB (USD)", "Import (USD)", "← Costo prod ($)",
                         "Packaging ($)", col_iva_mr, "Envío ($)",
                         "Margen prom ($)", "Margen (%)",
+                        "Margen prom (USD)", "Margen USD (%)",
                     ]
                     df_avg = df_avg.sort_values("Margen (%)", ascending=False)
 
@@ -6090,6 +6279,69 @@ if st.session_state.df_tn is not None:
                     _mc4.metric("📈 Margen promedio pond.", f"{_margen_pct_pond:.1f}%")
                     st.caption(f"Margen promedio por unidad: **${_margen_prom_unit:,.0f}** · Comisiones PN son reales (calculadas con la tasa según medio de pago y cuotas de cada orden)")
 
+                    # ── Margen VERDADERO en USD (neutro a la devaluación) ──
+                    _tiene_serie = bool(_serie_blue_mr)
+                    _margen_usd_tot = float(df_real["Margen (USD)"].sum())
+                    _neto_usd_tot = float((df_real["Precio neto ($)"] - df_real["Comisión PN ($)"]).div(df_real["Blue venta"]).sum())
+                    _margen_usd_pct = (_margen_usd_tot / _neto_usd_tot * 100) if _neto_usd_tot > 0 else 0
+                    _margen_usd_unit = _margen_usd_tot / _total_ventas if _total_ventas > 0 else 0
+
+                    st.markdown("#### 💵 Margen verdadero en dólares")
+                    if _tiene_serie:
+                        st.caption(
+                            "Cada venta convertida a USD al **blue del día en que se vendió** "
+                            "(no al de hoy). Neutro a la devaluación: comparás ventas de meses "
+                            "distintos sin que la inflación las distorsione. **Este es el margen "
+                            "para curar precios.**"
+                        )
+                    else:
+                        st.warning(
+                            "No se pudo traer la serie histórica del blue (Bluelytics no respondió). "
+                            "El margen USD de abajo usa el dólar de hoy como fallback — volvé a "
+                            "entrar en un rato para el cálculo correcto."
+                        )
+                    _color_usd = "#4ade80" if _margen_usd_pct >= 20 else "#fbbf24" if _margen_usd_pct >= 10 else "#f87171"
+                    _uc1, _uc2, _uc3 = st.columns(3)
+                    _uc1.metric("💵 Margen total (USD)", f"US$ {_margen_usd_tot:,.0f}")
+                    _uc2.metric("📈 Margen pond. (USD)", f"{_margen_usd_pct:.1f}%")
+                    _uc3.metric("🎯 Margen/unidad (USD)", f"US$ {_margen_usd_unit:,.1f}")
+                    _delta_ars_usd = _margen_pct_pond - _margen_usd_pct
+                    if abs(_delta_ars_usd) >= 0.5:
+                        _cual = "arriba" if _delta_ars_usd > 0 else "abajo"
+                        st.caption(
+                            f"El margen en pesos ({_margen_pct_pond:.1f}%) está **{abs(_delta_ars_usd):.1f} pp {_cual}** "
+                            f"del margen real en USD ({_margen_usd_pct:.1f}%). Esa brecha es el efecto del dólar: "
+                            f"medir en pesos al cambio de hoy {'infla' if _delta_ars_usd < 0 else 'desinfla'} el margen de las ventas viejas."
+                        )
+
+                    # Evolución mensual del margen USD por unidad
+                    _df_usd_mes = df_real[df_real["Fecha"] != ""].copy()
+                    if not _df_usd_mes.empty:
+                        _df_usd_mes["Mes"] = pd.to_datetime(_df_usd_mes["Fecha"]).dt.to_period("M").dt.to_timestamp()
+                        _mens_usd = _df_usd_mes.groupby("Mes").agg(
+                            Margen_USD=("Margen (USD)", "sum"),
+                            Unidades=("Margen (USD)", "count"),
+                        ).reset_index().sort_values("Mes")
+                        _mens_usd["Margen USD/u"] = (_mens_usd["Margen_USD"] / _mens_usd["Unidades"]).round(1)
+                        if len(_mens_usd) >= 2:
+                            _fig_usd = go.Figure(go.Bar(
+                                x=_mens_usd["Mes"], y=_mens_usd["Margen USD/u"],
+                                marker_color="#4ade80",
+                                text=_mens_usd["Margen USD/u"].apply(lambda v: f"US$ {v:,.0f}"),
+                                textposition="outside", textfont_size=10,
+                                hovertemplate="%{x|%b %Y}<br>US$ %{y:,.1f}/u<extra></extra>",
+                            ))
+                            _fig_usd.update_layout(
+                                title="Margen USD por unidad — evolución mensual",
+                                height=260, margin=dict(t=45, b=25, l=10, r=10),
+                                xaxis=dict(tickformat="%b %y", dtick="M1"),
+                                yaxis=dict(title="US$/unidad"),
+                                showlegend=False, bargap=0.3,
+                            )
+                            st.plotly_chart(_fig_usd, use_container_width=True)
+
+                    st.divider()
+
                     st.dataframe(
                         df_avg.style.format({
                             "Precio lista prom ($)": "${:,.0f}",
@@ -6104,12 +6356,14 @@ if st.session_state.df_tn is not None:
                             "Envío ($)": "${:,.0f}",
                             "Margen prom ($)": "${:,.0f}",
                             "Margen (%)": "{:.1f}%",
+                            "Margen prom (USD)": "US$ {:,.1f}",
+                            "Margen USD (%)": "{:.1f}%",
                         }).map(lambda v: (
                             "background-color: #1e4620; color: #00C49F" if isinstance(v, (int, float)) and v >= 20
                             else "background-color: #5a4a1a; color: #ffd700" if isinstance(v, (int, float)) and v >= 10
                             else "background-color: #4a1010; color: #ff6b6b" if isinstance(v, (int, float))
                             else ""
-                        ), subset=["Margen (%)"]),
+                        ), subset=["Margen (%)", "Margen USD (%)"]),
                         use_container_width=True, hide_index=True,
                     )
 
