@@ -1183,14 +1183,17 @@ def get_tn_products():
     """Catálogo completo de productos. HTTP: tn_client."""
     return tn_client.get_paginado("products", per_page=50, token=TN_TOKEN)
 
-# ── Tasas Pago Nube ────────────────────────────────────────────────────────────
-PROC_BASE = 0.0329
-IVA_FACTOR = 1.2600
+# ── Tasas Pago Nube / Mercado Pago (reales, confirmadas con config MP 2026-07) ──
+# Los % de la pasarela NO incluyen IVA → se aplica IVA_FACTOR (21%).
+# Por cobro base 3,39% + financiación por ofrecer cuotas sin interés.
+# All-in: contado 4,10% · 3c 11,60% · 6c 16,56%.
+PROC_BASE = 0.0339          # por cobro con tarjeta (18 días)
+IVA_FACTOR = 1.2100         # IVA 21%
 PROC_EFECTIVO = PROC_BASE * IVA_FACTOR
 
 CUOTAS_BASE = {
-    1: 0.0, 2: 0.0606, 3: 0.0798, 6: 0.1552,
-    12: 0.3104, 18: 0.4346, 24: 0.5432,
+    1: 0.0, 2: 0.0440, 3: 0.0620, 6: 0.1030,
+    12: 0.3104, 18: 0.4346, 24: 0.5432,   # 12+ no se ofrecen (valores viejos)
 }
 
 def tasa_pago_nube(metodo, cuotas):  # noqa: keep for compatibilidad
@@ -1206,16 +1209,16 @@ def tasa_pago_nube(metodo, cuotas):  # noqa: keep for compatibilidad
     return PROC_EFECTIVO + costo_cuotas
 
 # ── Tasas Mercado Pago ──────────────────────────────────────────────────────────
-# Fuente: MP → Costos y cuotas → Checkout Pro (abr-2026)
-# Fórmula: (financing_fee × 1.21 IVA) + 3.87% comisión base
+# Fuente: config MP real de Bruno (jul-2026). Por cobro 3,39% + financiación por
+# ofrecer cuotas, todo + IVA 21%. Fórmula: (3.39 + financing) × 1.21.
 COSTOS_MP_DEFAULTS = {
     "Transferencia": 0.0,
-    "Contado":       3.87,
-    "2 cuotas":      8.71,   # 4.00% × 1.21 + 3.87
-    "3 cuotas":      11.13,  # 6.00% × 1.21 + 3.87
-    "6 cuotas":      15.97,  # 10.00% × 1.21 + 3.87
-    "9 cuotas":      22.62,  # 15.50% × 1.21 + 3.87
-    "12 cuotas":     28.07,  # 20.00% × 1.21 + 3.87
+    "Contado":       4.10,   # 3.39 × 1.21
+    "2 cuotas":      9.42,   # (3.39 + 4.40) × 1.21
+    "3 cuotas":      11.60,  # (3.39 + 6.20) × 1.21
+    "6 cuotas":      16.56,  # (3.39 + 10.30) × 1.21
+    "9 cuotas":      22.62,  # no se ofrece (valor viejo)
+    "12 cuotas":     28.07,  # no se ofrece (valor viejo)
 }
 
 def _es_gateway_mp(gateway):
@@ -5716,7 +5719,13 @@ if st.session_state.df_tn is not None:
         _sim_margen_obj = _sim3.number_input("Margen objetivo (%)", min_value=0.0, max_value=60.0, value=25.0, step=1.0, key="sim_margen")
         _sim_envio = _sim4.number_input("Envío est. ($)", min_value=0.0, value=0.0, step=1000.0, key="sim_envio")
 
-        _TASAS_SIM = {"Transferencia": 0.0126, "Contado": 0.0415, "3 cuotas": 0.1420, "6 cuotas": 0.2370, "12 cuotas": 0.4324}
+        # Tasas reales de la pasarela (se recalculan solas desde las constantes globales)
+        _TASAS_SIM = {
+            "Transferencia": tasa_pago_nube("transfer", 1),
+            "Contado": tasa_pago_nube("credit", 1),
+            "3 cuotas": tasa_pago_nube("credit", 3),
+            "6 cuotas": tasa_pago_nube("credit", 6),
+        }
         _t6 = _TASAS_SIM["6 cuotas"]
         _denominador = 1 - (iva_mt / 100) - _t6 - (_sim_margen_obj / 100)
         if _sim_costo_usd > 0 and _denominador > 0.01:
@@ -5843,8 +5852,9 @@ if st.session_state.df_tn is not None:
             # ── Parámetros de 6 cuotas (el peor caso que ofrecés) ──
             _cc1, _cc2 = st.columns(2)
             _tasa_6c = _cc1.number_input(
-                "Tasa 6 cuotas (%)", value=23.70, step=0.1, key="tasa_6c_pr",
-                help="Costo de ofrecer 6 cuotas sin interés. Es tu peor caso de comisión.",
+                "Tasa 6 cuotas (%)", value=round(tasa_pago_nube("credit", 6) * 100, 2),
+                step=0.1, key="tasa_6c_pr",
+                help="Costo real de ofrecer 6 cuotas sin interés (cobro 3,39% + fin 10,3%, +IVA). Tu peor caso de comisión.",
             ) / 100
             _min_6c = _cc2.number_input(
                 "Margen mínimo a 6 cuotas (%)", value=20.0, step=1.0, key="min_6c_pr",

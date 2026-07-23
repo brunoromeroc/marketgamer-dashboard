@@ -76,6 +76,28 @@ a 6 cuotas para asegurar mínimo 20%.
 - Alertas arriba: cuántos pierden plata / no aseguran el 20% mínimo en 6c.
 - Un solo download combinado (precios_margenes.csv).
 
+### Iteración (mismo día) — CORRECCIÓN de tasas de pasarela (importante)
+Bruno pasó captura de la config real de MP/Pago Nube. Las tasas del dashboard
+estaban mal (6c hardcodeado 23,70%). Reales (sin IVA, +21%):
+- Por cobro base: 3,39% · +3 cuotas 6,20% · +6 cuotas 10,30%
+- All-in (×1,21): contado 4,10% · 3c 11,60% · **6c 16,56%**
+Cambios en app.py:
+- `PROC_BASE` 0,0329→0,0339 · `IVA_FACTOR` 1,26→1,21 · `CUOTAS_BASE` 3→0,062, 6→0,103.
+- `COSTOS_MP_DEFAULTS` recalculado con (3,39+fin)×1,21.
+- Precios: simulador `_TASAS_SIM` y default tasa 6c ahora se computan de
+  `tasa_pago_nube()` (antes 23,70% hardcodeado).
+Impacto: el margen (teórico y real vía modelo para órdenes Pago Nube) sube porque
+antes sobrestimaba la comisión. Guardado en memoria [[costos-pago-nube]].
+
+Análisis del umbral de 6 cuotas (con tasa real 16,56%):
+- 50% de órdenes pagan 6c, 46% contado, casi nadie 2-3.
+- Subir umbral $100k→$200k: afecta 70 órdenes (<$200k en 6c = $10,4M fact),
+  ahorra ~$519k/año (a 3c) o ~$1,3M (a contado). Diferencia 6c vs 3c = 4,96pp.
+- Con 16,56% real, solo ~5 consolas quedan trabadas arriba de mercado (RG35XX,
+  Miyoo Mini Plus, V90S, Trimui Smart Pro, R36S) → candidatas a NO ofrecer 6c.
+  El resto (<20% a 6c) son solo-local → suba chica viable.
+- PENDIENTE decisión de Bruno: aplicar umbral y/o subas de precio.
+
 ### Pendiente inmediato
 - Bruno revisa las 3 solapas con datos reales y valida.
 - Cambios de precio en TN vía MCP: pendientes de que Bruno los apruebe uno por uno.
