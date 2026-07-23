@@ -47,6 +47,19 @@ agentes → `docs/analisis-competencia-2026-07.md`.
   Productos "solo local" no tienen techo → sí sugiere subir.
 - El gráfico de degradación por cuotas quedó dentro de un expander.
 
+### Iteración (mismo día) — Limpieza tabla principal de Precios
+Feedback de Bruno sobre la tabla de margen teórico (estaba recargada):
+- Saca columnas: Marca, Piso, Aire, Costo full, Comisión, Envío, Uds vendidas.
+  (El filtro de marca por pills SÍ queda; solo se sacó la columna.)
+- Columnas finales: Producto · Precio · Mercado · Posición · Costo · Margen $ · Margen %.
+- **Costo** ahora = total de Costos de consolas (FOB+import × dólar), no el "costo full".
+- **Comisión del margen** = transferencia (~1,25%, PN real de Bruno), NO la vieja
+  "tasa PN ponderada" (~14% que mezclaba transferencia+tarjeta — error conceptual).
+  El peor caso (6c) ya vive en la tabla de abajo.
+- **Mercado editable a mano**: expander con st.data_editor + botón guardar, persiste en
+  sheet `PreciosCompetencia` (session key `precios_competencia`). El valor manual
+  prevalece sobre el snapshot COMPETENCIA. Posición se recalcula del mercado efectivo.
+
 ### Pendiente inmediato
 - Bruno revisa las 3 solapas con datos reales y valida.
 - Cambios de precio en TN vía MCP: pendientes de que Bruno los apruebe uno por uno.

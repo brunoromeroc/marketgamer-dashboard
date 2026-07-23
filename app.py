@@ -5812,20 +5812,30 @@ if st.session_state.df_tn is not None:
         if not todos_productos:
             st.info("No hay productos disponibles. Verificá que TN esté conectado.")
         else:
-            # ── Inferir marca de cada producto (usa _inferir_marca global) ──
+            # ── Precios de mercado cargados a mano (persistidos en Google Sheets) ──
+            # Prevalecen sobre el snapshot de relevamiento. Muchos productos no tienen
+            # dato de competencia → Bruno los carga acá y quedan guardados.
+            if "precios_competencia" not in st.session_state:
+                st.session_state.precios_competencia = gs_read("PreciosCompetencia") or {}
+            _merc_manual = st.session_state.precios_competencia
+
+            def _mercado_efectivo(prod):
+                """Precio de mercado a usar: manual si existe, si no el snapshot."""
+                v = _merc_manual.get(prod)
+                if v not in (None, "", 0):
+                    try:
+                        return float(v)
+                    except Exception:
+                        pass
+                c = match_competencia(prod)
+                return c.get("med") if (c and not c.get("solo")) else None
 
             # ── Métricas del período ──
-            if not df_tn.empty:
-                envio_prom = df_tn["Envio costo ($)"].mean()
-                total_fact = df_tn["Total ($)"].sum()
-                total_com = df_tn["Comision PN ($)"].sum()
-                tasa_ponderada = total_com / total_fact if total_fact > 0 else 0.0415
-            else:
-                envio_prom = 5000.0
-                tasa_ponderada = 0.0415
+            envio_prom = df_tn["Envio costo ($)"].mean() if not df_tn.empty else 5000.0
+            _tasa_transf = tasa_pago_nube("transfer", 1)   # PN transferencia (tu caso real)
 
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Tasa PN ponderada", f"{tasa_ponderada*100:.2f}%")
+            m1.metric("Comisión transferencia", f"{_tasa_transf*100:.2f}%")
             m2.metric("Envío promedio", fmt(envio_prom))
             m3.metric("Packaging/u", fmt(packaging_ars))
             m4.metric("IVA", f"{iva_mt}%")
@@ -5839,56 +5849,37 @@ if st.session_state.df_tn is not None:
                 marca = _inferir_marca(prod)
 
                 costo_total_usd = get_costo_total_usd(prod, _costos_gs_mt)
-                costo_total_ars = costo_total_usd * _tc_mt
+                costo_total_ars = round(costo_total_usd * _tc_mt, 0)   # total de "Costos de consolas"
                 costo_iva = round(precio_prom * (iva_mt / 100), 0)
-                costo_full = round(costo_total_ars + packaging_ars + costo_iva, 0)
-                comision_est = round(precio_prom * tasa_ponderada, 0)
-                margen_teorico = round(precio_prom - costo_full - comision_est - envio_prom, 0)
+                comision_est = round(precio_prom * _tasa_transf, 0)    # comisión a transferencia
+                margen_teorico = round(precio_prom - costo_total_ars - packaging_ars - costo_iva - comision_est - envio_prom, 0)
                 margen_pct = round(margen_teorico / precio_prom * 100, 1) if precio_prom > 0 else 0
 
-                # ── Precio piso (margen 0) — el "hasta acá puedo bajar" ──
-                _denom_piso = 1 - (iva_mt / 100) - tasa_ponderada
-                if costo_total_usd > 0 and _denom_piso > 0.01:
-                    precio_piso = round((costo_total_ars + packaging_ars + envio_prom) / _denom_piso, 0)
-                    aire_piso = round((precio_prom - precio_piso) / precio_piso * 100, 0) if precio_piso > 0 else None
-                else:
-                    precio_piso = None
-                    aire_piso = None
-
-                # ── Semáforo de competencia ──
+                # ── Semáforo de competencia (mercado manual o snapshot) ──
+                mercado = _mercado_efectivo(prod)
                 _comp = match_competencia(prod)
-                if _comp is None:
-                    posicion, mercado_med = "", None
-                elif _comp.get("solo"):
-                    posicion, mercado_med = "⭐ Solo local", None
-                else:
-                    mercado_med = _comp.get("med")
-                    if mercado_med and precio_prom > 0:
-                        _rel = (precio_prom - mercado_med) / mercado_med * 100
-                        if _rel >= 12:
-                            posicion = "🔴 Caro"
-                        elif _rel <= -12:
-                            posicion = "🔵 Barato"
-                        else:
-                            posicion = "🟢 Alineado"
+                if mercado and precio_prom > 0:
+                    _rel = (precio_prom - mercado) / mercado * 100
+                    if _rel >= 12:
+                        posicion = "🔴 Caro"
+                    elif _rel <= -12:
+                        posicion = "🔵 Barato"
                     else:
-                        posicion, mercado_med = "", None
+                        posicion = "🟢 Alineado"
+                elif _comp and _comp.get("solo"):
+                    posicion = "⭐ Solo local"
+                else:
+                    posicion = ""
 
                 rows_mt.append({
                     "Marca": marca,
                     "Producto": prod,
                     "Precio ($)": round(precio_prom, 0),
-                    "Piso ($)": precio_piso,
-                    "Aire s/piso (%)": aire_piso,
-                    "Mercado med ($)": mercado_med,
+                    "Mercado ($)": mercado,
                     "Posición": posicion,
-                    "Costo prod ($)": round(costo_total_ars, 0),
-                    "Costo full ($)": costo_full,
-                    "Comisión PN ($)": comision_est,
-                    "Envío ($)": round(envio_prom, 0),
+                    "Costo ($)": costo_total_ars,
                     "Margen ($)": margen_teorico,
                     "Margen (%)": margen_pct,
-                    "Uds vendidas": unidades,
                     "_fuente": fuente,
                 })
 
@@ -5907,12 +5898,11 @@ if st.session_state.df_tn is not None:
                 df_mt = df_mt[df_mt["Marca"].isin(marcas_sel)]
 
             st.caption(
-                f"Mostrando **{len(df_mt)}** productos "
-                f"({df_mt[df_mt['_fuente']=='vendido'].shape[0]} vendidos en el período, "
-                f"{df_mt[df_mt['_fuente']=='catálogo'].shape[0]} solo en catálogo TN). "
-                "Precio de catálogo TN para productos no vendidos en el período. "
-                f"**Piso** = precio con margen 0 (hasta acá podés bajar). "
-                f"**Mercado/Posición** = relevamiento de competencia del {COMPETENCIA_FECHA}."
+                f"Mostrando **{len(df_mt)}** productos. Precio de catálogo TN (o promedio "
+                f"vendido en el período). **Costo** = total de Costos de consolas (FOB + import) "
+                f"al dólar de hoy. **Margen** = precio − costo − IVA − packaging − comisión "
+                f"transferencia − envío. **Mercado/Posición** = tu carga manual o el snapshot "
+                f"del {COMPETENCIA_FECHA}."
             )
 
             # ── Resumen de oportunidades de precio (de la competencia) ──
@@ -5932,8 +5922,39 @@ if st.session_state.df_tn is not None:
                     st.markdown(f"**🔴 Estás caro ({len(_caros)})**")
                     st.caption(", ".join(_caros) if _caros else "—")
 
+            # ── Cargar precios de mercado a mano (persistido en Google Sheets) ──
+            with st.expander("✏️ Cargar / editar precios de mercado a mano", expanded=False):
+                st.caption(
+                    "Escribí el precio de la competencia para los productos que quieras. "
+                    "Se guardan y prevalecen sobre el relevamiento automático. Dejalo vacío para usar el snapshot."
+                )
+                _df_ed = pd.DataFrame([
+                    {"Producto": p, "Mercado ($)": _merc_manual.get(p, None)}
+                    for p in sorted(todos_productos.keys())
+                ])
+                _ed = st.data_editor(
+                    _df_ed, hide_index=True, use_container_width=True, height=320,
+                    column_config={
+                        "Producto": st.column_config.TextColumn("Producto", disabled=True),
+                        "Mercado ($)": st.column_config.NumberColumn("Mercado ($)", min_value=0, step=5000, format="$%d"),
+                    },
+                    key="editor_mercado",
+                )
+                if st.button("💾 Guardar precios de mercado", key="save_mercado"):
+                    _nuevo = {
+                        str(r["Producto"]): float(r["Mercado ($)"])
+                        for _, r in _ed.iterrows()
+                        if pd.notna(r["Mercado ($)"]) and float(r["Mercado ($)"]) > 0
+                    }
+                    if gs_write("PreciosCompetencia", _nuevo):
+                        st.session_state.precios_competencia = _nuevo
+                        st.success(f"Guardados {len(_nuevo)} precios de mercado.")
+                        st.rerun()
+                    else:
+                        st.error("No se pudo guardar en Google Sheets.")
+
             # ── Tabla principal ──
-            df_display = df_mt.drop(columns=["_fuente"]).copy()
+            df_display = df_mt.drop(columns=["_fuente", "Marca"]).copy()
 
             def _color_row_margen(row):
                 v = row["Margen (%)"]
@@ -5950,20 +5971,12 @@ if st.session_state.df_tn is not None:
             def _fmt_money_opt(v):
                 return f"${v:,.0f}" if isinstance(v, (int, float)) and pd.notna(v) else "—"
 
-            def _fmt_aire(v):
-                return f"+{v:.0f}%" if isinstance(v, (int, float)) and pd.notna(v) else "—"
-
             st.dataframe(
                 df_display.style
                     .format({
                         "Precio ($)": "${:,.0f}",
-                        "Piso ($)": _fmt_money_opt,
-                        "Aire s/piso (%)": _fmt_aire,
-                        "Mercado med ($)": _fmt_money_opt,
-                        "Costo prod ($)": "${:,.0f}",
-                        "Costo full ($)": "${:,.0f}",
-                        "Comisión PN ($)": "${:,.0f}",
-                        "Envío ($)": "${:,.0f}",
+                        "Mercado ($)": _fmt_money_opt,
+                        "Costo ($)": "${:,.0f}",
                         "Margen ($)": "${:,.0f}",
                         "Margen (%)": "{:.1f}%",
                     })
@@ -5971,13 +5984,9 @@ if st.session_state.df_tn is not None:
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "Marca": st.column_config.TextColumn("Marca", width="small"),
                     "Producto": st.column_config.TextColumn("Producto", width="large"),
-                    "Piso ($)": st.column_config.TextColumn("Piso", width="small"),
-                    "Aire s/piso (%)": st.column_config.TextColumn("Aire", width="small"),
-                    "Mercado med ($)": st.column_config.TextColumn("Mercado", width="small"),
+                    "Mercado ($)": st.column_config.TextColumn("Mercado", width="small"),
                     "Posición": st.column_config.TextColumn("Posición", width="small"),
-                    "Uds vendidas": st.column_config.NumberColumn("Uds", width="small"),
                     "Margen (%)": st.column_config.TextColumn("Margen %", width="small"),
                 },
             )
