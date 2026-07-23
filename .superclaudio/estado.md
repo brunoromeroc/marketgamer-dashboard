@@ -35,6 +35,18 @@ agentes → `docs/analisis-competencia-2026-07.md`.
 - RG 35XX y R36S (rojos estructurales): **dejar como están** por ahora (solo marcados
   en el semáforo). NO se liquidaron.
 
+### Iteración (mismo día) — Rentabilidad reenfocada en 6 cuotas
+- Bruno: ~50% de clientes paga en 6 cuotas y NUNCA ofrece 12. El margen a 6 cuotas
+  es el piso real a proteger. Tabla "Rentabilidad por cuotas" → reenfocada:
+  saca 12 cuotas, muestra solo margen 6c coloreado vs objetivo, ordenada peor-arriba,
+  con columna **Acción** (a cuánto subir para asegurar el objetivo en 6c).
+- Hallazgo clave: 30% a 6 cuotas es INALCANZABLE en productos competitivos (6c cuesta
+  ~23,7% → IVA+tasa+objetivo = 64% del precio). Decisión de Bruno: cuando el precio
+  p/objetivo supera el techo de mercado (COMPETENCIA.max × 1,05), marcar
+  "⚠️ fuera de mercado → transferencia/débito" en vez de sugerir precio irreal.
+  Productos "solo local" no tienen techo → sí sugiere subir.
+- El gráfico de degradación por cuotas quedó dentro de un expander.
+
 ### Pendiente inmediato
 - Bruno revisa las 3 solapas con datos reales y valida.
 - Cambios de precio en TN vía MCP: pendientes de que Bruno los apruebe uno por uno.

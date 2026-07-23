@@ -5983,17 +5983,23 @@ if st.session_state.df_tn is not None:
             )
 
             # ══════════════════════════════════════════════════════════════
-            # TABLA DE RENTABILIDAD POR CUOTAS
+            # RENTABILIDAD A 6 CUOTAS — el peor caso que Bruno sí ofrece
+            # (~50% de los clientes paga en 6; nunca se ofrecen 12 cuotas)
             # ══════════════════════════════════════════════════════════════
-            st.subheader("💳 Rentabilidad por cantidad de cuotas")
-            st.caption("Cómo cambia el margen según la forma de pago del cliente.")
+            _margen_obj_pr = float(st.session_state.get("margen_objetivo", 30))
+            st.subheader("💳 Rentabilidad a 6 cuotas — tu piso a proteger")
+            st.caption(
+                f"El ~50% de tus clientes paga en **6 cuotas** y no ofrecés 12, así que el margen "
+                f"a 6 cuotas es el piso real de cada precio de lista. Coloreado contra tu objetivo "
+                f"de **{_margen_obj_pr:.0f}%** (editable en ⚙️ Config financiera). "
+                f"La última columna te dice a cuánto subir el precio para asegurar el objetivo aún en 6 cuotas."
+            )
 
             cuotas_config = {
                 "Débito/Trans": 0.0415,
                 "1 cuota": 0.0415,
                 "3 cuotas": 0.1420,
                 "6 cuotas": 0.2370,
-                "12 cuotas": 0.4324,
             }
 
             with st.expander("⚙️ Ajustar tasas por cuota", expanded=False):
@@ -6005,6 +6011,9 @@ if st.session_state.df_tn is not None:
                             f"{label} (%)", value=round(default * 100, 2),
                             step=0.1, key=f"cuota_mt_{label}",
                         ) / 100
+
+            _tasa_6c = cuotas_ajustadas.get("6 cuotas", 0.2370)
+            _denom_obj_6c = 1 - (iva_mt / 100) - _tasa_6c - (_margen_obj_pr / 100)
 
             rows_cuotas = []
             for prod, datos in todos_productos.items():
@@ -6030,6 +6039,25 @@ if st.session_state.df_tn is not None:
                     row_data[f"M {label} ($)"] = margen
                     row_data[f"M {label} (%)"] = margen_pct
 
+                # ── Foco 6 cuotas + acción sugerida para asegurar el objetivo ──
+                # Si el precio p/objetivo supera el techo de mercado, no tiene sentido
+                # sugerirlo: la salida real es mover a esos clientes a transferencia/débito.
+                _m6_pct = row_data["M 6 cuotas (%)"]
+                _comp_pr = match_competencia(prod)
+                _mkt_max = _comp_pr.get("max") if (_comp_pr and not _comp_pr.get("solo")) else None
+                if _m6_pct >= _margen_obj_pr:
+                    row_data["Acción"] = "✅ cumple objetivo"
+                elif costo_total_usd > 0 and _denom_obj_6c > 0.01:
+                    _p_obj = (costo_total_ars + packaging_ars + envio_prom) / _denom_obj_6c
+                    _p_obj = int(-(-_p_obj // 5000) * 5000)   # redondeo arriba a $5.000
+                    _subir = max(0, _p_obj - round(precio, 0))
+                    if _mkt_max and _p_obj > _mkt_max * 1.05:
+                        row_data["Acción"] = f"⚠️ fuera de mercado (máx ${_mkt_max:,.0f}) → transferencia/débito"
+                    else:
+                        row_data["Acción"] = f"↑ subir a ${_p_obj:,.0f} (+${_subir:,.0f})"
+                else:
+                    row_data["Acción"] = "— sin costo cargado"
+
                 rows_cuotas.append(row_data)
 
             df_cuotas = pd.DataFrame(rows_cuotas).sort_values("Precio ($)", ascending=False)
@@ -6042,85 +6070,106 @@ if st.session_state.df_tn is not None:
             else:
                 df_cuotas_filt = df_cuotas
 
-            fmt_cuotas = {
-                "Precio ($)": "${:,.0f}",
-                "Costo full ($)": "${:,.0f}",
-            }
-            pct_cols = []
-            for label in cuotas_ajustadas.keys():
-                fmt_cuotas[f"M {label} ($)"] = "${:,.0f}"
-                fmt_cuotas[f"M {label} (%)"] = "{:.1f}%"
-                pct_cols.append(f"M {label} (%)")
+            # ── Tabla FOCO 6 cuotas (ordenada por margen 6c, peor arriba) ──
+            df_6c = df_cuotas_filt[[
+                "Producto", "Precio ($)", "Costo full ($)",
+                "M 6 cuotas ($)", "M 6 cuotas (%)", "Acción",
+            ]].copy().sort_values("M 6 cuotas (%)", ascending=True)
+            df_6c = df_6c.rename(columns={
+                "M 6 cuotas ($)": "Margen 6c ($)",
+                "M 6 cuotas (%)": "Margen 6c (%)",
+            })
 
-            def _color_margen_cuotas(v):
-                if isinstance(v, (int, float)):
-                    if v >= 20:
-                        return "background-color: #1e4620; color: #4ade80"
-                    elif v >= 10:
-                        return "background-color: #3a3000; color: #fbbf24"
-                    elif v >= 0:
-                        return "background-color: #2a1a00; color: #fb923c"
-                    else:
-                        return "background-color: #3a0f0f; color: #f87171"
-                return ""
+            _bajo_obj = int((df_6c["Margen 6c (%)"] < _margen_obj_pr).sum())
+            _neg = int((df_6c["Margen 6c (%)"] < 0).sum())
+            _fuera = int(df_6c["Acción"].str.startswith("⚠️").sum())
+            if _neg:
+                st.error(f"🔴 **{_neg} producto(s) pierden plata en 6 cuotas** — el precio de lista no cubre el peor caso.")
+            if _bajo_obj:
+                _extra = f" — de esos, **{_fuera}** no llegan ni subiendo a precio de mercado (movelos a transferencia/débito)." if _fuera else "."
+                st.warning(f"⚠️ **{_bajo_obj} de {len(df_6c)} productos** no llegan al objetivo de {_margen_obj_pr:.0f}% en 6 cuotas{_extra} Mirá la columna **Acción**.")
+            else:
+                st.success(f"✅ Todos los productos llegan al objetivo de {_margen_obj_pr:.0f}% aún en 6 cuotas.")
+
+            def _color_6c_pct(v):
+                if not isinstance(v, (int, float)):
+                    return ""
+                if v >= _margen_obj_pr:
+                    return "background-color: #1e4620; color: #4ade80"
+                elif v >= _margen_obj_pr * 0.8:
+                    return "background-color: #3a3000; color: #fbbf24"
+                elif v >= 0:
+                    return "background-color: #2a1a00; color: #fb923c"
+                return "background-color: #3a0f0f; color: #f87171"
 
             st.dataframe(
-                df_cuotas_filt.style
-                    .format(fmt_cuotas)
-                    .map(_color_margen_cuotas, subset=pct_cols),
-                use_container_width=True, hide_index=True,
-            )
-
-            # Gráfico comparativo para un producto seleccionado
-            prod_sel_cuotas = st.selectbox(
-                "Ver detalle por cuotas de:",
-                df_cuotas_filt["Producto"].tolist(),
-                key="sel_cuotas_mt",
-            )
-            if prod_sel_cuotas:
-                row_sel = df_cuotas_filt[df_cuotas_filt["Producto"] == prod_sel_cuotas].iloc[0]
-                chart_data = []
-                for label in cuotas_ajustadas.keys():
-                    chart_data.append({
-                        "Cuotas": label,
-                        "Margen ($)": row_sel[f"M {label} ($)"],
-                        "Margen (%)": row_sel[f"M {label} (%)"],
-                        "Tasa PN (%)": round(cuotas_ajustadas[label] * 100, 2),
+                df_6c.style
+                    .format({
+                        "Precio ($)": "${:,.0f}",
+                        "Costo full ($)": "${:,.0f}",
+                        "Margen 6c ($)": "${:,.0f}",
+                        "Margen 6c (%)": "{:.1f}%",
                     })
-                df_chart_cuotas = pd.DataFrame(chart_data)
+                    .map(_color_6c_pct, subset=["Margen 6c (%)"]),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Producto": st.column_config.TextColumn("Producto", width="medium"),
+                    "Margen 6c (%)": st.column_config.TextColumn("Margen 6c %", width="small"),
+                    "Acción": st.column_config.TextColumn("Acción p/objetivo", width="large"),
+                },
+            )
 
-                fig_cuotas = go.Figure()
-                colors_cuotas = [
-                    "#00C49F" if m >= 0 else "#FF5733"
-                    for m in df_chart_cuotas["Margen ($)"]
-                ]
-                fig_cuotas.add_trace(go.Bar(
-                    x=df_chart_cuotas["Cuotas"],
-                    y=df_chart_cuotas["Margen ($)"],
-                    name="Margen ($)",
-                    marker_color=colors_cuotas,
-                    text=df_chart_cuotas["Margen ($)"].apply(lambda x: f"${x:,.0f}"),
-                    textposition="outside",
-                ))
-                fig_cuotas.add_trace(go.Scatter(
-                    x=df_chart_cuotas["Cuotas"],
-                    y=df_chart_cuotas["Margen (%)"],
-                    name="Margen (%)",
-                    mode="lines+markers+text",
-                    line=dict(color="#009EE3", width=3),
-                    marker=dict(size=10),
-                    text=df_chart_cuotas["Margen (%)"].apply(lambda x: f"{x:.1f}%"),
-                    textposition="top center",
-                    yaxis="y2",
-                ))
-                fig_cuotas.update_layout(
-                    title=f"Margen por cuotas — {prod_sel_cuotas} (Precio: {fmt(row_sel['Precio ($)'])})",
-                    yaxis=dict(title="Margen ($)", tickformat="$,.0f"),
-                    yaxis2=dict(title="Margen (%)", overlaying="y", side="right", ticksuffix="%", showgrid=False),
-                    legend=dict(orientation="h", y=-0.15),
-                    hovermode="x unified",
+            # Gráfico comparativo para un producto seleccionado (detalle degradación)
+            with st.expander("📉 Ver cómo se degrada el margen por cuotas (por producto)", expanded=False):
+                prod_sel_cuotas = st.selectbox(
+                    "Producto:",
+                    df_cuotas_filt["Producto"].tolist(),
+                    key="sel_cuotas_mt",
                 )
-                st.plotly_chart(fig_cuotas, use_container_width=True)
+                if prod_sel_cuotas:
+                    row_sel = df_cuotas_filt[df_cuotas_filt["Producto"] == prod_sel_cuotas].iloc[0]
+                    chart_data = []
+                    for label in cuotas_ajustadas.keys():
+                        chart_data.append({
+                            "Cuotas": label,
+                            "Margen ($)": row_sel[f"M {label} ($)"],
+                            "Margen (%)": row_sel[f"M {label} (%)"],
+                            "Tasa PN (%)": round(cuotas_ajustadas[label] * 100, 2),
+                        })
+                    df_chart_cuotas = pd.DataFrame(chart_data)
+
+                    fig_cuotas = go.Figure()
+                    colors_cuotas = [
+                        "#00C49F" if m >= 0 else "#FF5733"
+                        for m in df_chart_cuotas["Margen ($)"]
+                    ]
+                    fig_cuotas.add_trace(go.Bar(
+                        x=df_chart_cuotas["Cuotas"],
+                        y=df_chart_cuotas["Margen ($)"],
+                        name="Margen ($)",
+                        marker_color=colors_cuotas,
+                        text=df_chart_cuotas["Margen ($)"].apply(lambda x: f"${x:,.0f}"),
+                        textposition="outside",
+                    ))
+                    fig_cuotas.add_trace(go.Scatter(
+                        x=df_chart_cuotas["Cuotas"],
+                        y=df_chart_cuotas["Margen (%)"],
+                        name="Margen (%)",
+                        mode="lines+markers+text",
+                        line=dict(color="#009EE3", width=3),
+                        marker=dict(size=10),
+                        text=df_chart_cuotas["Margen (%)"].apply(lambda x: f"{x:.1f}%"),
+                        textposition="top center",
+                        yaxis="y2",
+                    ))
+                    fig_cuotas.update_layout(
+                        title=f"Margen por cuotas — {prod_sel_cuotas} (Precio: {fmt(row_sel['Precio ($)'])})",
+                        yaxis=dict(title="Margen ($)", tickformat="$,.0f"),
+                        yaxis2=dict(title="Margen (%)", overlaying="y", side="right", ticksuffix="%", showgrid=False),
+                        legend=dict(orientation="h", y=-0.15),
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig_cuotas, use_container_width=True)
 
             col_dl1, col_dl2 = st.columns(2)
             with col_dl1:
